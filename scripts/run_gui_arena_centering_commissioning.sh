@@ -23,18 +23,28 @@ CALIBRATION_EXPOSURE_US=100000
 PROJECTION_SETTLE_MS=1000
 STABILITY_INTERVAL_MS=300
 POST_PRESENTATION_SETTLE_MS=1000
-OPERATOR_MONITOR="DP-0"
-STIMULUS_MONITOR="DP-3"
+# Empty = resolved: the stimulus output from the pancakebatter host config
+# (rigs[].display_outputs[], the entry Citrus binds), the operator monitor as
+# the primary output on Orange's X screen. The options name them explicitly.
+OPERATOR_MONITOR=""
+STIMULUS_MONITOR=""
+STIMULUS_MONITOR_SOURCE="host_config"
+RIG_ID="omnifin0"
+PROJECTION_PATH="main"
+HOST_CONFIG="/etc/pancakebatter/host.yml"
 TIMEOUT_SECONDS=300
 DISPLAY_VALUE="${DISPLAY:-:1}"
 XAUTHORITY_VALUE="${XAUTHORITY:-/run/user/1000/gdm/Xauthority}"
 XDG_RUNTIME_DIR_VALUE="${XDG_RUNTIME_DIR:-/run/user/1000}"
 RESULT_JSON=""
-CITRUS_CONFIG="/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json"
+CANVAS="shadow"
+CITRUS_CONFIG=""   # default: $CITRUS_ROOT/targets/rigs/<rig id>/<canvas>/<canvas>.json
 PROJECTOR_INTENSITY_REPORT="/home/jeremy/orange_data/calibrations/commissioning/projector_intensity_20260719T014235Z/commissioning_report.json"
 PROJECTOR_INTENSITY_REPORT_EXPLICIT=0
-CITRUS_BIN="${CITRUS_BIN:-/home/jeremy/citrus/targets/citrus}"
-CITRUS_PROTOCOL="/home/jeremy/citrus/protocols/good_cop_bad_cop_demo.json"
+CITRUS_ROOT="${CITRUS_ROOT:-/home/jeremy/citrus}"
+CITRUS_BIN="${CITRUS_BIN:-${CITRUS_ROOT}/targets/citrus}"
+CITRUS_PROTOCOL="${CITRUS_ROOT}/protocols/good_cop_bad_cop_demo.json"
+ORANGE_GUI_BINARY="${ORANGE_GUI_BINARY:-${REPO_ROOT}/targets/release/orange}"
 CITRUS_SOCKET="/tmp/citrus_local_control.sock"
 ORANGE_SOCKET="/tmp/orange_local_control.sock"
 ORANGE_CONFIG_SOURCE="/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam"
@@ -76,8 +86,12 @@ Options:
   --projection-settle-ms <integer>
   --stability-interval-ms <integer>
   --post-presentation-settle-ms <integer>
-  --operator-monitor <output-name>
-  --stimulus-monitor <output-name>
+  --operator-monitor <output-name>   (default: primary output on --display's X screen)
+  --stimulus-monitor <output-name>   (default: the host config's output for --rig-id; naming
+                                      one also tells Citrus by name, a test-only override)
+  --rig-id <rig id>                  (default: omnifin0)
+  --canvas <canvas name>             (default: shadow)
+  --host-config <host.yml>           (default: /etc/pancakebatter/host.yml)
   --result-json <path>
   --timeout-seconds <integer>
   --display <display>
@@ -86,7 +100,19 @@ Options:
   --help
 
 Environment:
-  CITRUS_BIN  Citrus executable (default: /home/jeremy/citrus/targets/citrus).
+  CITRUS_ROOT Citrus checkout (default: /home/jeremy/citrus).
+  CITRUS_BIN  Citrus executable (default: $CITRUS_ROOT/targets/citrus).
+  XRANDR_BIN  xrandr executable (default: xrandr; tests substitute a fake).
+  ORANGE_GUI_BINARY  Orange binary that must exist (default: targets/release/orange).
+
+Displays: nothing about the outputs is fixed here. The stimulus output and its
+X screen come from the pancakebatter host config entry Citrus binds
+(scripts/host_stimulus_output.py), the operator monitor is the primary output
+on the X screen of --display (Orange draws there), and the launcher checks with
+xrandr that both are connected where they should be. When the stimulus output
+shares Orange's X screen, Orange reserves it and refuses an overlapping
+window; on another X screen it cannot overlap and is not reserved. Orange
+checks the monitor name Citrus reports either way.
 EOF
 }
 
@@ -144,7 +170,10 @@ while [[ $# -gt 0 ]]; do
     --stability-interval-ms) shift; require_value --stability-interval-ms "$#"; STABILITY_INTERVAL_MS="$1"; shift ;;
     --post-presentation-settle-ms) shift; require_value --post-presentation-settle-ms "$#"; POST_PRESENTATION_SETTLE_MS="$1"; shift ;;
     --operator-monitor) shift; require_value --operator-monitor "$#"; OPERATOR_MONITOR="$1"; shift ;;
-    --stimulus-monitor) shift; require_value --stimulus-monitor "$#"; STIMULUS_MONITOR="$1"; shift ;;
+    --stimulus-monitor) shift; require_value --stimulus-monitor "$#"; STIMULUS_MONITOR="$1"; STIMULUS_MONITOR_SOURCE="option"; shift ;;
+    --rig-id) shift; require_value --rig-id "$#"; RIG_ID="$1"; shift ;;
+    --canvas) shift; require_value --canvas "$#"; CANVAS="$1"; shift ;;
+    --host-config) shift; require_value --host-config "$#"; HOST_CONFIG="$1"; shift ;;
     --result-json) shift; require_value --result-json "$#"; RESULT_JSON="$1"; shift ;;
     --timeout-seconds) shift; require_value --timeout-seconds "$#"; TIMEOUT_SECONDS="$1"; shift ;;
     --display) shift; require_value --display "$#"; DISPLAY_VALUE="$1"; shift ;;
@@ -215,14 +244,11 @@ for value in PROJECTION_SETTLE_MS STABILITY_INTERVAL_MS POST_PRESENTATION_SETTLE
     echo "${value} must be a non-negative integer" >&2; exit 2;
   }
 done
-for value in OPERATOR_MONITOR STIMULUS_MONITOR; do
-  [[ "${!value}" =~ ^[A-Za-z0-9_.-]+$ ]] || {
-    echo "${value} must be an XRandR output name" >&2; exit 2;
-  }
-done
-[[ "${OPERATOR_MONITOR}" != "${STIMULUS_MONITOR}" ]] || {
-  echo "Operator and stimulus monitors must differ" >&2; exit 2;
-}
+[[ "${RIG_ID}" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "--rig-id must be a rig id" >&2; exit 2; }
+[[ "${CANVAS}" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "--canvas must be a canvas name" >&2; exit 2; }
+if [[ -z "${CITRUS_CONFIG}" ]]; then
+  CITRUS_CONFIG="${CITRUS_ROOT}/targets/rigs/${RIG_ID}/${CANVAS}/${CANVAS}.json"
+fi
 [[ "${FOREGROUND_GRAY_U8}" =~ ^[0-9]+$ ]] &&
   (( FOREGROUND_GRAY_U8 >= 0 && FOREGROUND_GRAY_U8 <= 255 )) || {
   echo "--foreground-gray-u8 must be in [0,255]" >&2; exit 2;
@@ -256,7 +282,7 @@ if (( FIT_HOMOGRAPHIES && RESIZE_ARENAS && ! ARM_LAYOUT_SAVE )); then
   exit 2
 fi
 [[ -x "${CITRUS_BIN}" ]] || { echo "Missing Citrus binary: ${CITRUS_BIN}" >&2; exit 1; }
-[[ -x "${REPO_ROOT}/targets/release/orange" ]] || { echo "Missing Orange binary" >&2; exit 1; }
+[[ -x "${ORANGE_GUI_BINARY}" ]] || { echo "Missing Orange binary: ${ORANGE_GUI_BINARY}" >&2; exit 1; }
 [[ -f "${CITRUS_CONFIG}" ]] || { echo "Missing Citrus config: ${CITRUS_CONFIG}" >&2; exit 1; }
 [[ -f "${CITRUS_PROTOCOL}" ]] || { echo "Missing Citrus protocol" >&2; exit 1; }
 
@@ -268,22 +294,85 @@ CITRUS_LOG="/tmp/orange_gui_arena_centering_${STAMP}_citrus.log"
 ORANGE_LOG="/tmp/orange_gui_arena_centering_${STAMP}_orange.log"
 TIMING_CONFIG_DIR="$(dirname "${ORANGE_CONFIG_SOURCE}")/arena_centering_runtime_${STAMP}_$$"
 
-if (( EXECUTE )); then
-  MONITOR_INVENTORY="$(
-    DISPLAY="${DISPLAY_VALUE}" XAUTHORITY="${XAUTHORITY_VALUE}" xrandr --query
-  )" || {
-    echo "Could not query XRandR monitor inventory on ${DISPLAY_VALUE}" >&2
-    exit 1
-  }
-  for monitor in "${OPERATOR_MONITOR}" "${STIMULUS_MONITOR}"; do
-    awk -v wanted="${monitor}" '
-      $1 == wanted && $2 == "connected" { found = 1 }
-      END { exit(found ? 0 : 1) }
-    ' <<<"${MONITOR_INVENTORY}" || {
-      echo "Required connected monitor is missing: ${monitor}" >&2
-      exit 1
-    }
+# Displays: the host config names the stimulus output and its X screen;
+# xrandr says what is connected on each X screen of this server.
+XRANDR_BIN="${XRANDR_BIN:-xrandr}"
+DISPLAY_SERVER="${DISPLAY_VALUE%.*}"
+if [[ "${DISPLAY_VALUE}" == *.* ]]; then
+  ORANGE_X_SCREEN="${DISPLAY_VALUE##*.}"
+else
+  ORANGE_X_SCREEN=0
+fi
+screen_inventory() {
+  DISPLAY="${DISPLAY_SERVER}" XAUTHORITY="${XAUTHORITY_VALUE}" \
+    "${XRANDR_BIN}" --screen "$1" --query 2>/dev/null
+}
+output_connected_on_screen() {
+  local inventory
+  inventory="$(screen_inventory "$2")" || return 1
+  awk -v wanted="$1" '
+    $1 == wanted && $2 == "connected" { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' <<<"${inventory}"
+}
+DISPLAY_REFUSAL=""
+STIMULUS_X_SCREEN=""
+if [[ "${STIMULUS_MONITOR_SOURCE}" == "host_config" ]]; then
+  if HOST_STIMULUS="$(
+    python3 "${REPO_ROOT}/scripts/host_stimulus_output.py" \
+      --host-config "${HOST_CONFIG}" --rig-id "${RIG_ID}" \
+      --projection-path "${PROJECTION_PATH}" 2>&1
+  )"; then
+    read -r STIMULUS_MONITOR STIMULUS_X_SCREEN <<<"${HOST_STIMULUS}"
+    [[ "${STIMULUS_X_SCREEN}" != "-" ]] || STIMULUS_X_SCREEN="${ORANGE_X_SCREEN}"
+  else
+    DISPLAY_REFUSAL="${HOST_STIMULUS}"
+  fi
+else
+  # Named on the command line: find it on this server's X screens.
+  for screen in $(seq 0 15); do
+    screen_inventory "${screen}" >/dev/null || break
+    if output_connected_on_screen "${STIMULUS_MONITOR}" "${screen}"; then
+      STIMULUS_X_SCREEN="${screen}"
+      break
+    fi
   done
+fi
+if [[ -z "${OPERATOR_MONITOR}" ]]; then
+  OPERATOR_MONITOR="$(
+    screen_inventory "${ORANGE_X_SCREEN}" |
+      awk '$2 == "connected" && $3 == "primary" { print $1; exit }'
+  )" || true
+fi
+for value in OPERATOR_MONITOR STIMULUS_MONITOR; do
+  if [[ -z "${DISPLAY_REFUSAL}" && ! "${!value}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    DISPLAY_REFUSAL="${value} is not resolved to an XRandR output name (got '${!value}')"
+  fi
+done
+if [[ -z "${DISPLAY_REFUSAL}" && "${OPERATOR_MONITOR}" == "${STIMULUS_MONITOR}" ]]; then
+  DISPLAY_REFUSAL="Operator and stimulus monitors must differ (${OPERATOR_MONITOR})"
+fi
+if [[ -z "${DISPLAY_REFUSAL}" ]] &&
+   ! output_connected_on_screen "${OPERATOR_MONITOR}" "${ORANGE_X_SCREEN}"; then
+  DISPLAY_REFUSAL="Operator monitor ${OPERATOR_MONITOR} is not connected on ${DISPLAY_SERVER}.${ORANGE_X_SCREEN}, where Orange draws"
+fi
+if [[ -z "${DISPLAY_REFUSAL}" ]]; then
+  if [[ -z "${STIMULUS_X_SCREEN}" ]] ||
+     ! output_connected_on_screen "${STIMULUS_MONITOR}" "${STIMULUS_X_SCREEN}"; then
+    DISPLAY_REFUSAL="Stimulus monitor ${STIMULUS_MONITOR} is not connected on ${DISPLAY_SERVER}.${STIMULUS_X_SCREEN:-?} (${STIMULUS_MONITOR_SOURCE})"
+  fi
+fi
+DISPLAY_LAYOUT="unresolved"
+if [[ -z "${DISPLAY_REFUSAL}" ]]; then
+  if [[ "${STIMULUS_X_SCREEN}" == "${ORANGE_X_SCREEN}" ]]; then
+    DISPLAY_LAYOUT="shared_x_screen"
+  else
+    DISPLAY_LAYOUT="separate_x_screens"
+  fi
+fi
+
+if (( EXECUTE )); then
+  [[ -z "${DISPLAY_REFUSAL}" ]] || { echo "${DISPLAY_REFUSAL}" >&2; exit 1; }
   python3 "${REPO_ROOT}/scripts/make_guided_calibration_timing_config.py" \
     "${ORANGE_CONFIG_SOURCE}" \
     "${TIMING_CONFIG_DIR}" \
@@ -299,14 +388,23 @@ CITRUS_ENV=(
   "XDG_SESSION_TYPE=x11"
   "CITRUS_GUI_LOCAL_CONTROL_SOCKET=${CITRUS_SOCKET}"
   "CITRUS_GUI_AUTORUN=1"
-  "CITRUS_GUI_AUTORUN_RIG=omnifin0"
-  "CITRUS_GUI_AUTORUN_CANVAS=shadow"
+  "CITRUS_GUI_AUTORUN_RIG=${RIG_ID}"
+  "CITRUS_GUI_AUTORUN_CANVAS=${CANVAS}"
   "CITRUS_GUI_AUTORUN_PROTOCOL_PATH=${CITRUS_PROTOCOL}"
   "CITRUS_GUI_AUTORUN_START_DELAY_SECONDS=86400"
   "CITRUS_GUI_AUTORUN_EXIT_AFTER_COMPLETE=0"
   "CITRUS_ORANGE_COMPLETION_NOTIFY=0"
-  "CITRUS_STIMULUS_DISPLAY_OUTPUT_NAME=${STIMULUS_MONITOR}"
 )
+CITRUS_OUTPUT_SOURCE="host_config"
+if [[ "${STIMULUS_MONITOR_SOURCE}" == "option" ]]; then
+  # Named on the command line: Citrus's test-only overrides, which skip its
+  # host-config check.
+  CITRUS_ENV+=("CITRUS_STIMULUS_DISPLAY_OUTPUT_NAME=${STIMULUS_MONITOR}")
+  CITRUS_OUTPUT_SOURCE="output_name_override"
+  if [[ -n "${STIMULUS_X_SCREEN}" && "${STIMULUS_X_SCREEN}" != "${ORANGE_X_SCREEN}" ]]; then
+    CITRUS_ENV+=("CITRUS_STIMULUS_X_SCREEN=${STIMULUS_X_SCREEN}")
+  fi
+fi
 
 ORANGE_ENV=(
   "DISPLAY=${DISPLAY_VALUE}"
@@ -350,7 +448,6 @@ ORANGE_ENV=(
   "ORANGE_GUI_ARENA_CENTERING_STABILITY_INTERVAL_MS=${STABILITY_INTERVAL_MS}"
   "ORANGE_GUI_GROUP_CAPTURE_POST_PRESENTATION_SETTLE_MS=${POST_PRESENTATION_SETTLE_MS}"
   "ORANGE_GUI_OPERATOR_MONITOR=${OPERATOR_MONITOR}"
-  "ORANGE_GUI_RESERVED_MONITOR=${STIMULUS_MONITOR}"
   "ORANGE_CITRUS_EXPECTED_STIMULUS_MONITOR=${STIMULUS_MONITOR}"
   "ORANGE_GUI_ARENA_CENTERING_SAVE_CAPTURES=1"
   "ORANGE_GUI_ARENA_CENTERING_BOOTSTRAP_CENTERS_ONLY=${BOOTSTRAP_CENTERS_ONLY}"
@@ -361,6 +458,13 @@ ORANGE_ENV=(
   "ORANGE_GUI_ARENA_CENTERING_EXIT_AFTER_COMPLETION=1"
   "ORANGE_GUI_ARENA_CENTERING_RESULT_JSON=${RESULT_JSON}"
 )
+ORANGE_RESERVED_MONITOR="none_separate_x_screen"
+if [[ "${DISPLAY_LAYOUT}" != "separate_x_screens" ]]; then
+  # Same X screen: Orange must not cover the projector output. On another X
+  # screen GLFW cannot see it (and Orange cannot cover it).
+  ORANGE_ENV+=("ORANGE_GUI_RESERVED_MONITOR=${STIMULUS_MONITOR}")
+  ORANGE_RESERVED_MONITOR="${STIMULUS_MONITOR}"
+fi
 if (( ! BOOTSTRAP_CENTERS_ONLY )); then
   ORANGE_ENV+=(
     "ORANGE_GUI_ARENA_CENTERING_PROJECTOR_INTENSITY_REPORT_PATH=${PROJECTOR_INTENSITY_REPORT}"
@@ -379,7 +483,9 @@ else
 fi
 echo "  tolerance_camera_px=${VERIFICATION_TOLERANCE_CAMERA_PX} max_ptp_span_ns=${MAX_PTP_SPAN_NS}"
 echo "  camera_timing=${CALIBRATION_FRAME_RATE_HZ}fps/${CALIBRATION_EXPOSURE_US}us PTP=enabled"
-echo "  displays=operator:${OPERATOR_MONITOR} stimulus_reserved:${STIMULUS_MONITOR} overlap_rejection=enabled"
+echo "  displays=operator:${OPERATOR_MONITOR:-?}@screen${ORANGE_X_SCREEN} stimulus:${STIMULUS_MONITOR:-?}@screen${STIMULUS_X_SCREEN:-?} layout=${DISPLAY_LAYOUT} rig=${RIG_ID} stimulus_source=${STIMULUS_MONITOR_SOURCE}"
+echo "  citrus_output=${CITRUS_OUTPUT_SOURCE} orange_reserved_monitor=${ORANGE_RESERVED_MONITOR} citrus_monitor_check=${STIMULUS_MONITOR}"
+echo "  display_check=${DISPLAY_REFUSAL:-ok}"
 echo "  projection_settle=${PROJECTION_SETTLE_MS}ms post_fence_settle=${POST_PRESENTATION_SETTLE_MS}ms"
 echo "  stability_pair=required interval=${STABILITY_INTERVAL_MS}ms ghosted_marker_rejection=enabled"
 echo "  rectangle_edges=$((1 - BOOTSTRAP_CENTERS_ONLY)) resize_arenas=${RESIZE_ARENAS} safety_margin_camera_px=${RECTANGLE_SAFETY_MARGIN_CAMERA_PX}"
