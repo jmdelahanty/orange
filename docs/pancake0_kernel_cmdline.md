@@ -89,3 +89,25 @@ kernel (it has on every boot so far). Every latency baseline taken between
    `python3 -c "import time;n=200000;t=time.perf_counter_ns();[time.perf_counter_ns() for _ in range(n)];print((time.perf_counter_ns()-t)/n,'ns')"`.
 3. In a two-camera engine-only run, `acquisition_to_worker_start_ms` is
    about 0.02 and `cpu_post_sync_ms` about 0.06 (the 2026-09-04 values).
+
+## 2026-11-11: the TSC fault behind the 2026-09-11 incident
+
+On 2026-11-11 (35.7 days after the 2026-10-06 boot) the TSC of one CCD,
+logical CPUs 24-31 and 56-63, intermittently read exactly 36 x 2^48 cycles
+(10,133,099,161,583,616) behind CPU 0, alternating with the correct value every
+1 to 40+ s. While it is behind, CLOCK_MONOTONIC and CLOCK_REALTIME on those
+CPUs advance only once per 4.000084 ms jiffy, and `tsc=reliable` keeps the
+watchdog from reporting it. 36 is the TSC multiplier over the 99.8125 MHz
+reference, so the offset is 2^48 reference ticks = 32.64 days: the working
+hypothesis is a 48-bit count wrapping about 32.6 days after boot (firmware or
+microcode), and the 2026-09-11 "-485 ms skew over one watchdog interval" was
+the first sighting of the same fault, about 33 days after the 2026-08-09 boot.
+A reboot clears it. Orange impact: host stamps (receive_host_ns,
+timestamp_sys, latency segments) of any thread that floated onto those CPUs;
+camera PTP timestamps, frame ids and PTP itself are unaffected. Check a host
+with a per-CPU CLOCK_MONOTONIC step probe sampled over at least 60 s (a
+healthy CPU steps about 100-200 ns); check a recording by the share of
+consecutive `timestamp_sys` differences that are whole multiples of
+4,000,084 ns. Full write-up (measurements, recordings scanned, options, vendor
+report draft, BIOS-update risks): Claude Doc "pancake0 TSC fault on one CPU
+chiplet", https://claude.ai/artifact/YVk6yE3osmpPmACFdpiEZN.
