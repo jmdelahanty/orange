@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -3655,6 +3655,253 @@ def test_launch_socket_preflight_allows_absent_socket() -> None:
     require(orchestrator.steps[-1].ok, "missing socket preflight should pass")
 
 
+def headless_citrus_status(
+    *,
+    started: bool,
+    terminal: bool,
+    autorun: dict[str, Any] | None = None,
+    automation_error: str = "",
+) -> dict[str, Any]:
+    status = citrus_status(started, terminal)
+    status["automation"] = {"error": automation_error}
+    if autorun is not None:
+        status["automation"]["autorun"] = autorun
+    return status
+
+
+def headless_autorun(started: bool) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "start_mode": "wait_for_control",
+        "waiting_for_start": not started,
+        "start_source": "local_control" if started else None,
+    }
+
+
+def headless_orange_status(recording_folder: Path, *, recording: bool) -> dict[str, Any]:
+    return {
+        "process": "orange_client",
+        "phase": "recording" if recording else "streaming",
+        "readiness": {
+            "ready_for_citrus_experiment": recording,
+            "recording_active": recording,
+            "recording_finalizing": False,
+            "recording_finalized": False,
+        },
+        "recording": {"folder": str(recording_folder) if recording else "", "sink_mode": "real"},
+        "local_control": {
+            "recording_stop": {"enabled": True, "citrus_completion_enabled": True},
+        },
+    }
+
+
+def write_headless_run(
+    root: Path,
+    *,
+    lifecycle: str = "accepted_pending_finalization",
+    receipts_status: str = "finalized",
+) -> Path:
+    folder = root / "exp" / "exp__run_0001"
+    (folder / "recording_observation_bindings").mkdir(parents=True)
+    (folder / "recording_observation_bindings" / "pre_arm_decision.json").write_text(
+        json.dumps({"lifecycle_status": lifecycle})
+    )
+    (root / "exp" / "runs.json").write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "recording_folder": str(folder),
+                        "status": "completed",
+                        "pass_fail": "pass",
+                        "reason": "",
+                        "citrus_receipts": {
+                            "binding_mode": "required",
+                            "pre_arm_lifecycle_status": lifecycle,
+                            "status": receipts_status,
+                        },
+                    }
+                ]
+            }
+        )
+    )
+    return folder
+
+
+def run_headless_fake(
+    module: Any,
+    root: Path,
+    folder: Path,
+    *,
+    citrus_autorun: Callable[[bool], dict[str, Any] | None] = headless_autorun,
+    automation_error: str = "",
+) -> tuple[dict[str, Any] | None, str, dict[str, Any]]:
+    """Fake sockets; orange_command is a process that records until Citrus is
+    terminal, then exits as orange_client does after its receipts."""
+    release = root / "orange_may_exit"
+    state = {"orange_launched": False, "citrus_started": False, "polls_after_start": 0, "starts": 0}
+
+    def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        if ":prelaunch_status:" in request.get("request_id", ""):
+            raise FileNotFoundError(socket_path)
+        if socket_path == "orange-test.sock":
+            state["orange_launched"] = True
+            return response_for(request, headless_orange_status(folder, recording=True))
+        method = request.get("method")
+        if method == "start_experiment":
+            state["citrus_started"] = True
+            state["starts"] += 1
+        elif state["citrus_started"]:
+            state["polls_after_start"] += 1
+        terminal = state["polls_after_start"] >= 2
+        if terminal:
+            release.write_text("go")
+        return response_for(
+            request,
+            headless_citrus_status(
+                started=state["citrus_started"],
+                terminal=terminal,
+                autorun=citrus_autorun(state["citrus_started"]),
+                automation_error=automation_error,
+            ),
+        )
+
+    orange_command = (
+        f"{shlex.quote(sys.executable)} -c "
+        + shlex.quote(
+            "import pathlib,sys,time\n"
+            f"p=pathlib.Path({str(release)!r})\n"
+            "t=time.time()\n"
+            "while not p.exists() and time.time()-t<10: time.sleep(0.01)\n"
+            "sys.exit(0 if p.exists() else 3)\n"
+        )
+    )
+    original_send = module.send_unix_json
+    module.send_unix_json = fake_send
+    try:
+        args = module.parse_args(
+            [
+                "--execute",
+                "--orange-mode", "headless",
+                "--stop-policy", "citrus_completion_notify",
+                "--operation-id", "op-headless",
+                "--orange-socket", "orange-test.sock",
+                "--citrus-socket", "citrus-test.sock",
+                "--orange-command", orange_command,
+                "--orange-log", str(root / "orange.log"),
+                "--poll-interval-seconds", "0.01",
+                "--timeout-seconds", "2",
+                "--orange-ready-timeout-seconds", "2",
+                "--citrus-terminal-timeout-seconds", "5",
+                "--orange-exit-timeout-seconds", "10",
+            ]
+        )
+        orchestrator = module.Orchestrator(args)
+        try:
+            payload = orchestrator.run()
+            orchestrator.persist_artifacts(payload)
+            return payload, "", state
+        except module.OrchestratorError as exc:
+            orchestrator.cleanup_started_processes(labels={"orange"})
+            return None, str(exc), state
+    finally:
+        module.send_unix_json = original_send
+
+
+def test_headless_mode_starts_citrus_only_after_orange_is_bound() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = write_headless_run(root)
+        payload, error, state = run_headless_fake(module, root, folder)
+        require(payload is not None, f"headless run should pass: {error}")
+        require(payload["result"] == "pass", f"headless result: {payload['result']} {payload['error']}")
+        require(state["starts"] == 1, "exactly one start_experiment")
+        headless = payload["headless"]
+        require(headless["recording_folder"] == str(folder), "summary carries the recording folder")
+        require(headless["citrus_receipts"]["status"] == "finalized", "summary carries the receipts")
+        require(headless["citrus_start_source"] == "local_control", "Citrus started from the socket")
+        require(headless["orange_returncode"] == 0, "orange_client exit code")
+        require(
+            payload["artifacts"]["reason"] == "headless_recording_sealed_by_orange_client",
+            "headless never copies into the sealed recording",
+        )
+        require(sorted(p.name for p in folder.iterdir()) == ["recording_observation_bindings"],
+                "nothing written into the recording folder")
+        names = [step["name"] for step in payload["steps"]]
+        require(
+            names.index("wait_orange_headless_recording_bound")
+            < names.index("check_orange_headless_pre_arm")
+            < names.index("citrus_start_experiment")
+            < names.index("wait_orange_process_exit"),
+            f"headless step order: {names}",
+        )
+
+
+def test_headless_mode_fails_on_missing_receipts() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = write_headless_run(root, receipts_status="not_received")
+        payload, error, _ = run_headless_fake(module, root, folder)
+        require(payload is not None and payload["result"] == "fail", f"missing receipts must fail: {error}")
+        require("citrus_receipts status='not_received'" in payload["error"], payload["error"])
+
+
+def test_headless_mode_refuses_start_without_accepted_pre_arm() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = write_headless_run(root, lifecycle="unbound")
+        payload, error, state = run_headless_fake(module, root, folder)
+        require(payload is None, "an unaccepted pre-arm must stop the run")
+        require("accepted_pending_finalization" in error, error)
+        require(state["starts"] == 0, "no start_experiment without an accepted pre-arm")
+
+
+def test_headless_mode_refuses_citrus_without_wait_for_control() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        folder = write_headless_run(root)
+        payload, error, state = run_headless_fake(module, root, folder, citrus_autorun=lambda started: None)
+        require(payload is None and "PR #109" in error, f"old Citrus build must be refused: {error}")
+        require(not state["orange_launched"] and state["starts"] == 0, "nothing launched or started")
+
+        payload, error, state = run_headless_fake(
+            module, root, folder, automation_error="CITRUS_GUI_AUTORUN_START=wait_for_control needs CITRUS_GUI_AUTORUN=1"
+        )
+        require(payload is None and "Citrus automation error" in error, error)
+        require(state["starts"] == 0, "no start on a Citrus automation error")
+
+        payload, error, state = run_headless_fake(
+            module,
+            root,
+            folder,
+            citrus_autorun=lambda started: {
+                "enabled": True, "start_mode": "auto", "waiting_for_start": False, "start_source": "autorun",
+            },
+        )
+        require(payload is None and "already accepted a start" in error, error)
+        require(state["starts"] == 0, "no second start for a Citrus that started itself")
+
+
+def test_headless_mode_needs_orange_command_and_notify_policy() -> None:
+    module = load_module()
+    args = module.parse_args(["--execute", "--orange-mode", "headless", "--stop-policy", "citrus_completion_notify"])
+    try:
+        module.Orchestrator(args).run()
+        raise AssertionError("headless without --orange-command must be refused")
+    except module.OrchestratorError as exc:
+        require("--orange-command" in str(exc), str(exc))
+    args = module.parse_args(["--execute", "--orange-mode", "headless", "--orange-command", "true"])
+    try:
+        module.Orchestrator(args).run()
+        raise AssertionError("headless with stop_recording policy must be refused")
+    except module.OrchestratorError as exc:
+        require("citrus_completion_notify" in str(exc), str(exc))
+
+
 def main() -> int:
     tests = [
         test_request_builders_and_readiness_helpers,
@@ -3681,6 +3928,11 @@ def main() -> int:
         test_orange_coverage_check_rejects_premature_recording_stop,
         test_launch_socket_preflight_refuses_live_socket,
         test_launch_socket_preflight_allows_absent_socket,
+        test_headless_mode_starts_citrus_only_after_orange_is_bound,
+        test_headless_mode_fails_on_missing_receipts,
+        test_headless_mode_refuses_start_without_accepted_pre_arm,
+        test_headless_mode_refuses_citrus_without_wait_for_control,
+        test_headless_mode_needs_orange_command_and_notify_policy,
     ]
     for test in tests:
         test()

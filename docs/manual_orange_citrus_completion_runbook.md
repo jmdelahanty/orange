@@ -156,3 +156,47 @@ Expected local-control evidence includes `method=citrus_completion`,
 `command_source=citrus`, `ack_state=executed`,
 `generic_stop_enabled=[False]`, `citrus_completion_enabled=[True]`, and a copied
 `orange_local_control.events.jsonl` in the Orange recording artifact.
+
+## Unattended headless run (orange_client, nobody at the rig)
+
+`scripts/run_headless_citrus_session.sh` runs one Citrus-ended recording with
+no clicks:
+
+1. Citrus is launched with autorun and `CITRUS_GUI_AUTORUN_START=wait_for_control`
+   (Citrus PR #109). It loads the rig, canvas and protocol and selects all
+   arenas, then starts nothing. It exits after completion and receipts.
+2. Orange waits until Citrus reports `readiness.ready_to_start` and
+   `automation.autorun` `{enabled, start_mode: wait_for_control,
+   waiting_for_start: true, start_source: null}` with `automation.error` empty.
+   An older Citrus (no `automation.autorun`) is refused.
+3. `scripts/run_detect_latency_spec.sh` runs `orange_client` with the spec
+   (default `fourcam_headless_citrus_validation`, which needs
+   `fixed.local_control.stop_on_citrus_completion` and
+   `recording_control.record_for_seconds` as the ceiling). Its pre-arm refuses
+   to record unless Citrus accepted the binding.
+4. Once `orange_client` reports `ready_for_citrus_experiment` and its folder's
+   `recording_observation_bindings/pre_arm_decision.json` says
+   `accepted_pending_finalization`, the orchestrator sends the one
+   `start_experiment`.
+5. Citrus's completion stops the recording after the grace. `orange_client`
+   finalizes, waits for the receipts and exits. The run passes only if:
+   - `orange_client` exits 0;
+   - runs.json `citrus_receipts.status` is `finalized`;
+   - the run's `pass_fail` is `pass`.
+
+```bash
+scripts/run_headless_citrus_session.sh \
+  --protocol-path ~/citrus/protocols/validation_chaser_last_white0118_black_dot_1chase_112s.json \
+  --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client          # dry run
+# ... --execute                                                                           # launch
+```
+
+Logs and `orchestrator_summary.json` go to
+`~/orange_data/headless_citrus_sessions/<stamp>/`. Nothing is written into the
+recording folder, which `orange_client` has sealed. A failure before the start
+ends both processes: `orange_client` gets SIGTERM and time to finalize. A
+failure after the start leaves both running, so Citrus completes and
+`orange_client` seals the run on its own.
+
+Subjects are blank (`not_collected`): a Citrus arena with no dish declares dish
+and count null, which matches. Every launch and every start needs Jeremy's word.

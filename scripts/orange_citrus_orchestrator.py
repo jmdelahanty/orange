@@ -2015,6 +2015,98 @@ def citrus_perf_jsonl_path_known(status: dict[str, Any]) -> bool:
     return json_bool(json_path(status, ["output", "perf_jsonl_path_known"], False))
 
 
+# Headless mode (--orange-mode headless): Citrus is launched first with autorun
+# CITRUS_GUI_AUTORUN_START=wait_for_control (Citrus PR #109), which loads the
+# protocol and selects the arenas but starts nothing; orange_client then binds,
+# arms and records; this orchestrator sends the one start_experiment.
+CITRUS_PRE_ARM_DECISION_RELATIVE_PATH = "recording_observation_bindings/pre_arm_decision.json"
+
+
+def citrus_automation_error(status: dict[str, Any]) -> str:
+    value = json_path(status, ["automation", "error"], "")
+    return value if isinstance(value, str) else ""
+
+
+def citrus_autorun_status(status: dict[str, Any]) -> dict[str, Any]:
+    value = json_path(status, ["automation", "autorun"], {})
+    return value if isinstance(value, dict) else {}
+
+
+def citrus_waiting_for_control_start(status: dict[str, Any]) -> bool:
+    autorun = citrus_autorun_status(status)
+    return (
+        citrus_ready_to_start(status)
+        and not citrus_automation_error(status)
+        and autorun.get("enabled") is True
+        and autorun.get("start_mode") == "wait_for_control"
+        and autorun.get("waiting_for_start") is True
+        and autorun.get("start_source") is None
+    )
+
+
+def citrus_headless_wait_failure(status: dict[str, Any], start_gate: str) -> str:
+    error = citrus_automation_error(status)
+    if error:
+        return f"Citrus automation error: {error}"
+    if start_gate == "wait_for_control" and isinstance(status.get("automation"), dict) and not isinstance(
+        json_path(status, ["automation", "autorun"], None), dict
+    ):
+        return "Citrus status has no automation.autorun: this Citrus build predates wait_for_control (PR #109)"
+    autorun = citrus_autorun_status(status)
+    if autorun.get("start_source") is not None:
+        return (
+            "Citrus already accepted a start "
+            f"(start_source={autorun.get('start_source')!r}) before this orchestrator sent one"
+        )
+    if citrus_active_or_armed(status):
+        return "Citrus experiment is already active or armed before this orchestrator started it"
+    return ""
+
+
+def orange_headless_ready_for_citrus(status: dict[str, Any]) -> bool:
+    # orange_client arms only after Citrus accepted the binding (a refused
+    # pre-arm ends the run), so recording_active here means bound and recording.
+    return (
+        status.get("process") == "orange_client"
+        and orange_ready_for_citrus(status)
+        and bool(orange_recording_folder(status))
+    )
+
+
+def orange_headless_citrus_completion_enabled(status: dict[str, Any]) -> bool:
+    return json_bool(
+        json_path(status, ["local_control", "recording_stop", "citrus_completion_enabled"], False)
+    )
+
+
+def read_pre_arm_lifecycle_status(recording_folder: str) -> str:
+    path = Path(recording_folder) / CITRUS_PRE_ARM_DECISION_RELATIVE_PATH
+    try:
+        decision = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    value = decision.get("lifecycle_status", "") if isinstance(decision, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def read_headless_run_entry(recording_folder: str) -> dict[str, Any]:
+    """runs.json entry of an orange_client run: <experiment folder>/runs.json."""
+    folder = Path(recording_folder)
+    runs_path = folder.parent / "runs.json"
+    try:
+        payload = json.loads(runs_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    runs = payload.get("runs", []) if isinstance(payload, dict) else []
+    for run in runs if isinstance(runs, list) else []:
+        if not isinstance(run, dict):
+            continue
+        observed = str(run.get("recording_folder", "")).rstrip("/")
+        if observed == str(folder).rstrip("/"):
+            return run
+    return {}
+
+
 @dataclass
 class StepLog:
     name: str
@@ -2042,6 +2134,8 @@ class Orchestrator:
         self.last_orange_status: dict[str, Any] = {}
         self.last_citrus_status: dict[str, Any] = {}
         self.last_orange_coverage_check_monotonic = 0.0
+        self.citrus_start_sent = False
+        self.headless_result: dict[str, Any] = {}
 
     def step(self, name: str) -> StepLog:
         item = StepLog(name=name)
@@ -2157,6 +2251,16 @@ class Orchestrator:
                 and self.orange_recording_started
             ):
                 self.check_orange_recording_coverage(last_status, step)
+            if (
+                label == "citrus"
+                and last_status
+                and self.args.orange_mode == "headless"
+                and not self.citrus_start_sent
+            ):
+                failure = citrus_headless_wait_failure(last_status, self.args.citrus_start_gate)
+                if failure:
+                    step.finish(ok=False, terminal_failure=failure, last_status=last_status)
+                    raise OrchestratorError(failure)
             if label == "orange" and last_status:
                 failure = orange_wait_failure(
                     last_status,
@@ -2448,6 +2552,8 @@ class Orchestrator:
         step.finish(ok=True, pid=process.pid, command=argv, env_overlay=env_overlay)
 
     def run(self) -> dict[str, Any]:
+        if self.args.orange_mode == "headless":
+            return self.run_headless()
         final_citrus_status: dict[str, Any] = {}
         final_orange_status: dict[str, Any] = {}
 
@@ -2615,6 +2721,197 @@ class Orchestrator:
             final_orange_status=final_orange_status,
             final_citrus_status=final_citrus_status,
         )
+
+    def run_headless(self) -> dict[str, Any]:
+        """Citrus (waiting for control) -> orange_client (bound, recording) ->
+        start_experiment -> Citrus terminal -> orange_client stops on Citrus's
+        completion, finalizes, waits for the receipts and exits."""
+        if not self.args.orange_command:
+            raise OrchestratorError("--orange-mode headless needs --orange-command (the orange_client run)")
+        if self.args.stop_policy not in ("citrus_completion_notify", "none"):
+            raise OrchestratorError(
+                "--orange-mode headless: orange_client stops itself on Citrus's completion; "
+                "use --stop-policy citrus_completion_notify"
+            )
+        if self.args.citrus_command:
+            self.preflight_launch_socket(
+                "citrus",
+                CITRUS_REQUEST_SCHEMA_ID,
+                self.args.citrus_socket,
+                self.args.allow_preexisting_citrus_socket,
+            )
+        self.preflight_launch_socket(
+            "orange",
+            ORANGE_REQUEST_SCHEMA_ID,
+            self.args.orange_socket,
+            self.args.allow_preexisting_orange_socket,
+        )
+
+        # Citrus first: orange_client's pre-arm needs Citrus's socket.
+        citrus_env = {
+            **parse_env_items(self.args.citrus_env),
+            "CITRUS_GUI_LOCAL_CONTROL_SOCKET": self.args.citrus_socket,
+        }
+        if self.args.require_citrus_perf_jsonl:
+            citrus_env["CITRUS_PERF_JSONL"] = "1"
+        self.start_process("citrus", self.args.citrus_command, citrus_env, self.args.citrus_log)
+        citrus_gate = (
+            citrus_waiting_for_control_start
+            if self.args.citrus_start_gate == "wait_for_control"
+            else citrus_ready_to_start
+        )
+        final_citrus_status = self.wait_for_status(
+            "citrus",
+            CITRUS_REQUEST_SCHEMA_ID,
+            self.args.citrus_socket,
+            citrus_gate,
+            self.args.timeout_seconds,
+            f"ready_{self.args.citrus_start_gate}",
+        )
+        if self.args.require_citrus_perf_jsonl and not citrus_perf_jsonl_enabled(final_citrus_status):
+            raise OrchestratorError("Citrus status does not report output.perf_jsonl_enabled=true")
+
+        self.start_process(
+            "orange",
+            self.args.orange_command,
+            orange_process_env_overlay(self.args),
+            self.args.orange_log,
+        )
+        final_orange_status = self.wait_for_status(
+            "orange",
+            ORANGE_REQUEST_SCHEMA_ID,
+            self.args.orange_socket,
+            orange_headless_ready_for_citrus,
+            self.args.orange_ready_timeout_seconds,
+            "headless_recording_bound",
+        )
+        self.orange_recording_started = True
+        recording_folder = orange_recording_folder(final_orange_status)
+        step = self.step("check_orange_headless_pre_arm")
+        lifecycle = read_pre_arm_lifecycle_status(recording_folder)
+        completion_enabled = orange_headless_citrus_completion_enabled(final_orange_status)
+        if lifecycle != "accepted_pending_finalization" or not completion_enabled:
+            step.finish(
+                ok=False,
+                recording_folder=recording_folder,
+                pre_arm_lifecycle_status=lifecycle,
+                citrus_completion_enabled=completion_enabled,
+            )
+            raise OrchestratorError(
+                "orange_client is recording but not ready for a Citrus-ended run: "
+                f"pre_arm lifecycle_status={lifecycle!r} (needs accepted_pending_finalization), "
+                f"citrus_completion_enabled={completion_enabled} "
+                "(needs fixed.local_control.stop_on_citrus_completion)"
+            )
+        step.finish(
+            ok=True,
+            recording_folder=recording_folder,
+            pre_arm_lifecycle_status=lifecycle,
+            citrus_completion_enabled=True,
+        )
+
+        # The start goes only to a Citrus that is still waiting for it.
+        final_citrus_status = self.wait_for_status(
+            "citrus",
+            CITRUS_REQUEST_SCHEMA_ID,
+            self.args.citrus_socket,
+            citrus_gate,
+            self.args.socket_timeout_seconds,
+            f"still_{self.args.citrus_start_gate}",
+        )
+        step = self.step("citrus_start_experiment")
+        self.citrus_start_sent = True
+        citrus_start_response = self.send(
+            self.args.citrus_socket,
+            build_citrus_start_request(
+                self.args.operation_id,
+                f"{self.args.operation_id}:citrus:start_experiment",
+                self.args.source,
+            ),
+        )
+        if not response_accepted(citrus_start_response):
+            step.finish(ok=False, response=citrus_start_response)
+            raise OrchestratorError(f"Citrus start_experiment was not accepted: {citrus_start_response}")
+        step.finish(ok=True, response=citrus_start_response)
+
+        final_citrus_status = self.wait_for_citrus_terminal_or_run_duration()
+        if not citrus_is_terminal(final_citrus_status):
+            self.request_citrus_stop_for_run_duration()
+            final_citrus_status = self.wait_for_status(
+                "citrus",
+                CITRUS_REQUEST_SCHEMA_ID,
+                self.args.citrus_socket,
+                citrus_is_terminal,
+                self.args.citrus_terminal_timeout_seconds,
+                "terminal_state",
+            )
+        self.citrus_control_complete = True
+        start_source = citrus_autorun_status(final_citrus_status).get("start_source")
+        if self.args.citrus_start_gate == "wait_for_control" and start_source != "local_control":
+            raise OrchestratorError(
+                f"Citrus reports start_source={start_source!r} for this run, expected 'local_control'"
+            )
+
+        # orange_client: Citrus's completion -> stop after the grace -> finalize
+        # -> Citrus's receipts -> exit. Its socket goes away with it.
+        returncode = self.wait_for_process_exit("orange", self.args.orange_exit_timeout_seconds)
+        self.orange_recording_started = False
+        run_entry = read_headless_run_entry(recording_folder)
+        receipts = run_entry.get("citrus_receipts", {}) if isinstance(run_entry, dict) else {}
+        receipts_status = receipts.get("status", "") if isinstance(receipts, dict) else ""
+        self.headless_result = {
+            "recording_folder": recording_folder,
+            "orange_returncode": returncode,
+            "run_status": run_entry.get("status", ""),
+            "run_pass_fail": run_entry.get("pass_fail", ""),
+            "run_reason": run_entry.get("reason", ""),
+            "citrus_receipts": receipts,
+            "citrus_start_source": start_source,
+        }
+        final_orange_status = {
+            "process": "orange_client",
+            "recording": {"folder": recording_folder},
+            "readiness": {"recording_finalized": returncode == 0},
+        }
+
+        if self.args.citrus_command:
+            self.wait_for_process_exit("citrus", self.args.citrus_exit_timeout_seconds, required=False)
+        self.validation_results = self.run_validations(final_orange_status, final_citrus_status)
+        self.cleanup_started_processes()
+        self.cleanup_launched_socket_files()
+
+        failures = []
+        if returncode != 0:
+            failures.append(f"orange_client exited {returncode}")
+        if receipts_status != "finalized":
+            failures.append(f"citrus_receipts status={receipts_status!r}")
+        if run_entry.get("pass_fail") != "pass":
+            failures.append(f"run pass_fail={run_entry.get('pass_fail')!r} reason={run_entry.get('reason')!r}")
+        return self.summary(
+            "fail" if failures else "pass",
+            error="; ".join(failures),
+            final_orange_status=final_orange_status,
+            final_citrus_status=final_citrus_status,
+        )
+
+    def wait_for_process_exit(self, label: str, timeout_seconds: float, *, required: bool = True) -> int | None:
+        step = self.step(f"wait_{label}_process_exit")
+        process = self.processes.get(label)
+        if process is None:
+            step.finish(ok=not required, reason="not_launched")
+            if required:
+                raise OrchestratorError(f"{label} process was not launched by this orchestrator")
+            return None
+        try:
+            returncode = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            step.finish(ok=not required, timeout_seconds=timeout_seconds, still_running=True)
+            if required:
+                raise OrchestratorError(f"{label} process did not exit within {timeout_seconds}s")
+            return None
+        self.refresh_started_processes()
+        step.finish(ok=True, returncode=returncode)
+        return returncode
 
     def run_validations(
         self,
@@ -2889,6 +3186,10 @@ class Orchestrator:
         if not self.args.copy_artifacts_to_recording:
             artifacts["reason"] = "disabled"
             return
+        if self.args.orange_mode == "headless":
+            artifacts["copy_to_recording_enabled"] = False
+            artifacts["reason"] = "headless_recording_sealed_by_orange_client"
+            return
 
         recording_folder = str(artifacts["recording_folder"] or "")
         if not recording_folder:
@@ -3068,6 +3369,8 @@ class Orchestrator:
                 "daily_registration_mode": self.args.daily_registration_mode,
                 "daily_registration_mode_response": self.citrus_daily_registration_mode_response,
             },
+            "orange_mode": self.args.orange_mode,
+            "headless": self.headless_result if self.args.orange_mode == "headless" else None,
             "validations": self.validation_results,
             "started_processes": self.started_processes,
             "steps": [step.__dict__ for step in self.steps],
@@ -3195,6 +3498,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "lifecycle events for this operation."
         ),
     )
+    parser.add_argument(
+        "--orange-mode",
+        choices=("gui", "headless"),
+        default="gui",
+        help=(
+            "gui: the Orange GUI is started and stopped over its socket. headless: Citrus is "
+            "launched first, --orange-command runs orange_client (fixed.local_control with "
+            "stop_on_citrus_completion), and this orchestrator only sends Citrus start_experiment."
+        ),
+    )
+    parser.add_argument(
+        "--citrus-start-gate",
+        choices=("wait_for_control", "ready_only"),
+        default="wait_for_control",
+        help=(
+            "Headless only. wait_for_control: Citrus must report automation.autorun "
+            "start_mode=wait_for_control and waiting_for_start (CITRUS_GUI_AUTORUN_START). "
+            "ready_only: a Citrus whose protocol and arenas were set in its GUI."
+        ),
+    )
+    parser.add_argument("--orange-ready-timeout-seconds", type=positive_float, default=300.0,
+                        help="Headless: time for orange_client to open, bind and start recording.")
+    parser.add_argument("--orange-exit-timeout-seconds", type=positive_float, default=1800.0,
+                        help="Headless: time after Citrus's terminal state for orange_client to finalize, "
+                             "receive Citrus's receipts and exit.")
+    parser.add_argument("--citrus-exit-timeout-seconds", type=positive_float, default=180.0,
+                        help="Headless: time for a launched Citrus to exit on its own after orange_client exits "
+                             "(CITRUS_GUI_AUTORUN_EXIT_AFTER_COMPLETE) before it is terminated.")
     parser.add_argument("--no-stop-orange-on-failure", dest="stop_orange_on_failure", action="store_false")
     parser.set_defaults(stop_orange_on_failure=True)
     parser.add_argument(
@@ -3224,6 +3555,8 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         "operation_id": args.operation_id,
         "mode": "dry_run",
         "execute_required": True,
+        "orange_mode": args.orange_mode,
+        "citrus_start_gate": args.citrus_start_gate if args.orange_mode == "headless" else None,
         "orange": {
             "socket": args.orange_socket,
             "log_path": args.orange_log,
@@ -3317,14 +3650,27 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
     except Exception as exc:
-        failure_stop_response = orchestrator.best_effort_stop_after_failure()
-        cleanup_labels = {"citrus"}
-        if (
-            not orchestrator.orange_recording_started
-            or orange_recording_finalized(orchestrator.last_orange_status)
-        ):
-            cleanup_labels.add("orange")
-        orchestrator.cleanup_started_processes(labels=cleanup_labels)
+        if args.orange_mode == "headless":
+            # Before the start: end both (orange_client finalizes on SIGTERM; give
+            # it time, a SIGKILL leaves the cameras refusing to open). After the
+            # start: leave both running so Citrus completes and orange_client
+            # stops, finalizes and waits for the receipts on its own.
+            failure_stop_response = None
+            if not orchestrator.citrus_start_sent:
+                orchestrator.cleanup_started_processes(
+                    labels={"orange"},
+                    terminate_timeout_seconds=args.orange_ready_timeout_seconds,
+                )
+                orchestrator.cleanup_started_processes(labels={"citrus"})
+        else:
+            failure_stop_response = orchestrator.best_effort_stop_after_failure()
+            cleanup_labels = {"citrus"}
+            if (
+                not orchestrator.orange_recording_started
+                or orange_recording_finalized(orchestrator.last_orange_status)
+            ):
+                cleanup_labels.add("orange")
+            orchestrator.cleanup_started_processes(labels=cleanup_labels)
         orchestrator.cleanup_launched_socket_files()
         summary = orchestrator.summary(
             "fail",
