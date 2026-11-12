@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.rig_config.v2",
+  "title": "Orange recording rig documents pin (version 2)",
+  "description": "recording_snapshot_start.json session.rig_config: the pancakebatter rig documents in effect at record start (rig.yml and the append-only events ledger, pinned by sha256 with the install commit from the .source sidecar), the ledger's open conditions sealed in full and its attestations, each with pancakebatter's own verdict on whether it is still current (copied from the sidecar, never recomputed). v2 replaces v1's attestation_revision_matches with current_per_pancakebatter. Resolution: $PANCAKEBATTER_RIG_CONFIG, else /etc/pancakebatter/rigs/<recording_rig_id>.yml; no default. Never blocks a start. Written by BuildRigConfigPin (src/rig_config_pin.cpp); closed on the fields Orange writes. Condition entries are ledger events copied as the ledger has them (pancakebatter schemas/rig_events.v1.schema.json owns their fields), so they stay open.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "captured_at_utc",
+    "status",
+    "resolution",
+    "rig_id",
+    "rig_geometry_revision",
+    "rig_file",
+    "events_file",
+    "source_sidecar",
+    "active_conditions",
+    "attestations",
+    "warnings"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.rig_config"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "captured_at_utc": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pinned",
+        "rig_id_unknown",
+        "not_installed",
+        "unreadable",
+        "invalid",
+        "rig_id_mismatch",
+        "events_missing",
+        "sidecar_mismatch"
+      ],
+      "description": "pinned: rig file and events ledger read and parsed, the .source sidecar (when present) agrees. rig_id_unknown: no $PANCAKEBATTER_RIG_CONFIG and no Citrus rig id for the recording. not_installed: the resolved rig file does not exist (this host does not drive that rig). unreadable: the rig file or the ledger exists but cannot be read. invalid: the rig file or the ledger is not valid YAML, or lacks rig_id / integer rig_geometry_revision / an events list for this rig. rig_id_mismatch: the rig file's rig_id differs from the recording's Citrus rig id. events_missing: the rig file is pinned but its ledger does not exist. sidecar_mismatch: a pinned file's sha256 differs from the one the .source sidecar records."
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "environment_variable",
+        "recording_rig_id"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "environment",
+            "installed",
+            null
+          ],
+          "description": "environment: $PANCAKEBATTER_RIG_CONFIG named the rig file (an override); installed: /etc/pancakebatter/rigs/<recording_rig_id>.yml; null: nothing to resolve."
+        },
+        "environment_variable": {
+          "const": "PANCAKEBATTER_RIG_CONFIG"
+        },
+        "recording_rig_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The recording's Citrus rig id (recording geometry contract selection.rig_id), the id the installed path was resolved for."
+        }
+      }
+    },
+    "rig_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rig_geometry_revision": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "rig_file": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256",
+            "size_bytes"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "events_file": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "status",
+            "sha256",
+            "size_bytes"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "pinned",
+                "missing",
+                "unreadable",
+                "invalid"
+              ]
+            },
+            "sha256": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              ]
+            },
+            "size_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "source_sidecar": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "status",
+            "commit",
+            "installed",
+            "source",
+            "events_source",
+            "rig_sha256_matches",
+            "events_sha256_matches",
+            "orientation_sha256",
+            "current_attestations"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "read",
+                "missing",
+                "unreadable"
+              ]
+            },
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "installed": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "events_source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rig_sha256_matches": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "events_sha256_matches": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "orientation_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "rigconfig.orientation_digest of the installed rig.yml, as install_host_config.sh recorded it; null when the sidecar has no such line."
+            },
+            "current_attestations": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "description": "pancakebatter's verdict at install, from the sidecar's current_attestations.<field> lines (rig_events.current_attestations per attestable field): field -> event ids of the attestations still current for the installed rig.yml. An empty list = none current for that field; null when the sidecar has no such line."
+            }
+          }
+        }
+      ]
+    },
+    "active_conditions": {
+      "type": "array",
+      "description": "condition_observed events with corrections applied and no later condition_cleared (rig_events.active_conditions), in full.",
+      "items": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "kind",
+          "condition_id"
+        ],
+        "properties": {
+          "kind": {
+            "const": "condition_observed"
+          }
+        }
+      }
+    },
+    "attestations": {
+      "type": "array",
+      "description": "attested events no correction voided, corrections applied, each with pancakebatter's verdict on whether it is still current.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "fields",
+          "rig_geometry_revision",
+          "orientation_sha256",
+          "scene_id",
+          "current_per_pancakebatter"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "fields": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "rig_geometry_revision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "orientation_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scene_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_per_pancakebatter": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "pancakebatter's verdict copied from the sidecar (source_sidecar.current_attestations): true when it lists this event under any of the event's fields (its orientation_sha256 equals the installed rig.yml's orientation digest), false when every one of the event's fields has a verdict and none lists it. null when a field has no verdict line, or the sidecar's sha256 or events_sha256 does not match the pinned files."
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -512,8 +512,9 @@ space.
 ### Rig documents (`session.rig_config`)
 
 `recording_snapshot_start.json` `session.rig_config` (schema
-`orange.recording.rig_config` v1,
-`docs/schemas/orange_recording_rig_config_v1.schema.json`, closed) pins the
+`orange.recording.rig_config` v2,
+`docs/schemas/orange_recording_rig_config_v2.schema.json`, closed; v1 until
+2026-11-12) pins the
 pancakebatter rig documents in effect when the recording started, so a
 recording says which rig description and which open part conditions it was
 made under (for example the shelf scratches at arenas 2 and 3 on omnifin0).
@@ -529,18 +530,27 @@ headless client just before the start snapshot is sealed.
   missing file is `not_installed`. `resolution` names the source used and the
   rig id resolved for, so an override shows in the record.
 - **Pins.** Path, sha256 and size of both files, `rig_id`,
-  `rig_geometry_revision`, and from the sidecar the commit, install time and
-  whether each sha256 still equals the installed one.
+  `rig_geometry_revision`, and from the sidecar the commit, install time,
+  whether each sha256 still equals the installed one, the installed rig's
+  `orientation_sha256` and pancakebatter's verdict `current_attestations`
+  (field -> event ids, from the sidecar's `current_attestations.<field>`
+  lines; null when an older sidecar has none).
 - **Conditions.** Every `condition_observed` event with corrections applied
   and no later `condition_cleared`, copied in full as the ledger has it (a
   port of `rig_events.active_conditions`, tested against `rig_events.py`
   results in `tools/fixtures/rig_config`).
 - **Attestations.** Every `attested` event no correction voided (event id,
   fields, revision, orientation sha256, scene id) with
-  `attestation_revision_matches` (its revision equals the pinned rig file's).
-  Whether an attestation is still current is decided offline from the pinned
-  bytes (`rig_events.current_attestations`); Orange does not recompute the
-  orientation digest.
+  `current_per_pancakebatter`: pancakebatter's own verdict
+  (`rig_events.current_attestations`: the attestation's orientation sha256
+  equals the installed rig.yml's orientation digest), copied from the
+  sidecar, never recomputed. `true` when the verdict lists the event under any
+  of its fields, `false` when every one of its fields has a verdict line and
+  none lists it, `null` when a field has no line or the sidecar's sha256 or
+  events_sha256 does not match the pinned files. A rig revision bump for
+  picture-only settings (brightness, colour) keeps an attestation current. v1
+  carried `attestation_revision_matches` (revision equality) instead, which
+  read false after every such bump.
 - **Status** (closed): `pinned`, `rig_id_unknown`, `not_installed`,
   `unreadable`, `invalid`, `rig_id_mismatch`, `events_missing`,
   `sidecar_mismatch` (meanings in the schema). Anything but `pinned` logs a

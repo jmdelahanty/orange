@@ -192,6 +192,38 @@ json read_sidecar(const fs::path& path)
     return {{"path", path.string()}, {"status", "read"}, {"fields", fields}};
 }
 
+// "e3,e7" -> ["e3","e7"]; an empty value is an empty list (no attestation current).
+json sidecar_event_id_list(const std::string& value)
+{
+    json ids = json::array();
+    std::istringstream items(value);
+    std::string item;
+    while (std::getline(items, item, ',')) {
+        const auto first = item.find_first_not_of(" \t");
+        const auto last = item.find_last_not_of(" \t");
+        if (first != std::string::npos) ids.push_back(item.substr(first, last - first + 1));
+    }
+    return ids;
+}
+
+// true when pancakebatter lists the event under any of its fields, false when every one of its
+// fields has a verdict line and none lists it, null otherwise.
+json attestation_current(const json& verdict, const json& attestation)
+{
+    const json fields = attestation.value("fields", json());
+    if (!fields.is_array() || fields.empty()) return nullptr;
+    bool all_judged = true;
+    for (const json& field : fields) {
+        const json ids = field.is_string() ? verdict.value(field.get<std::string>(), json()) : json();
+        if (!ids.is_array()) {
+            all_judged = false;
+            continue;
+        }
+        if (std::find(ids.begin(), ids.end(), attestation["event_id"]) != ids.end()) return true;
+    }
+    return all_judged ? json(false) : json();
+}
+
 fs::path events_path_for(const fs::path& rig_file)
 {
     // Repository layout rigs/<rig_id>/rig.yml + events.yml; installed layout <rig_id>.yml + <rig_id>.events.yml.
@@ -369,12 +401,21 @@ json BuildRigConfigPin(const std::string& recording_rig_id,
     json sidecar_out = {{"path", sidecar.value("path", "")}, {"status", sidecar.value("status", "missing")},
                         {"commit", nullptr}, {"installed", nullptr}, {"source", nullptr},
                         {"events_source", nullptr}, {"rig_sha256_matches", nullptr},
-                        {"events_sha256_matches", nullptr}};
+                        {"events_sha256_matches", nullptr}, {"orientation_sha256", nullptr},
+                        {"current_attestations", nullptr}};
     bool sidecar_mismatch = false;
     if (sidecar.value("status", "") == "read") {
         const json fields = sidecar.value("fields", json::object());
-        for (const char* key : {"commit", "installed", "source", "events_source"}) {
+        for (const char* key : {"commit", "installed", "source", "events_source", "orientation_sha256"}) {
             if (fields.contains(key)) sidecar_out[key] = fields[key];
+        }
+        // One "current_attestations.<field>: e3,e7" line per attestable field.
+        const std::string prefix = kSidecarCurrentAttestationsPrefix;
+        for (const auto& [key, value] : fields.items()) {
+            if (key.size() <= prefix.size() || key.compare(0, prefix.size(), prefix) != 0) continue;
+            if (!sidecar_out["current_attestations"].is_object()) sidecar_out["current_attestations"] = json::object();
+            sidecar_out["current_attestations"][key.substr(prefix.size())] =
+                sidecar_event_id_list(value.get<std::string>());
         }
         if (fields.contains("sha256")) {
             sidecar_out["rig_sha256_matches"] = fields["sha256"] == pin["rig_file"]["sha256"];
@@ -392,12 +433,15 @@ json BuildRigConfigPin(const std::string& recording_rig_id,
     if (events_problem == nullptr) {
         const json& events = events_doc["events"];
         pin["active_conditions"] = RigEventsActiveConditions(events);
+        // pancakebatter's own verdict (rig_events.current_attestations, written into the sidecar at
+        // install), copied only when the sidecar is bound to exactly the bytes pinned here.
+        const json& verdict = sidecar_out["current_attestations"];
+        const bool verdict_bound = verdict.is_object() && sidecar_out["rig_sha256_matches"] == true &&
+                                   sidecar_out["events_sha256_matches"] == true;
         json attestations = RigEventsAttestations(events);
         for (json& attestation : attestations) {
-            attestation["attestation_revision_matches"] =
-                attestation["rig_geometry_revision"].is_number_integer()
-                    ? json(attestation["rig_geometry_revision"] == pin["rig_geometry_revision"])
-                    : json();
+            attestation["current_per_pancakebatter"] =
+                verdict_bound ? attestation_current(verdict, attestation) : json();
         }
         pin["attestations"] = attestations;
     }

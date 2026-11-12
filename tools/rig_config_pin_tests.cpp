@@ -106,7 +106,7 @@ void test_statuses(const fs::path& fixtures)
         bool known = false;
         for (const char* allowed : kRigConfigStatuses) known = known || status == allowed;
         require(known, "status " + status + " is in the closed list");
-        require(pin.at("schema_id") == kRigConfigPinSchemaId && pin.at("schema_version") == 1, "schema identity");
+        require(pin.at("schema_id") == kRigConfigPinSchemaId && pin.at("schema_version") == kRigConfigPinSchemaVersion, "schema identity");
         seen.insert(status);
     };
 
@@ -129,9 +129,48 @@ void test_statuses(const fs::path& fixtures)
             "c1 sealed in full");
     require(pin.at("active_conditions")[0].at("locations").is_string(), "condition kept in full (locations)");
     require(pin.at("attestations").size() == 1 && pin.at("attestations")[0].at("event_id") == "e3" &&
-                pin.at("attestations")[0].at("attestation_revision_matches") == true,
-            "e3 sealed; its revision matches the installed rig");
+                pin.at("attestations")[0].at("current_per_pancakebatter").is_null(),
+            "e3 sealed; a sidecar without pancakebatter's verdict leaves current_per_pancakebatter null");
+    require(pin.at("source_sidecar").at("current_attestations").is_null() &&
+                pin.at("source_sidecar").at("orientation_sha256").is_null(),
+            "no verdict lines in the sidecar");
     require(pin.at("warnings").empty(), "no warnings when pinned");
+
+    // pancakebatter's verdict in the sidecar is copied, never recomputed.
+    const std::string sidecar = read_text(dir / "omnifin0.yml.source");
+    const std::string digest = pin.at("attestations")[0].at("orientation_sha256").get<std::string>();
+    write_text(dir / "omnifin0.yml.source",
+               sidecar + "orientation_sha256: " + digest + "\ncurrent_attestations.room_orientation: e3\n");
+    pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
+    check_closed(pin);
+    require(pin.at("status") == "pinned" && pin.at("attestations")[0].at("current_per_pancakebatter") == true,
+            "e3 listed by pancakebatter is current: " + pin.dump());
+    require(pin.at("source_sidecar").at("current_attestations") == json({{"room_orientation", {"e3"}}}) &&
+                pin.at("source_sidecar").at("orientation_sha256") == digest,
+            "verdict lines copied into source_sidecar");
+    write_text(dir / "omnifin0.yml.source", sidecar + "current_attestations.room_orientation: e1, e3 ,e9\n");
+    pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
+    require(pin.at("source_sidecar").at("current_attestations").at("room_orientation") == json::array({"e1", "e3", "e9"}) &&
+                pin.at("attestations")[0].at("current_per_pancakebatter") == true,
+            "comma list with spaces");
+    write_text(dir / "omnifin0.yml.source", sidecar + "current_attestations.room_orientation:\n");
+    pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
+    require(pin.at("source_sidecar").at("current_attestations").at("room_orientation") == json::array() &&
+                pin.at("attestations")[0].at("current_per_pancakebatter") == false,
+            "an empty verdict means no attestation is current");
+    write_text(dir / "omnifin0.yml.source", sidecar + "current_attestations.other_field: e3\n");
+    pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
+    require(pin.at("attestations")[0].at("current_per_pancakebatter").is_null(),
+            "no verdict line for the event's own field: unknown, not false");
+    // A verdict not bound to the pinned bytes is not copied.
+    write_text(dir / "omnifin0.yml.source", sidecar + "current_attestations.room_orientation: e3\n");
+    write_text(dir / "omnifin0.events.yml", read_text(dir / "omnifin0.events.yml") + "\n# edited\n");
+    pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
+    require(pin.at("status") == "sidecar_mismatch" &&
+                pin.at("attestations")[0].at("current_per_pancakebatter").is_null(),
+            "verdict ignored when the ledger changed after install");
+    dir = copy_installed(fixtures, tmp);
+    pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
 
     // Environment override wins and is named.
     pin = BuildRigConfigPin("", (dir / "omnifin0.yml").string(), "/nonexistent", t);

@@ -6118,10 +6118,11 @@
   "json_keys": [
    "active_conditions",
    "at",
-   "attestation_revision_matches",
    "attestations",
    "captured_at_utc",
    "commit",
+   "current_attestations",
+   "current_per_pancakebatter",
    "environment_variable",
    "event_id",
    "events_file",
@@ -6150,7 +6151,7 @@
   "schemas": [
    [
     "orange.recording.rig_config",
-    "1"
+    "2"
    ]
   ]
  },
