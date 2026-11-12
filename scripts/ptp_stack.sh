@@ -150,6 +150,8 @@ capture_management_evidence() {
     echo "WARNING: Cannot capture PTP management evidence: socket ${PTP_SOCKET} is absent" >&2
     return 1
   fi
+  # /tmp/ptp-stack does not survive a reboot.
+  mkdir -p "${PTP_LOG_DIR}"
   set +e
   pmc_output="$(sudo -n timeout 3s pmc -u -b 0 -s "${PTP_SOCKET}" \
     "GET TIME_PROPERTIES_DATA_SET" \
