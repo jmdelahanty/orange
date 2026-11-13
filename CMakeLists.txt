@@ -667,6 +667,17 @@ target_link_libraries(orange_daily_registered_context INTERFACE orange_recording
 add_executable(verify_crop_only_recording "tools/verify_crop_only_recording.cpp")
 target_link_libraries(verify_crop_only_recording PRIVATE orange_recording_master_journal)
 
+# Offline physical-target scale fit (the GUI's projected-surface analysis + Citrus refit) on saved
+# calibration images. Build with `make physical_target_fit_cli`.
+add_executable(physical_target_fit_cli EXCLUDE_FROM_ALL
+    "tools/physical_target_fit_cli.cpp"
+    "${SRC_DIR}/gui/projected_surface_scale_analysis.cpp"
+)
+target_include_directories(physical_target_fit_cli PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+target_compile_features(physical_target_fit_cli PRIVATE cxx_std_17)
+target_compile_definitions(physical_target_fit_cli PRIVATE ORANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(physical_target_fit_cli PRIVATE ${OpenCV_LIBS})
+
 add_executable(orange ${ORANGE_SOURCES})
 target_link_libraries(orange PRIVATE orange_daily_registered_context orange_rig_config_pin)
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
@@ -791,6 +802,7 @@ if(BUILD_TESTING)
     add_test(NAME crop_only_evidence_cli_tests COMMAND recording_crop_only_manifest_tests --verify-tool $<TARGET_FILE:verify_crop_only_recording>)
     set_tests_properties(crop_only_evidence_cli_tests PROPERTIES TIMEOUT 60)
     add_test(NAME crop_only_runner_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/crop_only_runner_tests.py")
+    add_test(NAME commissioning_record_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/commissioning_record_tests.py")
     add_executable(generated_outputs_tests "tools/generated_outputs_tests.cpp")
     target_include_directories(generated_outputs_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     add_test(NAME generated_outputs_tests COMMAND generated_outputs_tests
