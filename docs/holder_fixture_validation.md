@@ -1,5 +1,9 @@
 # Holder-Installed Fixture Validation
 
+> Before any recommissioning run: image-levels check off and IR illuminators
+> unplugged; see "Before a recommissioning session" in
+> `docs/dry_shelf_center_first_commissioning_2026-09-14.md`.
+
 This commissioning checkpoint records the installed, flattened diffusive gels
 that are the real projection surface during experiments. It preserves the
 holder-removed rectangular homography as broad commissioning reference, fits a

@@ -13,6 +13,30 @@ levels qualified, despite strong visible dots. The unarmed standard centering
 run failed at baseline rectangle detection on camera 2010094 and changed no
 centers or homographies.
 
+## Before a recommissioning session (rule, 2026-11-12)
+
+Do both before the first calibration run and undo both after the last one
+(finalize and the Orange post-checks):
+
+1. **Image-levels check off.** Set `"image_levels_check": {"enabled": false}`
+   in the app config (`~/orange_data/config/app/default.json`; back the file
+   up first and restore it afterwards). The check grabs one frame per camera
+   about 8 s after stream start through the same spatial snapshot workers as
+   the calibration grouped captures, and re-homes every iris when the dark
+   calibration scene reads out of band. On 2026-11-12 it took both snapshot
+   groups of the bootstrap centering run, which then timed out waiting for its
+   capture (`timed out waiting for arena-centering capture`), and the iris
+   re-home changes the image mid-calibration anyway. Until the calibration
+   autoruns skip the check themselves, it must be off.
+2. **IR illuminators off.** Unplug them (PDU outlets 7 and 8) for the whole
+   session. The calibration preflight sets Cam2010096's GPO_0 manual inactive,
+   but its restore at the end of a run puts GPO_0 back to `Exposure` before the
+   stream stops, so the last frames fire the strobe for a full calibration
+   exposure (100 ms at 5 fps, 50 % duty, above the 8 % limit; seen as a
+   saturated Cam2010096 frame on 2026-11-12). Planned: switch the outlets
+   off and back on through the PDU as part of the session, and fix the restore
+   order (stop the stream, then restore GPO_0).
+
 ## Ordered authority
 
 1. **Physical field of view:** the operator fixes the cameras and verifies the

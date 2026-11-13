@@ -1,5 +1,9 @@
 # Projected-Surface Physical Scale Commissioning
 
+> Before any recommissioning run: image-levels check off and IR illuminators
+> unplugged; see "Before a recommissioning session" in
+> `docs/dry_shelf_center_first_commissioning_2026-09-14.md`.
+
 Status: implemented first guided workflow slice.
 
 ## Purpose

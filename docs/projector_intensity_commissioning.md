@@ -1,5 +1,9 @@
 # Projector Intensity Commissioning
 
+> Before any recommissioning run: image-levels check off and IR illuminators
+> unplugged; see "Before a recommissioning session" in
+> `docs/dry_shelf_center_first_commissioning_2026-09-14.md`.
+
 This utility selects an auditable projector command intensity for geometric
 calibration patterns. It is a commissioning diagnostic, not a homography
 candidate writer or active-calibration promoter.
