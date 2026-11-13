@@ -24,6 +24,13 @@ def fail(message: str) -> None:
     raise ValueError(message)
 
 
+PIXEL_CENTER_CONVENTION_V2 = {
+    "coordinate_model": "continuous_pixel_indices_at_pixel_centers",
+    "first_pixel_center": [0.0, 0.0],
+    "pixel_edge_coordinates_from_indices_offset_px": [0.5, 0.5],
+}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("result", type=Path)
@@ -343,6 +350,9 @@ def main() -> int:
                 "positive_y": "down",
                 "units": "px",
             }
+            # citrus.homography.coordinate_contract v2 adds the pixel-center convention to both spaces.
+            if coordinate.get("schema_version") == 2:
+                expected_axes = {**expected_axes, **PIXEL_CENTER_CONVENTION_V2}
             if source != {
                 "space": "camera_native_px",
                 "raster_role": "camera_sensor_raster",
