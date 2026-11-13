@@ -97,92 +97,88 @@ measurement.
 7. Finalize the Citrus commissioning release; `orange_session_dirs` must list
    the reference session.
 
-## 5. Wet fish-plane scale
+## 5. Fish-plane scale (disk on the dish floor, dish dry)
 
 ### Principle
 
 Measure the same physical target at two known heights in every camera:
 
-- dry: disk on the gel (done in step 6 above), target occupies z 0 to 3;
-- wet: disk on the dish floor under water, target occupies `P_floor` to
-  `P_floor` + 3.
+- on the gel (done in step 6 above): target occupies z 0 to 3;
+- on the dish floor: target occupies `P_floor` to `P_floor` + 3.
 
 The target is `acrylic_hole_target_78mm_pitch5_margin3_v002` (3 mm acrylic,
 77 mm measured outside diameter, 5 mm hole pitch, markers `C`, `XPLUS`,
 `ASYM`), lit from below through its holes by a uniform-gray projection. The
 fit does not say which depth inside the 3 mm disk the hole centres represent.
-That offset is the same in both captures, so the dry-to-wet shift is exactly
-`P_floor` in every camera, and the disk's mid-plane on the dish floor
+That offset is the same in both captures, so the shift between them is
+exactly `P_floor` in every camera, and the disk's mid-plane on the dish floor
 (`P_floor` + 1.5) coincides with a mid-column fish.
+
+The dish stays dry (decided 2026-11-13). The winglets set the floor height
+wet or dry, and the cameras look down, so water under the dish does not
+change what they see of the target. Water over a fish raises its apparent
+height by about a quarter of the water above it (about 0.4 mm for a fish
+1.5 mm deep), about 0.1 % in scale; that is applied by calculation. Dry also
+avoids bubbles under the disk and a floating disk.
 
 ### Capture
 
-Physical state: holder, gels, dishes installed; one disk flat on the floor of
-each dish, markers visible; water about 4 mm deep (covers the disk); no air
-bubbles under the disk; water settled. Record which dish type is in each
-arena and the water depth.
+Physical state: holder, gels and dishes installed, dishes empty and dry, one
+disk flat on the floor of each dish, markers visible. Record which dish type
+is in each arena.
 
-Use the dry scale capture's settings so the two heights are compared like for
-like (gray 76, 100 ms, 5 fps). Purpose `validation_pattern`, so nothing is
-fitted, loaded or promoted in Citrus:
-
-```bash
-# dry preview (prints the plan, touches nothing)
-scripts/run_gui_guided_capture_smoke.sh --profile wet_tank_projected_surface \
-  --recipe-sequence black_reference,uniform_gray --purpose validation_pattern \
-  --foreground-gray-u8 76 --calibration-exposure-us 100000 --frame-count 10 --save
-# then the same with --execute
-```
-
-Labelling limit (2026-11-13): this saves the images as wet projection-surface
-validation captures (`projected_surface_wet_runtime_stack`). Orange's schema
-has the correct label, `camera_only_physical_target_calibration` at
-`camera_physical_dish_base_inner_surface` (plane
-`dish_base_inner_surface_physical`), but its GUI preset assumes NIR strobe
-light, R72 filter, projector off and a dry dish, and the launcher cannot
-select it. The physical truth (disk on dish floor, heights, water depth)
-therefore goes into the evidence record below, which points at the sessions
-by id and image checksum. Follow-up: a launcher option for the capture stage
-and a wet, projector-backlit physical-target preset.
+Settings as the gel capture so the two heights compare like for like
+(uniform gray under the target, 100 ms, 5 fps; the commissioned gray once the
+launcher uses it, see the plan). The capture waits for the launcher's
+physical-target option (`docs/commissioning_record_plan_2026-11-13.md`,
+change 2): it must save `camera_physical_dish_base_inner_surface`, plane
+`dish_base_inner_surface_physical`, with the projector-backlit preset and
+`P_floor` from the rig geometry record. Before that change the launcher can
+only label it a projection-surface capture, which would be wrong; captured
+metadata is never edited afterwards.
 
 ### Fit and result
 
-Offline, with the code that produced the dry scale
+With the code that produced the gel scale
 (`orange::gui::projected_surface_scale::analyze`, same target definition, same
 quality thresholds: >= 80 matched points, fit RMS <= 0.15 mm, holdout RMS
 <= 0.25 mm, `C`-`XPLUS` 25 mm within 0.30 mm, anisotropy <= 3 %, outside
 diameter within 1.5 mm), no canvas homography. Per camera this gives
-`s_wet` (camera px/mm) beside the dry `s_dry`. Pinhole model: `1/s` is
-linear in height, so
+`s_floor` (camera px/mm) beside the gel value `s_gel`. Pinhole model: `1/s`
+is linear in height, so
 
 ```
-k      = P_floor / (1/s_dry - 1/s_wet)              # per camera
-1/s(z) = 1/s_wet - (z - P_floor - e) / k            # e = effective depth inside the disk, 0..3
-s_fish = s(P_fish)                                  # e = 1.5 -> s_fish ~= s_wet
+k      = P_floor / (1/s_gel - 1/s_floor)            # per camera
+1/s(z) = 1/s_floor - (z - P_floor - e) / k          # e = effective depth inside the disk, 0..3
+s_fish = s(P_fish + apparent-height shift of the water over the fish)
 ```
 
+With `e` = 1.5, `s_fish` is about `s_floor` plus the 0.1 % water term.
 Uncertainty: `e` (0 to 3 mm) gives at most +/- 1.5 mm of height at the fish,
-about +/- 0.45 % in scale; `P_floor` (+/- 0.1 mm if the CAD holds, more if the
-winglet assumption is wrong) moves `k` proportionally, which shifts `s_fish` very little because `s_wet` is measured at
-the fish height. Refraction through about 1 mm of water over the disk shifts
-the apparent height by about 0.25 mm and is ignored.
+about +/- 0.45 % in scale; `P_floor` (+/- 0.1 mm if the CAD holds) moves `k`
+proportionally, which shifts `s_fish` very little because `s_floor` is
+measured almost at the fish height.
 
-Acceptance: every gate above passes in all four cameras, `s_wet > s_dry` in
-every camera, and the four `k` agree with each other within their
-uncertainty (the cameras are at nominally equal heights). Anything else stops
-for Jeremy. The fish-plane scale is not loaded into Citrus; it is an Orange
-commissioning product until the camera-only physical-target calibration is
-implemented.
+Acceptance: every gate passes in all four cameras, `s_floor > s_gel` in every
+camera, and the four `k` agree within their uncertainty (the cameras are at
+nominally equal heights). Anything else stops for Jeremy. The fish-plane
+scale is not loaded into Citrus; it is an Orange commissioning product until
+the camera-only physical-target calibration is implemented.
 
 ## 6. Brightness maps
 
 A brightness map is a commissioning artifact: per camera, the
-black-subtracted uniform-gray image inside the arena, at four gray levels
-(24 / 64 / 128 / 255 with exposures 100 / 9 / 2 / 0.4 ms), recipe sequence
-`black_reference,uniform_gray`, 10 frames:
+black-subtracted uniform-gray image inside the arena, at several gray levels,
+recipe sequence `black_reference,uniform_gray`, 10 frames. The dry map used
+24 / 64 / 128 / 255 at 100 / 9 / 2 / 0.4 ms. The wet map adds gray 30 at
+60 ms, the experiment's background code, because the dot experiments live at
+codes 0-30 where the projector's black floor is a large share of the signal
+and the "same shape at every gray" result must be checked there. The
+`black_reference` image of each pair is the code-0 map (projector black floor
+plus camera dark level):
 
 ```bash
-for pair in 24:100000 64:9000 128:2000 255:400; do g=${pair%%:*}; e=${pair##*:}
+for pair in 24:100000 30:60000 64:9000 128:2000 255:400; do g=${pair%%:*}; e=${pair##*:}
   scripts/run_gui_guided_capture_smoke.sh --profile <profile> \
     --recipe-sequence black_reference,uniform_gray --fixture-aperture-shape circle \
     --foreground-gray-u8 $g --calibration-exposure-us $e --frame-count 10 --save --execute
@@ -197,8 +193,9 @@ done
   Facing arena edges agree within about 4 % across cameras (ratios 1.04, 1.03,
   0.96), so the non-uniformity is the projector, not the cameras.
 - Wet (`wet_tank_projected_surface`, holder, gels, dishes and water at
-  recording fill, no disks): this is what the fish see. Compare with the dry map
-  per arena; the difference is the dish and water path.
+  recording fill, 3 mm, no disks, NIR filters off): this is what the fish see.
+  Compare with the dry map per arena; the difference is the dish and water
+  path. Its projection-surface labels are correct with the existing launcher.
 
 Analysis: block means (12 x 12 per camera) of `uniform - black` inside the lit
 area, normalized to the camera median; report median level, saturated
@@ -207,27 +204,57 @@ analysis scripts used on 2026-11-13 move into the repo with the brightness-map
 artifact type (follow-up), and the maps then travel with each recording
 through the commissioning release.
 
-## 7. Evidence record
+## 7. Stimulus dot contrast (wet)
 
-Every wet product gets a folder
-`~/orange_data/calibrations/commissioning/<product>_<UTC timestamp>/`
-(as the intensity reports do), holding `commissioning_report.json` with:
+What the cameras see of the experiment's dots through the full wet stack.
+Design from experiment-spec (orchard spec `omnifin0-dot-contrast-corners`,
+draft; the scene is Jeremy's to approve): background code 30 over each
+arena, canvas outside the arenas black; four stationary hard-edged dots per
+arena, 10 mm diameter, at the Citrus chaser presets top_left / top_right /
+bottom_left / bottom_right, about 21.6 mm from the dish centre; dot codes 0,
+20, 27 and a sham 30 (design Weber -0.87, -0.52, -0.18, 0), rotated over the
+corners as a Latin square; Brightness 50, 240 Hz.
 
-- the session ids and image sha256 values it was computed from;
-- the physical state: dish type per arena, water depth, the plane heights
-  with their sources (section 1) and the rig record commit;
-- the fit outputs per camera, the gates and their values, overlays;
-- the reviewer verdict (Claude or Jeremy) and the time.
+Sweep, in priority order: (a) the four codes at each corner in every arena
+(one Latin square, four static frames); (b) each dot alone against all four
+together at one corner (cross-talk, at least code 0); (c) a finer ladder at
+one corner per arena (0, 8, 16, 20, 24, 27, 28, 29, 32, 36, 40); (d) the
+background alone at 30 and at 0 (covered by the wet brightness map).
 
-Calibration sessions and the evidence folders are never edited after they
-are written.
+Measurement per dot: black-subtracted mean inside the dot, inset from the
+edge by a stated margin, and in an annulus of background around it; Weber
+contrast `(I_dot - I_bg) / I_bg` from the local annulus, not the arena mean.
+Exposure and gain fixed and stated; capture session ids recorded. The
+contrast is in the camera's spectral response, not the fish's.
 
-## 8. Open items
+Rendering: in the experiment the dots are a Citrus CHASER step (four passive
+chasers, no chase, no random movement, one rgba8 each). Whether the capture
+uses a short protocol run of that file (same renderer, edges and positions
+the fish see) or a static calibration scene is citrus-agent's answer; the
+capture needs an Orange launcher path that holds the scene for each grouped
+capture, and Jeremy's approval of the exact scene. Not available on
+2026-11-13.
+
+## 8. Evidence record
+
+Every commissioning session writes one record folder under
+`~/orange_data/calibrations/commissioning/`; layout and contents in
+`docs/commissioning_record_plan_2026-11-13.md` section 3. Until the launchers
+write it themselves, the agent running the session copies launcher logs,
+result JSON, review images and analysis outputs into it and writes a README
+and `SHA256SUMS` (2026-11-13 dry session:
+`recommission_20261113_omnifin0/`). Calibration sessions and closed records
+are never edited after they are written.
+
+## 9. Open items
 
 - `P_floor` depth-gauge measurement and the winglet underside relative to the
   floor top (no dish CAD exists); meaning of the 2.8 mm "tank rim"; dish names
   (Citrus vs Jeremy); fish eye height. Tracked in rig-designer's record.
-- Launcher capture-stage option and wet physical-target preset (section 5).
+- Launcher capture-stage option and projector-backlit physical-target preset
+  (section 5), the commissioning record writer, the physical-target fit CLI,
+  the brightness-map tool, the dot-contrast capture path: plan
+  `docs/commissioning_record_plan_2026-11-13.md`.
 - Brightness-map artifact type and its place in the commissioning release.
 - Citrus flat-field correction design (after the wet map).
 - Camera vignetting measurement (separates camera fall-off from projector).

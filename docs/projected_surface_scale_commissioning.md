@@ -69,8 +69,9 @@ homography, source observation, or candidate changed after fitting.
 
 The projected-surface scale is not automatically valid at the dish rim, water
 surface, or fish-observation plane. Those remain separate physical products.
-On omnifin0 the fish swim about 9.6 mm above the gel; the wet fish-plane
-scale procedure for that rig is `docs/omnifin0_calibration_procedure.md`.
+On omnifin0 the fish swim about 9.6 mm above the gel; the fish-plane
+scale procedure for that rig (target on the floor of a dry dish) is
+`docs/omnifin0_calibration_procedure.md`.
 
 ## Guided workflow
 
