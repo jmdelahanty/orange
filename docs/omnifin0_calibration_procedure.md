@@ -131,24 +131,39 @@ disk flat on the floor of each dish, markers visible. Record which dish type
 is in each arena.
 
 Settings as the gel capture so the two heights compare like for like
-(uniform gray under the target, 100 ms, 5 fps; the commissioned gray once the
-launcher uses it, see the plan). The capture waits for the launcher's
-physical-target option (`docs/commissioning_record_plan_2026-11-13.md`,
-change 2): it must save `camera_physical_dish_base_inner_surface`, plane
-`dish_base_inner_surface_physical`, with the projector-backlit preset and
-`P_floor` from the rig geometry record. Before that change the launcher can
-only label it a projection-surface capture, which would be wrong; captured
-metadata is never edited afterwards.
+(uniform gray under the target at the commissioned gray, 100 ms, 5 fps). The
+launcher saves it as `camera_physical_dish_base_inner_surface` (plane
+`dish_base_inner_surface_physical`, target plane `tank_bottom_inner_surface`)
+with the projector-backlit lighting and the height from the rig record:
+
+```bash
+scripts/run_gui_guided_capture_smoke.sh --profile holder_installed_projected_surface \
+  --recipe uniform_gray --save --targets-ready \
+  --physical-target-stage camera_physical_dish_base_inner_surface \
+  --physical-target-plane-z-mm 8.13 --physical-target-plane-z-uncertainty-mm 0.1 \
+  --physical-target-plane-z-source "phd-projects f6f1089 rigs/evidence/rig-odmz/20261113_omnifin0_imaging_stack.md" \
+  --record "$ORANGE_COMMISSIONING_RECORD" --execute
+```
+
+Use the measured `P_floor` and its rig-record commit once the depth gauge
+reading exists. Captured metadata is never edited afterwards.
 
 ### Fit and result
 
-With the code that produced the gel scale
-(`orange::gui::projected_surface_scale::analyze`, same target definition, same
-quality thresholds: >= 80 matched points, fit RMS <= 0.15 mm, holdout RMS
-<= 0.25 mm, `C`-`XPLUS` 25 mm within 0.30 mm, anisotropy <= 3 %, outside
-diameter within 1.5 mm), no canvas homography. Per camera this gives
-`s_floor` (camera px/mm) beside the gel value `s_gel`. Pinhole model: `1/s`
-is linear in height, so
+`targets/release/physical_target_fit_cli --session-dir <session> --camera
+<serial> --out <dir>` (build with `make physical_target_fit_cli`), once per
+camera for the gel session and the dish-floor session. It runs the code that
+produced the gel scale: Orange's `projected_surface_scale::analyze` (same
+target definition and gates: >= 80 matched points, fit RMS <= 0.15 mm,
+holdout RMS <= 0.25 mm, `C`-`XPLUS` 25 mm within 0.30 mm, anisotropy <= 3 %,
+outside diameter within 1.5 mm) and then Citrus's refit of those
+correspondences (RANSAC homography, scale at the origin), which is the
+accepted value: on the 2026-11-13 gel capture it reproduces the four accepted
+scales exactly, while `analyze` alone differs by 0.02-0.03 px/mm. No canvas
+homography. `scripts/fish_plane_scale.py --pair SERIAL,GEL_REPORT,FLOOR_REPORT
+... --p-floor-mm 8.13 --p-floor-unc-mm 0.1 --p-floor-source "..."` combines
+them. Per camera this gives `s_floor` (camera px/mm) beside the gel value
+`s_gel`. Pinhole model: `1/s` is linear in height, so
 
 ```
 k      = P_floor / (1/s_gel - 1/s_floor)            # per camera
@@ -193,19 +208,24 @@ done
   `T00_38_10Z`, `T00_38_56Z`. Within-arena max/min 2.0-2.3x, the same shape at
   all four grays (within 2-7 %), hot spot near the top centre of the projected
   image, arenas 2 and 3 about 25 % brighter than 1 and 4, gamma about 2.2.
-  Facing arena edges agree within about 4 % across cameras (ratios 1.04, 1.03,
-  0.96), so the non-uniformity is the projector, not the cameras.
+  Facing arena edges agree within about 6 % across cameras
+  (`scripts/brightness_map.py`: 1.06 / 0.99 / 0.95 for pairs 1|2, 2|3, 3|4,
+  3-8 mm strips; up to ~5 % more with the strip position; the hand numbers that
+  night were 1.04 / 1.03 / 0.96), so the non-uniformity is mostly the
+  projector, not the cameras.
 - Wet (`wet_tank_projected_surface`, holder, gels, dishes and water at
   recording fill, 3 mm, no disks, NIR filters off): this is what the fish see.
   Compare with the dry map per arena; the difference is the dish and water
   path. Its projection-surface labels are correct with the existing launcher.
 
-Analysis: block means (12 x 12 per camera) of `uniform - black` inside the lit
-area, normalized to the camera median; report median level, saturated
-fraction, min, max, max/min and the shape difference against gray 255. The
-analysis scripts used on 2026-11-13 move into the repo with the brightness-map
-artifact type (follow-up), and the maps then travel with each recording
-through the commissioning release.
+Analysis: `scripts/brightness_map.py --session <id> ... --out <dir>` (juicebox
+Python): block means (12 x 12 per camera) of `uniform - black` inside the lit
+area, normalized to the camera median; median level, saturated fraction, min,
+max, max/min, the shape difference against the highest gray, each camera
+relative to the others, and the facing-edge ratios. Output
+`orange.commissioning.brightness_map` v1 plus PNGs; attach it to the record
+(`commissioning_record.py attach --role brightness_map`). Carrying the maps
+with each recording through the commissioning release is a follow-up.
 
 ## 7. Stimulus dot contrast (wet)
 
@@ -247,29 +267,53 @@ Black floor: the dots' contrast depends on the projector's black floor (code
 frame with the projector light blocked (card over the output, projector
 settings unchanged; same exposures and gain as the scene captures) separates
 it from the camera dark level: `code 0 - dark` is the black-floor map,
-`code 30 - dark` the background. Needs its own capture label
-(projector light blocked), see the plan.
+`code 30 - dark` the background. Capture with the operator's card over the
+projector output:
+
+```bash
+scripts/run_gui_guided_capture_smoke.sh --profile wet_tank_projected_surface \
+  --recipe-sequence black_reference --projector-light-blocked \
+  --calibration-exposure-us 60000 --frame-count 10 --save --record "$ORANGE_COMMISSIONING_RECORD" --execute
+```
+
+(and again at 100000 us), saved with image role
+`dark_frame_projector_light_blocked`.
 
 ## 8. Evidence record
 
 Every commissioning session writes one record folder under
-`~/orange_data/calibrations/commissioning/`; layout and contents in
-`docs/commissioning_record_plan_2026-11-13.md` section 3. Until the launchers
-write it themselves, the agent running the session copies launcher logs,
-result JSON, review images and analysis outputs into it and writes a README
-and `SHA256SUMS` (2026-11-13 dry session:
-`recommission_20261113_omnifin0/`). Calibration sessions and closed records
-are never edited after they are written.
+`~/orange_data/calibrations/commissioning/` with `scripts/commissioning_record.py`
+(layout in `docs/commissioning_record_plan_2026-11-13.md` section 3):
+
+```bash
+export ORANGE_COMMISSIONING_RECORD=$(scripts/commissioning_record.py open --rig omnifin0 \
+  --reason "wet commissioning" --operator jeremy --agent claude:<session> | jq -r .record_dir)
+scripts/commissioning_record.py declare ir_illuminators=unplugged nir_filters=off \
+  room_lights=off monitor=facing_away box=closed projector_brightness=50 \
+  image_levels_check=disabled water_fill_mm=3 dish_arena_1=<type> ... \
+  --source "Jeremy at the rig" --by jeremy
+# every launcher run appends a step (passed or failed) through the variable
+scripts/commissioning_record.py verdict --step N --reviewer claude --verdict accepted \
+  --note "<gates>" --evidence <overlays reviewed>
+scripts/commissioning_record.py attach --role brightness_map <brightness_map out>/*
+scripts/citrus_commissioning_finalize.py finalize --transaction-id <id> --accept   # when a release is due
+scripts/commissioning_record.py close [--release-manifest <commissioning.json>]
+scripts/commissioning_record.py verify --record <dir>
+```
+
+Declare every physical change as it happens; each step snapshots the declared
+state. The 2026-11-13 dry session predates the tool; its folder
+`recommission_20261113_omnifin0/` was assembled by hand. Calibration sessions
+and closed records are never edited after they are written.
 
 ## 9. Open items
 
 - `P_floor` depth-gauge measurement and the winglet underside relative to the
   floor top (no dish CAD exists); meaning of the 2.8 mm "tank rim"; dish names
   (Citrus vs Jeremy); fish eye height. Tracked in rig-designer's record.
-- Launcher capture-stage option and projector-backlit physical-target preset
-  (section 5), the commissioning record writer, the physical-target fit CLI,
-  the brightness-map tool, the dot-contrast capture path: plan
-  `docs/commissioning_record_plan_2026-11-13.md`.
+- The `static_dots` launcher recipe (Citrus PR open), PDU switching of the IR
+  outlets, the first rig run of the new launcher options: plan
+  `docs/commissioning_record_plan_2026-11-13.md` section 6.
 - Brightness-map artifact type and its place in the commissioning release.
 - Citrus flat-field correction design (after the wet map).
 - Camera vignetting measurement (separates camera fall-off from projector).

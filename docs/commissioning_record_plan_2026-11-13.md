@@ -135,3 +135,23 @@ A full recommissioning run by agents, with Jeremy doing only the physical
 steps, produces one closed record in which every accepted product can be
 traced to its sessions, gates, review images and physical state by sha256,
 and nothing needed for that trace lives in `/tmp` or a scratchpad.
+
+## 6. Status (2026-11-13 evening, dish branch, local, not pushed)
+
+Done (Jeremy's go for changes 1-4 and 7):
+
+| Change | Commit | Tested |
+|---|---|---|
+| 7 YOLO: calibration autoruns force detection, crops, pose and recording off; the log prints effective flags | 9ecacab | gui_autorun_tests |
+| 1 record writer, launcher wiring, commissioned gray for the scale step, finalize client | ea1ae36 | commissioning_record_tests (schema-validated), launcher trap functions, dry runs |
+| 3 physical-target fit CLI, fish-plane combination | 9c0ab4c | reproduces the four accepted gel scales exactly |
+| 4 brightness-map tool | bc9f555 | reproduces all 96 hand values; synthetic self-test |
+| 7 group capture with the panel collapsed; strobe restored after stream stop | b69945c | autorun tests; needs a rig run |
+| 2 + 6 physical-target labels, light-blocked dark frame | e11db6b | config tests, dry runs; needs a rig run |
+
+Not done: change 5 (`static_dots` launcher recipe; Citrus PR #112 open, not
+merged or installed), Citrus scale promote over local control
+(citrus-agent), PDU switching (needs Jeremy's OK for PDU control from
+Orange). None of the GUI changes has run on the rig yet: the first
+commissioning session with them is also their test, and its first step
+should be a short dry run of each new option.
