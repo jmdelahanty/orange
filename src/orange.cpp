@@ -5551,7 +5551,7 @@ int main(int /*argc*/, char ** /*args*/) {
     if (!app_model_warning.empty()) {
         std::cerr << "App model config warning: " << app_model_warning << std::endl;
     }
-    const GuiAutorunConfig gui_autorun_config = resolve_gui_autorun_config();
+    GuiAutorunConfig gui_autorun_config = resolve_gui_autorun_config();
     if (gui_autorun_config.enabled) {
         std::cout << "[GUI][autorun] enabled"
                   << " config_dir=" << gui_autorun_config.config_dir
@@ -5604,6 +5604,14 @@ int main(int /*argc*/, char ** /*args*/) {
                      "cannot own the calibration scene simultaneously."
                   << std::endl;
         return EXIT_FAILURE;
+    }
+    if (gui_autorun_config.enabled &&
+        (guided_capture_autorun_config.enabled ||
+         arena_centering_autorun_config.enabled)) {
+        force_gui_autorun_calibration_selection(&gui_autorun_config);
+        std::cout << "[GUI][autorun] calibration capture: detection, crops, "
+                     "pose and recording forced off"
+                  << std::endl;
     }
     if (arena_centering_autorun_config.enabled) {
         std::cout << "[GUI][arena_centering] enabled"

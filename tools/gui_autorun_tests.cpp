@@ -28,6 +28,8 @@ using orange::gui::GuiStartupTimingStatus;
 using orange::gui::gui_autorun_stage_name;
 using orange::gui::gui_autorun_update;
 using orange::gui::resolve_gui_autorun_config;
+using orange::gui::apply_gui_autorun_camera_selection;
+using orange::gui::force_gui_autorun_calibration_selection;
 
 namespace {
 
@@ -650,6 +652,38 @@ void test_wait_finalize_stage()
 
 }  // namespace
 
+void test_calibration_selection_forces_analytics_off()
+{
+    // Pose on (the default whenever ORANGE_POSE_ENGINE_PATH is set) implies
+    // crop, record and YOLO for every camera.
+    GuiAutorunConfig config;
+    config.enabled = true;
+    config.enable_yolo = false;
+    config.enable_crop = false;
+    config.enable_record = false;
+    config.enable_pose = true;
+    CameraEachSelect implied[2] = {};
+    apply_gui_autorun_camera_selection(config, implied, 2);
+    require(implied[0].pose && implied[0].crop_and_encode && implied[0].record &&
+                implied[0].yolo,
+            "pose implies crop, record and YOLO");
+
+    force_gui_autorun_calibration_selection(&config);
+    require(!config.enable_pose && !config.enable_yolo && !config.enable_crop &&
+                !config.enable_record && !config.start_recording,
+            "calibration selection clears every analytics and recording flag");
+    require(config.enable_stream, "calibration selection keeps the stream on");
+    CameraEachSelect forced[2] = {};
+    apply_gui_autorun_camera_selection(config, forced, 2);
+    for (const CameraEachSelect& camera : forced) {
+        require(camera.stream_on, "camera streams");
+        require(!camera.pose && !camera.crop_and_encode && !camera.record &&
+                    !camera.yolo,
+                "calibration capture runs no detection, crops, pose or record");
+    }
+    force_gui_autorun_calibration_selection(nullptr);
+}
+
 int main()
 {
     const struct {
@@ -678,6 +712,8 @@ int main()
         {"expected_cancellation_rejects_completed_startup",
          test_expected_cancellation_rejects_completed_startup},
         {"wait_finalize_stage", test_wait_finalize_stage},
+        {"calibration_selection_forces_analytics_off",
+         test_calibration_selection_forces_analytics_off},
     };
 
     int failures = 0;

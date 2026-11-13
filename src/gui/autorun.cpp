@@ -404,14 +404,29 @@ void apply_gui_autorun_camera_selection(const GuiAutorunConfig& config,
             cameras_select[i].yolo = true;
         }
     }
+    // Print what the cameras actually got (pose implies crop, crop implies
+    // record and YOLO), not the requested flags.
+    const CameraEachSelect& effective = cameras_select[0];
     std::cout << "[GUI][autorun] camera selection"
-              << " stream=" << (config.enable_stream ? 1 : 0)
-              << " record=" << (config.enable_record ? 1 : 0)
-              << " yolo=" << (config.enable_yolo ? 1 : 0)
-              << " crop=" << (config.enable_crop ? 1 : 0)
-              << " pose=" << (config.enable_pose ? 1 : 0)
+              << " stream=" << (effective.stream_on ? 1 : 0)
+              << " record=" << (effective.record ? 1 : 0)
+              << " yolo=" << (effective.yolo ? 1 : 0)
+              << " crop=" << (effective.crop_and_encode ? 1 : 0)
+              << " pose=" << (effective.pose ? 1 : 0)
               << " cameras=" << num_cameras
               << std::endl;
+}
+
+void force_gui_autorun_calibration_selection(GuiAutorunConfig* config)
+{
+    if (config == nullptr) {
+        return;
+    }
+    config->enable_record = false;
+    config->enable_yolo = false;
+    config->enable_crop = false;
+    config->enable_pose = false;
+    config->start_recording = false;
 }
 
 }  // namespace orange::gui

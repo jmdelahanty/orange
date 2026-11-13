@@ -95,6 +95,13 @@ void apply_gui_autorun_camera_selection(const GuiAutorunConfig& config,
                                         CameraEachSelect* cameras_select,
                                         int num_cameras);
 
+// Calibration autoruns (guided capture, arena centering) take still frames of
+// projected patterns: no detection, crops, pose or recording. Without this,
+// pose defaults on whenever ORANGE_POSE_ENGINE_PATH is set, and pose implies
+// crops, record and YOLO in apply_gui_autorun_camera_selection (2026-11-13:
+// every commissioning run streamed with the fused detect graph on).
+void force_gui_autorun_calibration_selection(GuiAutorunConfig* config);
+
 }  // namespace orange::gui
 
 // These symbols were defined in orange.cpp's anonymous namespace and are
@@ -110,3 +117,4 @@ using orange::gui::gui_autorun_enter_stage;            // NOLINT(misc-unused-usi
 using orange::gui::gui_autorun_fail;                   // NOLINT(misc-unused-using-decls)
 using orange::gui::gui_autorun_update;                 // NOLINT(misc-unused-using-decls)
 using orange::gui::apply_gui_autorun_camera_selection; // NOLINT(misc-unused-using-decls)
+using orange::gui::force_gui_autorun_calibration_selection; // NOLINT(misc-unused-using-decls)
