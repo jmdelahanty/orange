@@ -9,6 +9,11 @@ RECORD_STEP_NAME=""
 RECORD_DONE=0
 INTENSITY_AUTHORITY_JSON=""
 INTENSITY_AUTHORITY_TEXT=""
+PHYSICAL_TARGET_STAGE=""
+PHYSICAL_TARGET_PLANE_Z_MM=""
+PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM=""
+PHYSICAL_TARGET_PLANE_Z_SOURCE=""
+PROJECTOR_LIGHT_BLOCKED=0
 PROFILE=""
 RECIPE="black_reference"
 RECIPE_EXPLICIT=0
@@ -82,6 +87,17 @@ Options:
   --display <display>
   --xauthority <path>
   --citrus-config <path>
+  --physical-target-stage <camera_physical_projected_surface|camera_physical_dish_base_inner_surface|camera_physical_fish_height>
+                            the 3 mm hole target lies at this plane, lit from
+                            below by the projected uniform gray (recipe
+                            uniform_gray; purpose defaults to
+                            camera_only_physical_target_calibration)
+  --physical-target-plane-z-mm <mm>              target bottom face above the projection surface
+  --physical-target-plane-z-uncertainty-mm <mm>
+  --physical-target-plane-z-source <text>        where the height comes from (rig geometry record and commit)
+  --projector-light-blocked dark frame: Citrus shows black_reference, the operator
+                            blocks the projector output (recipe sequence of
+                            black_reference only)
   --record <dir>            commissioning record to append this run to
                             (default: $ORANGE_COMMISSIONING_RECORD)
   --record-step-name <name> step name in the record (default from profile/recipe)
@@ -252,6 +268,34 @@ while [[ $# -gt 0 ]]; do
       CITRUS_CONFIG="$1"
       shift
       ;;
+    --physical-target-stage)
+      shift
+      require_value --physical-target-stage "$#"
+      PHYSICAL_TARGET_STAGE="$1"
+      shift
+      ;;
+    --physical-target-plane-z-mm)
+      shift
+      require_value --physical-target-plane-z-mm "$#"
+      PHYSICAL_TARGET_PLANE_Z_MM="$1"
+      shift
+      ;;
+    --physical-target-plane-z-uncertainty-mm)
+      shift
+      require_value --physical-target-plane-z-uncertainty-mm "$#"
+      PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM="$1"
+      shift
+      ;;
+    --physical-target-plane-z-source)
+      shift
+      require_value --physical-target-plane-z-source "$#"
+      PHYSICAL_TARGET_PLANE_Z_SOURCE="$1"
+      shift
+      ;;
+    --projector-light-blocked)
+      PROJECTOR_LIGHT_BLOCKED=1
+      shift
+      ;;
     --record)
       shift
       require_value --record "$#"
@@ -291,6 +335,30 @@ if [[ -n "${PROFILE}" && ${RECIPE_EXPLICIT} -eq 0 ]]; then
     installed_tank_registration) RECIPE="experimental_area_center_and_outline" ;;
   esac
 fi
+if [[ -n "${PHYSICAL_TARGET_STAGE}" && ${PURPOSE_EXPLICIT} -eq 0 ]]; then
+  PURPOSE="camera_only_physical_target_calibration"
+  PURPOSE_EXPLICIT=1
+fi
+if [[ -n "${PHYSICAL_TARGET_STAGE}" ]]; then
+  case "${PHYSICAL_TARGET_STAGE}" in
+    camera_physical_projected_surface|camera_physical_dish_base_inner_surface|camera_physical_fish_height) ;;
+    *) echo "Unsupported --physical-target-stage: ${PHYSICAL_TARGET_STAGE}" >&2; exit 2 ;;
+  esac
+  [[ "${RECIPE}" == "uniform_gray" && -z "${RECIPE_SEQUENCE}" ]] || {
+    echo "--physical-target-stage needs --recipe uniform_gray (one backlit sample)" >&2; exit 2; }
+  [[ "${PHYSICAL_TARGET_PLANE_Z_MM}" =~ ^[0-9]+(\.[0-9]+)?$ &&
+     "${PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM}" =~ ^[0-9]+(\.[0-9]+)?$ &&
+     -n "${PHYSICAL_TARGET_PLANE_Z_SOURCE}" ]] || {
+    echo "--physical-target-stage needs --physical-target-plane-z-mm, -uncertainty-mm and -source" >&2; exit 2; }
+  (( SAVE && PROJECTED_SURFACE_TARGETS_READY )) || {
+    echo "--physical-target-stage needs --save and --targets-ready" >&2; exit 2; }
+fi
+if (( PROJECTOR_LIGHT_BLOCKED )); then
+  [[ "${RECIPE_SEQUENCE}" =~ ^black_reference(,black_reference)*$ ]] || {
+    echo "--projector-light-blocked needs --recipe-sequence black_reference" >&2; exit 2; }
+  [[ -z "${PHYSICAL_TARGET_STAGE}" ]] || {
+    echo "--projector-light-blocked cannot be combined with --physical-target-stage" >&2; exit 2; }
+fi
 if [[ ${PURPOSE_EXPLICIT} -eq 0 ]]; then
   case "${RECIPE}" in
     arena_outline) PURPOSE="arena_projection" ;;
@@ -302,7 +370,7 @@ if [[ ${PURPOSE_EXPLICIT} -eq 0 ]]; then
   esac
 fi
 if [[ "${RECIPE}" == "uniform_gray" && ${FOREGROUND_GRAY_EXPLICIT} -eq 0 ]]; then
-  if [[ "${PURPOSE}" == "projected_surface_scale_calibration" ]]; then
+  if [[ "${PURPOSE}" == "projected_surface_scale_calibration" || -n "${PHYSICAL_TARGET_STAGE}" ]]; then
     # The physical target is lit by the projector: use the commissioned gray
     # (2026-11-13 the scale step ran at the old default 76 instead of 24).
     if ! authority_text="$(python3 "${REPO_ROOT}/scripts/projector_intensity_authority.py" \
@@ -433,7 +501,13 @@ fi
 CITRUS_LOG="/tmp/orange_gui_guided_capture_${STAMP}_citrus.log"
 ORANGE_LOG="/tmp/orange_gui_guided_capture_${STAMP}_orange.log"
 if [[ -z "${RECORD_STEP_NAME}" ]]; then
-  RECORD_STEP_NAME="guided_capture_${PROFILE:-no_profile}_${PURPOSE}"
+  if (( PROJECTOR_LIGHT_BLOCKED )); then
+    RECORD_STEP_NAME="dark_frame_${PROFILE:-no_profile}"
+  elif [[ -n "${RECIPE_SEQUENCE}" ]]; then
+    RECORD_STEP_NAME="guided_capture_${PROFILE:-no_profile}_${RECIPE_SEQUENCE//,/_}"
+  else
+    RECORD_STEP_NAME="guided_capture_${PROFILE:-no_profile}_${PURPOSE}"
+  fi
 fi
 
 # Append this run to the commissioning record (launcher result, both logs,
@@ -536,7 +610,16 @@ ORANGE_ENV=(
   "ORANGE_GUI_GUIDED_CAPTURE_STARTUP_TIMEOUT_SECONDS=120"
   "ORANGE_GUI_GUIDED_CAPTURE_WORKFLOW_TIMEOUT_SECONDS=${TIMEOUT_SECONDS}"
   "ORANGE_GUI_GUIDED_CAPTURE_RESULT_JSON=${RESULT_JSON}"
+  "ORANGE_GUI_GUIDED_CAPTURE_PROJECTOR_LIGHT_BLOCKED=${PROJECTOR_LIGHT_BLOCKED}"
 )
+if [[ -n "${PHYSICAL_TARGET_STAGE}" ]]; then
+  ORANGE_ENV+=(
+    "ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_STAGE=${PHYSICAL_TARGET_STAGE}"
+    "ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_MM=${PHYSICAL_TARGET_PLANE_Z_MM}"
+    "ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM=${PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM}"
+    "ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_SOURCE=${PHYSICAL_TARGET_PLANE_Z_SOURCE}"
+  )
+fi
 if [[ -n "${SWEEP_FOREGROUND_GRAYS_U8}" ]]; then
   ORANGE_ENV+=(
     "ORANGE_GUI_GUIDED_CAPTURE_SWEEP_FOREGROUND_GRAYS_U8=${SWEEP_FOREGROUND_GRAYS_U8}"
@@ -565,6 +648,12 @@ fi
 echo "  ptp_gate_start_timing=${START_AT_CALIBRATION_TIMING} config=${ORANGE_CONFIG_DIR}"
 if [[ -n "${INTENSITY_AUTHORITY_TEXT}" ]]; then
   echo "  foreground_gray_source=commissioned (scripts/projector_intensity_authority.py)"
+fi
+if [[ -n "${PHYSICAL_TARGET_STAGE}" ]]; then
+  echo "  physical_target_stage=${PHYSICAL_TARGET_STAGE} plane_z_mm=${PHYSICAL_TARGET_PLANE_Z_MM}+/-${PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM} source=${PHYSICAL_TARGET_PLANE_Z_SOURCE}"
+fi
+if (( PROJECTOR_LIGHT_BLOCKED )); then
+  echo "  projector_light_blocked=1 (operator blocks the projector output: dark frame)"
 fi
 echo "  record=${RECORD_DIR:-none} step=${RECORD_STEP_NAME}"
 echo "  result=${RESULT_JSON}"

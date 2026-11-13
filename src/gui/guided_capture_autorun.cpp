@@ -7,6 +7,7 @@
 #include "gui/spatial_layout/citrus_template_workflow.h"
 #include "gui/spatial_layout/group_capture_controller.h"
 #include "gui/spatial_layout/layout_state.h"
+#include "gui/spatial_layout/metadata_panel.h"
 #include "gui/spatial_layout/preflight.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
 #include "gui/spatial_layout/save_job_preparation.h"
@@ -33,6 +34,7 @@ namespace {
 
 using orange::gui::spatial_layout::apply_calibration_image_set_purpose_defaults;
 using orange::gui::spatial_layout::apply_calibration_workflow_profile_defaults;
+using orange::gui::spatial_layout::apply_illumination_preset;
 using orange::gui::spatial_layout::generic_calibration_image_set_save_worker_is_busy;
 using orange::gui::spatial_layout::group_capture_workflow_active;
 using orange::gui::spatial_layout::import_citrus_canvas_templates;
@@ -546,6 +548,55 @@ std::uint8_t current_sweep_gray(const GuidedCaptureAutorunState& state,
     return levels[std::min(state.sweep_level_index, levels.size() - 1)];
 }
 
+// What the operator set up that the scene alone does not say: a physical
+// target lit from below by the projected gray (camera-only physical-target
+// labels at the declared plane), or a dark frame with the projector output
+// blocked. Applied after the purpose and recipe defaults for every sample.
+void apply_operator_state_metadata(const std::string& recipe,
+                                   const std::string& purpose,
+                                   const GuidedCaptureAutorunConfig& config,
+                                   SpatialLayoutUiState* spatial_state)
+{
+    if (!config.physical_target_stage.empty() && recipe == "uniform_gray" &&
+        (purpose == "camera_only_physical_target_calibration" ||
+         purpose == "dry_physical_target_height_parallax_diagnostic")) {
+        spatial_state->calibration_image_set_purpose = purpose;
+        spatial_state->calibration_plane_z_mm_nominal = config.physical_target_plane_z_mm;
+        spatial_state->calibration_has_plane_z_mm_nominal = true;
+        spatial_state->calibration_plane_z_mm_uncertainty =
+            config.physical_target_plane_z_uncertainty_mm;
+        spatial_state->calibration_has_plane_z_mm_uncertainty = true;
+        spatial_state->calibration_z_mm_relative_to_projection_surface =
+            config.physical_target_plane_z_mm;
+        spatial_state->calibration_has_z_mm_relative_to_projection_surface = true;
+        // Projector backlight through the holes, as the projected-surface
+        // scale capture: NIR filter off, mapped strobe suppressed.
+        spatial_state->calibration_filter_state =
+            "removed: HOYA Creative Filter Infrared R72 67 mm (Kenko Tokina)";
+        spatial_state->calibration_light_handling = "suppress_mapped_strobe";
+        apply_illumination_preset(spatial_state, "visible_projector_broadband");
+        spatial_state->calibration_projector_state = "uniform_gray_illumination";
+        spatial_state->calibration_projector_visible_to_camera = true;
+        spatial_state->calibration_image_set_notes =
+            "Physical hole target at " + config.physical_target_stage +
+            ", target bottom face at z=" + std::to_string(config.physical_target_plane_z_mm) +
+            " mm (+/- " + std::to_string(config.physical_target_plane_z_uncertainty_mm) +
+            " mm) above the projection surface; source: " +
+            config.physical_target_plane_z_source +
+            ". Lit from below by the projected uniform gray; the hole pattern is the "
+            "coordinate target, not the projection.";
+    }
+    if (config.projector_light_blocked && recipe == "black_reference") {
+        spatial_state->calibration_image_set_image_role = "dark_frame_projector_light_blocked";
+        spatial_state->calibration_projector_state = "light_blocked_at_projector_output";
+        spatial_state->calibration_projector_visible_to_camera = false;
+        spatial_state->calibration_reference_only = true;
+        spatial_state->calibration_image_set_notes =
+            "Dark frame: Citrus black_reference scene with the projector output "
+            "blocked by the operator; camera dark level plus stray light.";
+    }
+}
+
 void apply_current_sweep_scene(GuidedCaptureAutorunState* state,
                                const GuidedCaptureAutorunConfig& config,
                                SpatialLayoutUiState* spatial_state)
@@ -553,12 +604,17 @@ void apply_current_sweep_scene(GuidedCaptureAutorunState* state,
     const std::string recipe = current_recipe(*state, config);
     const std::string purpose = current_purpose(*state, config);
     spatial_state->group_capture_scene_recipe = recipe;
+    if (!config.physical_target_stage.empty()) {
+        // The camera-only purpose defaults pick their preset by stage.
+        spatial_state->calibration_capture_stage = config.physical_target_stage;
+    }
     if (purpose == "diagnostic_black_reference") {
         apply_diagnostic_black_reference_metadata(spatial_state);
     } else {
         apply_calibration_image_set_purpose_defaults(spatial_state, purpose);
     }
     apply_sequence_recipe_metadata(recipe, config, spatial_state);
+    apply_operator_state_metadata(recipe, purpose, config, spatial_state);
     spatial_state->group_capture_scene_options = nlohmann::json::object();
     if (recipe_supports_foreground_gray(recipe)) {
         spatial_state->group_capture_scene_options["foreground_gray_u8"] =
@@ -814,6 +870,12 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
         if (config.workflow_profile_id == "holder_installed_projected_surface") {
             spatial_state->calibration_visibility_domain_shape =
                 config.fixture_aperture_shape;
+        }
+        const std::string operator_state_error =
+            guided_capture_operator_state_error(config);
+        if (!operator_state_error.empty()) {
+            fail(state, operator_state_error);
+            break;
         }
         bool sequence_purposes_saveable = true;
         for (const std::string& recipe : config.recipe_sequence) {
@@ -1465,7 +1527,9 @@ nlohmann::json guided_capture_autorun_result_json(
                   std::chrono::steady_clock::now() - state.run_started_at).count();
     return {
         {"schema_id", "orange.gui_guided_capture_smoke_result"},
-        {"schema_version", 4},
+        // v5 (2026-11-13): config.physical_target and
+        // config.projector_light_blocked.
+        {"schema_version", 5},
         {"created_utc", get_current_utc_timestamp()},
         {"calibration_transaction_id", state.calibration_transaction_id},
         {"status", state.run_passed ? "pass" : "fail"},
@@ -1475,6 +1539,18 @@ nlohmann::json guided_capture_autorun_result_json(
         {"config",
          {
              {"citrus_config_path", config.citrus_config_path},
+             {"physical_target",
+              config.physical_target_stage.empty()
+                  ? nlohmann::json(nullptr)
+                  : nlohmann::json{
+                        {"stage", config.physical_target_stage},
+                        {"plane_z_mm", config.physical_target_plane_z_mm},
+                        {"plane_z_uncertainty_mm",
+                         config.physical_target_plane_z_uncertainty_mm},
+                        {"plane_z_source", config.physical_target_plane_z_source},
+                        {"illumination", "projector_backlit_uniform_gray"},
+                    }},
+             {"projector_light_blocked", config.projector_light_blocked},
              {"workflow_profile_id", config.workflow_profile_id},
              {"recipe", config.recipe},
              {"purpose", config.purpose},

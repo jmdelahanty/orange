@@ -3,6 +3,7 @@
 #include "gui/env_util.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <set>
 #include <sstream>
@@ -66,6 +67,21 @@ std::string env_string(const char* name)
 {
     const char* value = std::getenv(name);
     return value == nullptr ? std::string() : std::string(value);
+}
+
+bool env_double(const char* name, double* value_out)
+{
+    const char* value = std::getenv(name);
+    if (value == nullptr || *value == '\0') {
+        return false;
+    }
+    char* end = nullptr;
+    const double parsed = std::strtod(value, &end);
+    if (end == value || *end != '\0' || !std::isfinite(parsed)) {
+        return false;
+    }
+    *value_out = parsed;
+    return true;
 }
 
 std::string default_purpose_for_recipe(const std::string& recipe)
@@ -178,12 +194,81 @@ GuidedCaptureAutorunConfig resolve_guided_capture_autorun_config()
         gui_env_int("ORANGE_GUI_GUIDED_CAPTURE_WORKFLOW_TIMEOUT_SECONDS", 60, 1),
         1,
         600);
+    config.physical_target_stage =
+        env_string("ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_STAGE");
+    config.has_physical_target_plane_z_mm = env_double(
+        "ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_MM",
+        &config.physical_target_plane_z_mm);
+    if (!env_double("ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM",
+                    &config.physical_target_plane_z_uncertainty_mm)) {
+        config.physical_target_plane_z_uncertainty_mm = -1.0;
+    }
+    config.physical_target_plane_z_source =
+        env_string("ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_SOURCE");
+    config.projector_light_blocked = gui_env_flag_enabled(
+        "ORANGE_GUI_GUIDED_CAPTURE_PROJECTOR_LIGHT_BLOCKED", false);
     config.result_json_path =
         env_string("ORANGE_GUI_GUIDED_CAPTURE_RESULT_JSON");
     if (config.result_json_path.empty()) {
         config.result_json_path = "/tmp/orange_gui_guided_capture_result.json";
     }
     return config;
+}
+
+std::string guided_capture_operator_state_error(const GuidedCaptureAutorunConfig& config)
+{
+    if (!config.physical_target_stage.empty()) {
+        const std::string& stage = config.physical_target_stage;
+        if (stage != "camera_physical_projected_surface" &&
+            stage != "camera_physical_dish_base_inner_surface" &&
+            stage != "camera_physical_fish_height") {
+            return "unsupported physical target stage: " + config.physical_target_stage;
+        }
+        if (config.purpose != "camera_only_physical_target_calibration" &&
+            config.purpose != "dry_physical_target_height_parallax_diagnostic") {
+            return "a physical target capture needs purpose "
+                   "camera_only_physical_target_calibration or "
+                   "dry_physical_target_height_parallax_diagnostic; got " + config.purpose;
+        }
+        if (config.recipe != "uniform_gray" || !config.recipe_sequence.empty() ||
+            !config.sweep_foreground_grays_u8.empty() || config.sweep_repeats != 1 ||
+            config.include_arena_outline_reference || config.fit_homographies_after_capture) {
+            return "a projector-backlit physical target capture is one uniform_gray "
+                   "sample: no recipe sequence, sweep, outline reference or homography fit";
+        }
+        if (!config.save_captures) {
+            return "a physical target capture requires saving";
+        }
+        if (!config.projected_surface_targets_ready_confirmed) {
+            return "a physical target capture requires the operator's confirmation "
+                   "that one target is placed in every camera view";
+        }
+        if (!config.has_physical_target_plane_z_mm ||
+            config.physical_target_plane_z_uncertainty_mm < 0.0 ||
+            config.physical_target_plane_z_source.empty()) {
+            return "a physical target capture needs the plane height, its uncertainty "
+                   "and its source (the rig geometry record)";
+        }
+        if (config.projector_light_blocked) {
+            return "a physical target capture is lit by the projector; it cannot be "
+                   "a light-blocked dark frame";
+        }
+    } else if (config.purpose == "camera_only_physical_target_calibration" ||
+               config.purpose == "dry_physical_target_height_parallax_diagnostic") {
+        return "purpose " + config.purpose + " needs a physical target stage";
+    }
+    if (config.projector_light_blocked) {
+        const bool all_black =
+            !config.recipe_sequence.empty() &&
+            std::all_of(config.recipe_sequence.begin(), config.recipe_sequence.end(),
+                        [](const std::string& recipe) { return recipe == "black_reference"; });
+        if (!all_black || !config.sweep_foreground_grays_u8.empty() ||
+            config.include_arena_outline_reference || config.fit_homographies_after_capture) {
+            return "a light-blocked dark frame is a recipe sequence of black_reference "
+                   "only, without sweep, outline reference or homography fit";
+        }
+    }
+    return {};
 }
 
 const char* guided_capture_autorun_stage_name(const GuidedCaptureAutorunStage stage)

@@ -2189,6 +2189,7 @@
    "frame_rate_hz",
    "height",
    "homography",
+   "illumination",
    "include_arena_outline_reference",
    "iris",
    "last_camera_frame_id",
@@ -2206,12 +2207,17 @@
    "observations",
    "orange_artifact_id",
    "persistence",
+   "physical_target",
+   "plane_z_mm",
+   "plane_z_source",
+   "plane_z_uncertainty_mm",
    "preflight_settle_milliseconds",
    "prepare_status",
    "projected_surface_scale",
    "projected_surface_targets_ready_confirmed",
    "projector_intensity_report_path",
    "projector_intensity_report_sha256",
+   "projector_light_blocked",
    "promotion_requested",
    "ptp_capture_alignment",
    "ptp_gate_offset_ns",
@@ -2260,7 +2266,7 @@
   "schemas": [
    [
     "orange.gui_guided_capture_smoke_result",
-    "4"
+    "5"
    ]
   ]
  },

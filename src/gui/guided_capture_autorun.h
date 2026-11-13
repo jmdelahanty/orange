@@ -58,6 +58,20 @@ struct GuidedCaptureAutorunConfig {
     bool projected_surface_targets_ready_confirmed = false;
     bool accept_projected_surface_scales_armed = false;
     bool fit_homographies_after_capture = false;
+    // Physical target (the 3 mm hole target) at a declared plane, lit from
+    // below by the projected uniform gray: saved with the camera-only
+    // physical-target labels instead of projection-surface ones.
+    // ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_{STAGE,PLANE_Z_MM,
+    // PLANE_Z_UNCERTAINTY_MM,PLANE_Z_SOURCE}.
+    std::string physical_target_stage;
+    double physical_target_plane_z_mm = 0.0;
+    bool has_physical_target_plane_z_mm = false;
+    double physical_target_plane_z_uncertainty_mm = 0.0;
+    std::string physical_target_plane_z_source;
+    // Dark frame: Citrus shows black_reference while the operator blocks the
+    // projector output (card or cap), so the image is the camera dark level.
+    // ORANGE_GUI_GUIDED_CAPTURE_PROJECTOR_LIGHT_BLOCKED.
+    bool projector_light_blocked = false;
     int preflight_settle_milliseconds = 1000;
     int startup_timeout_seconds = 120;
     int workflow_timeout_seconds = 60;
@@ -109,6 +123,10 @@ struct GuidedCaptureAutorunRequests {
 };
 
 GuidedCaptureAutorunConfig resolve_guided_capture_autorun_config();
+
+// Empty when the physical-target and light-blocked options are consistent with
+// the recipe, purpose and saving; otherwise the reason to refuse the run.
+std::string guided_capture_operator_state_error(const GuidedCaptureAutorunConfig& config);
 
 const char* guided_capture_autorun_stage_name(GuidedCaptureAutorunStage stage);
 

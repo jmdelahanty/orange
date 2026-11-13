@@ -277,6 +277,98 @@ void test_start_state()
             "stage has machine-readable name");
 }
 
+void test_physical_target_and_dark_frame()
+{
+    ScopedEnv stage("ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_STAGE");
+    ScopedEnv z("ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_MM");
+    ScopedEnv z_unc("ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM");
+    ScopedEnv z_source("ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_SOURCE");
+    ScopedEnv blocked("ORANGE_GUI_GUIDED_CAPTURE_PROJECTOR_LIGHT_BLOCKED");
+    ScopedEnv recipe("ORANGE_GUI_GUIDED_CAPTURE_RECIPE");
+    ScopedEnv purpose("ORANGE_GUI_GUIDED_CAPTURE_PURPOSE");
+    ScopedEnv sequence("ORANGE_GUI_GUIDED_CAPTURE_RECIPE_SEQUENCE");
+    ScopedEnv save("ORANGE_GUI_GUIDED_CAPTURE_SAVE");
+    ScopedEnv ready("ORANGE_GUI_PROJECTED_SURFACE_SCALE_TARGETS_READY");
+    ScopedEnv profile("ORANGE_GUI_GUIDED_CAPTURE_PROFILE");
+
+    auto config = orange::gui::resolve_guided_capture_autorun_config();
+    require(config.physical_target_stage.empty() && !config.projector_light_blocked,
+            "physical target and light-blocked default off");
+    require(orange::gui::guided_capture_operator_state_error(config).empty(),
+            "the default config is consistent");
+
+    stage.Set("camera_physical_dish_base_inner_surface");
+    z.Set("8.13");
+    z_unc.Set("0.1");
+    z_source.Set("phd-projects f6f1089 rigs/evidence/rig-odmz/20261113_omnifin0_imaging_stack.md");
+    recipe.Set("uniform_gray");
+    purpose.Set("camera_only_physical_target_calibration");
+    save.Set("1");
+    ready.Set("1");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(config.has_physical_target_plane_z_mm &&
+                config.physical_target_plane_z_mm == 8.13 &&
+                config.physical_target_plane_z_uncertainty_mm == 0.1,
+            "plane height and uncertainty parse");
+    require(orange::gui::guided_capture_operator_state_error(config).empty(),
+            "a complete dish-floor physical target capture is accepted: " +
+                orange::gui::guided_capture_operator_state_error(config));
+
+    auto refused = [](const orange::gui::GuidedCaptureAutorunConfig& c, const std::string& what) {
+        require(!orange::gui::guided_capture_operator_state_error(c).empty(), what);
+    };
+    auto changed = config;
+    changed.physical_target_plane_z_source.clear();
+    refused(changed, "the plane height needs its source");
+    changed = config;
+    changed.physical_target_plane_z_uncertainty_mm = -1.0;
+    refused(changed, "the plane height needs an uncertainty");
+    changed = config;
+    changed.has_physical_target_plane_z_mm = false;
+    refused(changed, "the plane height is required");
+    changed = config;
+    changed.projected_surface_targets_ready_confirmed = false;
+    refused(changed, "target placement must be confirmed");
+    changed = config;
+    changed.save_captures = false;
+    refused(changed, "a physical target capture is saved");
+    changed = config;
+    changed.recipe_sequence = {"black_reference", "uniform_gray"};
+    refused(changed, "one uniform-gray sample only");
+    changed = config;
+    changed.purpose = "validation_pattern";
+    refused(changed, "the purpose must be a physical-target purpose");
+    changed = config;
+    changed.physical_target_stage = "projected_surface_wet_runtime_stack";
+    refused(changed, "only camera_physical_* stages");
+    changed = config;
+    changed.physical_target_stage.clear();
+    refused(changed, "a physical-target purpose needs a stage");
+    changed = config;
+    changed.projector_light_blocked = true;
+    refused(changed, "a backlit target is not a dark frame");
+
+    z.Set("not-a-number");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!config.has_physical_target_plane_z_mm, "an unparsable height is absent");
+
+    stage.Set("");
+    purpose.Set("");
+    recipe.Set("");
+    blocked.Set("1");
+    sequence.Set("black_reference");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(config.projector_light_blocked, "light-blocked flag parses");
+    require(orange::gui::guided_capture_operator_state_error(config).empty(),
+            "a black_reference sequence can be a dark frame");
+    sequence.Set("black_reference,uniform_gray");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    refused(config, "a dark frame shows black_reference only");
+    sequence.Set("");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    refused(config, "a dark frame needs the saveable sequence form");
+}
+
 }  // namespace
 
 int main()
@@ -287,6 +379,7 @@ int main()
         test_recipe_derives_schema_purpose();
         test_profile_derives_recipe_and_purpose();
         test_start_state();
+        test_physical_target_and_dark_frame();
     } catch (const std::exception& error) {
         std::cerr << "guided_capture_autorun_config_tests failed: "
                   << error.what() << std::endl;
