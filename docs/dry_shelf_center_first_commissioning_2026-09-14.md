@@ -37,6 +37,9 @@ Do both before the first calibration run and undo both after the last one
    off and back on through the PDU as part of the session, and fix the restore
    order (stop the stream, then restore GPO_0).
 
+The full omnifin0 sequence, including the brightness maps and the wet
+fish-plane scale, is `docs/omnifin0_calibration_procedure.md`.
+
 ## Ordered authority
 
 1. **Physical field of view:** the operator fixes the cameras and verifies the
