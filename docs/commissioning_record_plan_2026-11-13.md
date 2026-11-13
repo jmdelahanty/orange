@@ -54,9 +54,11 @@ Further findings from the session:
   Water is needed only for what the fish see: the wet brightness map and the
   stimulus dot contrast.
 - No hand edits of captured metadata, ever.
-- Tonight (option b): the wet brightness map with the existing launcher
-  (its projection-surface labels are correct). The floor-height disk waits
-  for the launcher change below.
+- No ad hoc captures (Jeremy, later the same day: "focus on getting things
+  ready so we can do this properly instead of hacking around with it"). The
+  wet brightness map, the floor-height disk, the dark frame and the dot
+  contrast all wait for the changes below, and run as one session that writes
+  one record.
 
 ## 3. The commissioning record
 
@@ -111,7 +113,13 @@ Orange (dish branch), in this order:
    experiment-spec and Citrus, approved by Jeremy) through the wet stack;
    Weber contrast per dot `(I_dot - I_bg) / I_bg` from black-subtracted
    images, with the local background measured in an annulus around each dot.
-6. Fixes found tonight: group capture independent of panel visibility;
+   Scene: Citrus `static_dots` (new; citrus-agent PR after Jeremy's word).
+   Orange side: launcher recipe that sends one `static_dots` frame per
+   capture and waits for its presentation fence.
+6. Dark frame with the projector light blocked: its own capture label
+   (fixture/projector state `light_blocked`), so the black floor and the camera
+   dark level are separated without notes outside the metadata.
+7. Fixes found tonight: group capture independent of panel visibility;
    calibration launchers force YOLO off; scale step uses the commissioned
    gray; GPO_0 restored after the stream stops; Citrus scale promote over
    local control (citrus-agent); PDU switching of the IR outlets around the

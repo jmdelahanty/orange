@@ -74,6 +74,9 @@ measurement.
   Reason and history: `docs/dry_shelf_center_first_commissioning_2026-09-14.md`,
   "Before a recommissioning session".
 - NIR filters off, projector Brightness 50.
+- Stray light: room lights off, desktop monitor facing away, behavior box
+  closed (Jeremy, 2026-11-13). At codes 0-30 stray light is the same order as
+  the signal; the record states the light state for every capture.
 - HOLD to the other agents before the first capture, CLEAR after the last.
 - Claude reviews each fit; the runner accepts, promotes and finalizes when every
   gate passes and the evidence is kept. Any failure stops for Jeremy. Physical
@@ -227,13 +230,25 @@ contrast `(I_dot - I_bg) / I_bg` from the local annulus, not the arena mean.
 Exposure and gain fixed and stated; capture session ids recorded. The
 contrast is in the camera's spectral response, not the fish's.
 
-Rendering: in the experiment the dots are a Citrus CHASER step (four passive
-chasers, no chase, no random movement, one rgba8 each). Whether the capture
-uses a short protocol run of that file (same renderer, edges and positions
-the fish see) or a static calibration scene is citrus-agent's answer; the
-capture needs an Orange launcher path that holds the scene for each grouped
-capture, and Jeremy's approval of the exact scene. Not available on
-2026-11-13.
+Rendering: a new Citrus calibration scene `static_dots` (citrus-agent,
+2026-11-13; not built). A protocol run is ruled out: it is a recording (H5,
+binding, freeze and transfer rules), its step clock cannot wait for a
+capture, and it draws the photodiode marker. `static_dots` takes
+`background` and per-dot `color` as `{"gray_u8": n}` or `{"rgb_u8": [r,g,b]}`
+(first runs gray and black only), dot `position_preset` and `diameter_mm`,
+resolved exactly as the chaser resolves its presets; its status echoes the
+drawn centres and radii, per-arena px/mm and a presentation fence that the
+grouped capture waits for; the scene holds until the next scene. Orange needs
+a launcher path that sends one scene per frame and captures after the fence.
+Jeremy approves the exact scene before it is shown.
+
+Black floor: the dots' contrast depends on the projector's black floor (code
+0 emits about 0.13 % of white, about 13 % of the code-30 background). A dark
+frame with the projector light blocked (card over the output, projector
+settings unchanged; same exposures and gain as the scene captures) separates
+it from the camera dark level: `code 0 - dark` is the black-floor map,
+`code 30 - dark` the background. Needs its own capture label
+(projector light blocked), see the plan.
 
 ## 8. Evidence record
 
