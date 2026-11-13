@@ -367,6 +367,17 @@ validate_env_item() {
         return 2
       }
       ;;
+    ORANGE_GUI_GUIDED_CAPTURE_STATIC_DOTS_SCENES_PATH)
+      value="$(validate_existing_path_under_allowed_roots "$value" \
+        "/home/jeremy/orange_data" \
+        "/home/jeremy/orange-gop-split-a16" \
+        "/home/jeremy/orange-integration-20260921" \
+        "/home/jeremy/orange-per-camera-dish-20261011" \
+        "/tmp")" || {
+        echo "Guided-capture static_dots scenes file is outside allowed roots or missing: $value" >&2
+        return 2
+      }
+      ;;
     ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_STAGE)
       [[ "$value" =~ ^(camera_physical_projected_surface|camera_physical_dish_base_inner_surface|camera_physical_fish_height)$ ]] || {
         echo "Invalid guided-capture physical-target stage: $value" >&2
