@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from projector_intensity_authority import (  # noqa: E402  (scripts/ is sys.path[0])
+    resolve_projector_intensity_commissioning,
+)
 
+_RECORD_RUN: dict[str, str] = {}
 SCHEMA_ID = "orange.holder_fixture_validation.run_manifest"
 
 
@@ -38,121 +42,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
-
-
-def normalize_sha256(value: str) -> str:
-    return value.removeprefix("sha256:").lower()
-
-
-def resolve_projector_intensity_commissioning(
-    citrus_config: Path,
-    camera_arenas: dict[str, str],
-) -> tuple[int, dict[str, Any]]:
-    artifact_root = citrus_config.parent / "calibration_artifacts"
-    report_path: Path | None = None
-    report_sha256 = ""
-    reference_gray: int | None = None
-    reference_evidence: list[dict[str, Any]] = []
-    for camera, arena_id in camera_arenas.items():
-        pointer_path = artifact_root / (
-            f"homography_reference_{arena_id}_{camera}_projected_surface.json"
-        )
-        if not pointer_path.is_file():
-            raise RuntimeError(
-                f"commissioning-reference homography is missing: {pointer_path}"
-            )
-        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-        photometry = pointer.get("source_photometry", {})
-        provenance = photometry.get("commissioning_provenance", {})
-        candidate_report_path = Path(str(provenance.get("report_path", "")))
-        candidate_report_sha256 = normalize_sha256(
-            str(provenance.get("report_sha256", ""))
-        )
-        candidate_gray = provenance.get("recommended_foreground_gray_u8")
-        expected_rig = citrus_config.parent.parent.name
-        expected_canvas = citrus_config.parent.name
-        valid = (
-            pointer.get("schema_id") == "citrus.calibration.active_homography"
-            and pointer.get("schema_version") == 1
-            and pointer.get("status") == "accepted"
-            and pointer.get("rig_id") == expected_rig
-            and pointer.get("canvas_name") == expected_canvas
-            and pointer.get("arena_id") == arena_id
-            and str(pointer.get("camera_id", "")) == camera
-            and pointer.get("target_plane") == "projected_surface"
-            and pointer.get("homography_role") == "commissioning_reference"
-            and photometry.get("status") == "passed"
-            and candidate_report_path.is_file()
-            and len(candidate_report_sha256) == 64
-            and isinstance(candidate_gray, int)
-            and 0 <= candidate_gray <= 255
-        )
-        if not valid:
-            raise RuntimeError(
-                "invalid projector-intensity provenance in commissioning-reference "
-                f"homography: {pointer_path}"
-            )
-        if report_path is None:
-            report_path = candidate_report_path
-            report_sha256 = candidate_report_sha256
-            reference_gray = candidate_gray
-        elif (
-            candidate_report_path != report_path
-            or candidate_report_sha256 != report_sha256
-            or candidate_gray != reference_gray
-        ):
-            raise RuntimeError(
-                "selected cameras do not share one projector-intensity authority"
-            )
-        reference_evidence.append({
-            "camera_serial": camera,
-            "arena_id": arena_id,
-            "pointer_path": str(pointer_path.resolve()),
-            "pointer_sha256": sha256_file(pointer_path),
-        })
-
-    if report_path is None:
-        raise RuntimeError("no projector-intensity authority was resolved")
-    actual_report_sha256 = normalize_sha256(sha256_file(report_path))
-    if actual_report_sha256 != report_sha256:
-        raise RuntimeError("projector-intensity report checksum mismatch")
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    recommended = report.get("recommended_foreground_gray_u8")
-    all_camera_pass = report.get("level_passes_all_cameras", {}).get(
-        str(recommended), False
-    )
-    passing_cameras = {
-        str(summary.get("camera_serial", ""))
-        for summary in report.get("camera_level_summaries", [])
-        if summary.get("foreground_gray_u8") == recommended
-        and summary.get("passes_quality_gate") is True
-    }
-    valid_report = (
-        report.get("schema_id")
-        == "orange.projector_intensity_commissioning.report"
-        and report.get("schema_version") == 1
-        and report.get("status") == "pass"
-        and isinstance(recommended, int)
-        and 0 <= recommended <= 255
-        and recommended == reference_gray
-        and all_camera_pass is True
-        and set(camera_arenas).issubset(passing_cameras)
-    )
-    if not valid_report:
-        raise RuntimeError(
-            "projector-intensity commissioning report does not qualify its "
-            "recommended level for every selected camera"
-        )
-    return recommended, {
-        "schema_id": "orange.projector_intensity_commissioning.reference",
-        "schema_version": 1,
-        "status": "validated",
-        "report_path": str(report_path.resolve()),
-        "report_sha256": report_sha256,
-        "recommended_foreground_gray_u8": recommended,
-        "validated_camera_serials": list(camera_arenas),
-        "source_evidence": reference_evidence,
-    }
 
 
 def sudo_invoking_owner() -> tuple[int, int] | None:
@@ -293,6 +182,11 @@ def main() -> int:
     )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--analyze-only", type=Path, metavar="MANIFEST")
+    parser.add_argument(
+        "--record",
+        default=os.environ.get("ORANGE_COMMISSIONING_RECORD", ""),
+        help="commissioning record to append this run to (default: $ORANGE_COMMISSIONING_RECORD)",
+    )
     args = parser.parse_args()
 
     if args.analyze_only is not None:
@@ -475,6 +369,11 @@ def main() -> int:
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=False)
+    if args.record:
+        # The guided launcher this runs appends its own step; this run adds one
+        # for its report folder when it ends (see __main__).
+        os.environ["ORANGE_COMMISSIONING_RECORD"] = str(args.record)
+        _RECORD_RUN.update(record=str(args.record), output_dir=str(output_dir))
     manifest["status"] = "capturing"
     manifest["updated_utc"] = utc_now()
     write_json_atomic(manifest_path, manifest)
@@ -538,5 +437,28 @@ def main() -> int:
     return analysis.returncode
 
 
+def _record_outer_step(name: str, exit_code: int, file_names: list[str]) -> None:
+    run = _RECORD_RUN
+    if not run.get("record") or not run.get("output_dir"):
+        return
+    from commissioning_record import append_launcher_step  # scripts/ is sys.path[0]
+
+    output_dir = Path(run["output_dir"])
+    code = append_launcher_step(
+        run["record"], name, exit_code,
+        files=[(Path(n).stem, output_dir / n) for n in file_names],
+        reference_dirs=[("report_dir", output_dir)],
+        command=[sys.argv[0], *sys.argv[1:]],
+    )
+    if code != 0:
+        print(f"WARNING: could not append this run to the commissioning record {run['record']}",
+              file=sys.stderr)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    exit_code = 1
+    try:
+        exit_code = main()
+    finally:
+        _record_outer_step('holder_fixture_validation', exit_code, ['run_manifest.json', 'validation_report.json', 'validation_report.md', 'guided_capture_result.json'])
+    raise SystemExit(exit_code)

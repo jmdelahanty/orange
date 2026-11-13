@@ -2,7 +2,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ORIGINAL_ARGS=("$@")
 EXECUTE=0
+RECORD_DIR="${ORANGE_COMMISSIONING_RECORD:-}"
+RECORD_STEP_NAME=""
+RECORD_DONE=0
 ARM_SAVE=0
 BOOTSTRAP_CENTERS_ONLY=0
 RESIZE_ARENAS=0
@@ -97,9 +101,13 @@ Options:
   --display <display>
   --xauthority <path>
   --citrus-config <path>
+  --record <dir>                     commissioning record to append this run to
+                                     (default: $ORANGE_COMMISSIONING_RECORD)
+  --record-step-name <name>          step name in the record (default from the mode)
   --help
 
 Environment:
+  ORANGE_COMMISSIONING_RECORD  default for --record.
   CITRUS_ROOT Citrus checkout (default: /home/jeremy/citrus).
   CITRUS_BIN  Citrus executable (default: $CITRUS_ROOT/targets/citrus).
   XRANDR_BIN  xrandr executable (default: xrandr; tests substitute a fake).
@@ -179,6 +187,8 @@ while [[ $# -gt 0 ]]; do
     --display) shift; require_value --display "$#"; DISPLAY_VALUE="$1"; shift ;;
     --xauthority) shift; require_value --xauthority "$#"; XAUTHORITY_VALUE="$1"; shift ;;
     --citrus-config) shift; require_value --citrus-config "$#"; CITRUS_CONFIG="$1"; shift ;;
+    --record) shift; require_value --record "$#"; RECORD_DIR="$1"; shift ;;
+    --record-step-name) shift; require_value --record-step-name "$#"; RECORD_STEP_NAME="$1"; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unsupported argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -293,6 +303,32 @@ fi
 CITRUS_LOG="/tmp/orange_gui_arena_centering_${STAMP}_citrus.log"
 ORANGE_LOG="/tmp/orange_gui_arena_centering_${STAMP}_orange.log"
 TIMING_CONFIG_DIR="$(dirname "${ORANGE_CONFIG_SOURCE}")/arena_centering_runtime_${STAMP}_$$"
+if [[ -z "${RECORD_STEP_NAME}" ]]; then
+  if (( BOOTSTRAP_CENTERS_ONLY )); then
+    RECORD_STEP_NAME="arena_centering_bootstrap_centers"
+  elif (( FIT_HOMOGRAPHIES )); then
+    RECORD_STEP_NAME="arena_centering_reference_homography"
+  else
+    RECORD_STEP_NAME="arena_centering"
+  fi
+fi
+
+# Append this run to the commissioning record (launcher result, both logs,
+# the sessions it saved), passed or failed.
+record_step() {
+  local exit_code="$1"
+  if [[ -z "${RECORD_DIR}" || ${EXECUTE} -ne 1 || ${RECORD_DONE} -ne 0 ]]; then
+    return 0
+  fi
+  RECORD_DONE=1
+  local step_status="passed"
+  (( exit_code == 0 )) || step_status="failed"
+  python3 "${REPO_ROOT}/scripts/commissioning_record.py" step --record "${RECORD_DIR}" \
+    --name "${RECORD_STEP_NAME}" --status "${step_status}" --exit-code "${exit_code}" \
+    --result-json "${RESULT_JSON}" --log "${ORANGE_LOG}" --log "${CITRUS_LOG}" \
+    -- "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" >/dev/null ||
+    echo "WARNING: could not append this run to the commissioning record ${RECORD_DIR}" >&2
+}
 
 # Displays: the host config names the stimulus output and its X screen;
 # xrandr says what is connected on each X screen of this server.
@@ -421,6 +457,7 @@ ORANGE_ENV=(
   "ORANGE_GUI_AUTORUN_ENABLE_RECORD=0"
   "ORANGE_GUI_AUTORUN_ENABLE_YOLO=0"
   "ORANGE_GUI_AUTORUN_ENABLE_CROP=0"
+  "ORANGE_GUI_AUTORUN_ENABLE_POSE=0"
   "ORANGE_GUI_AUTORUN_START_RECORDING=0"
   "ORANGE_GUI_RECORDING_SINK_MODE=none"
   "ORANGE_CROP_RECORDING_SINK_MODE=none"
@@ -493,10 +530,20 @@ echo "  save_verified_centers_armed=${ARM_SAVE} save_verified_layout_armed=${ARM
 echo "  fit_homographies=${FIT_HOMOGRAPHIES} accept_homographies_armed=${ACCEPT_HOMOGRAPHIES}"
 echo "  one_process_pair=true one_session=true"
 echo "  result=${RESULT_JSON}"
+echo "  record=${RECORD_DIR:-none} step=${RECORD_STEP_NAME}"
 if (( ! EXECUTE )); then
   echo "Dry-run only; add --execute to control the real projector and cameras."
   exit 0
 fi
+if [[ -n "${RECORD_DIR}" ]]; then
+  python3 "${REPO_ROOT}/scripts/commissioning_record.py" show --record "${RECORD_DIR}" |
+    grep -q '"status": "open"' || {
+      echo "Commissioning record is not an open record: ${RECORD_DIR}" >&2
+      rm -rf -- "${TIMING_CONFIG_DIR}"
+      exit 2
+    }
+fi
+trap 'record_step $?' EXIT
 
 if [[ -e "${CITRUS_SOCKET}" || -e "${ORANGE_SOCKET}" ]]; then
   echo "Refusing to start while a local-control socket exists" >&2
@@ -522,7 +569,8 @@ cleanup() {
   rm -f "${CITRUS_SOCKET}"
   if [[ -d "${TIMING_CONFIG_DIR}" ]]; then rm -rf -- "${TIMING_CONFIG_DIR}"; fi
 }
-trap cleanup EXIT INT TERM
+trap 'exit_code=$?; cleanup; record_step "${exit_code}"' EXIT
+trap 'cleanup; record_step 130; exit 130' INT TERM
 
 env "${CITRUS_ENV[@]}" "${CITRUS_BIN}" >"${CITRUS_LOG}" 2>&1 &
 citrus_pid=$!
@@ -551,7 +599,8 @@ orange_status=$?
 set -e
 
 cleanup
-trap - EXIT INT TERM
+trap 'record_step $?' EXIT
+trap - INT TERM
 
 if [[ ${orange_status} -ne 0 ]]; then
   echo "Orange arena-centering GUI failed with status ${orange_status}" >&2

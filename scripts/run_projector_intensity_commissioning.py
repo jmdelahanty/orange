@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
+_RECORD_RUN: dict[str, str] = {}
 SCHEMA_ID = "orange.projector_intensity_commissioning.run_manifest"
 
 
@@ -91,6 +93,11 @@ def main() -> int:
         help="restart Orange/Citrus for every sample (diagnostic compatibility only)",
     )
     parser.add_argument("--analyze-only", type=Path, metavar="MANIFEST")
+    parser.add_argument(
+        "--record",
+        default=os.environ.get("ORANGE_COMMISSIONING_RECORD", ""),
+        help="commissioning record to append this run to (default: $ORANGE_COMMISSIONING_RECORD)",
+    )
     args = parser.parse_args()
 
     if args.analyze_only is not None:
@@ -186,6 +193,11 @@ def main() -> int:
         return 0
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.record:
+        # The guided launcher this runs appends its own step; this run adds one
+        # for its report folder when it ends (see __main__).
+        os.environ["ORANGE_COMMISSIONING_RECORD"] = str(args.record)
+        _RECORD_RUN.update(record=str(args.record), output_dir=str(output_dir))
     manifest["status"] = "capturing"
     manifest["updated_utc"] = utc_now()
     write_json_atomic(manifest_path, manifest)
@@ -339,5 +351,28 @@ def main() -> int:
     return completed.returncode
 
 
+def _record_outer_step(name: str, exit_code: int, file_names: list[str]) -> None:
+    run = _RECORD_RUN
+    if not run.get("record") or not run.get("output_dir"):
+        return
+    from commissioning_record import append_launcher_step  # scripts/ is sys.path[0]
+
+    output_dir = Path(run["output_dir"])
+    code = append_launcher_step(
+        run["record"], name, exit_code,
+        files=[(Path(n).stem, output_dir / n) for n in file_names],
+        reference_dirs=[("report_dir", output_dir)],
+        command=[sys.argv[0], *sys.argv[1:]],
+    )
+    if code != 0:
+        print(f"WARNING: could not append this run to the commissioning record {run['record']}",
+              file=sys.stderr)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    exit_code = 1
+    try:
+        exit_code = main()
+    finally:
+        _record_outer_step('projector_intensity_sweep', exit_code, ['run_manifest.json', 'commissioning_report.json', 'commissioning_report.md', 'sweep_result.json'])
+    raise SystemExit(exit_code)

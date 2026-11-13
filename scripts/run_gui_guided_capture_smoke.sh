@@ -2,7 +2,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ORIGINAL_ARGS=("$@")
 EXECUTE=0
+RECORD_DIR="${ORANGE_COMMISSIONING_RECORD:-}"
+RECORD_STEP_NAME=""
+RECORD_DONE=0
+INTENSITY_AUTHORITY_JSON=""
+INTENSITY_AUTHORITY_TEXT=""
 PROFILE=""
 RECIPE="black_reference"
 RECIPE_EXPLICIT=0
@@ -76,10 +82,18 @@ Options:
   --display <display>
   --xauthority <path>
   --citrus-config <path>
+  --record <dir>            commissioning record to append this run to
+                            (default: $ORANGE_COMMISSIONING_RECORD)
+  --record-step-name <name> step name in the record (default from profile/recipe)
   --help
+
+A uniform-gray physical-target capture (projected_surface_scale_calibration)
+without --foreground-gray-u8 uses the commissioned gray
+(scripts/projector_intensity_authority.py) and refuses when there is none.
 
 Environment:
   CITRUS_BIN  Citrus executable (default: /home/jeremy/citrus/targets/citrus).
+  ORANGE_COMMISSIONING_RECORD  default for --record.
 EOF
 }
 
@@ -238,6 +252,18 @@ while [[ $# -gt 0 ]]; do
       CITRUS_CONFIG="$1"
       shift
       ;;
+    --record)
+      shift
+      require_value --record "$#"
+      RECORD_DIR="$1"
+      shift
+      ;;
+    --record-step-name)
+      shift
+      require_value --record-step-name "$#"
+      RECORD_STEP_NAME="$1"
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -265,9 +291,6 @@ if [[ -n "${PROFILE}" && ${RECIPE_EXPLICIT} -eq 0 ]]; then
     installed_tank_registration) RECIPE="experimental_area_center_and_outline" ;;
   esac
 fi
-if [[ "${RECIPE}" == "uniform_gray" && ${FOREGROUND_GRAY_EXPLICIT} -eq 0 ]]; then
-  FOREGROUND_GRAY_U8=76
-fi
 if [[ ${PURPOSE_EXPLICIT} -eq 0 ]]; then
   case "${RECIPE}" in
     arena_outline) PURPOSE="arena_projection" ;;
@@ -277,6 +300,21 @@ if [[ ${PURPOSE_EXPLICIT} -eq 0 ]]; then
     uniform_gray) PURPOSE="projected_surface_scale_calibration" ;;
     black_reference) PURPOSE="diagnostic_black_reference" ;;
   esac
+fi
+if [[ "${RECIPE}" == "uniform_gray" && ${FOREGROUND_GRAY_EXPLICIT} -eq 0 ]]; then
+  if [[ "${PURPOSE}" == "projected_surface_scale_calibration" ]]; then
+    # The physical target is lit by the projector: use the commissioned gray
+    # (2026-11-13 the scale step ran at the old default 76 instead of 24).
+    if ! authority_text="$(python3 "${REPO_ROOT}/scripts/projector_intensity_authority.py" \
+          --citrus-config "${CITRUS_CONFIG}" --cameras "${CAMERAS}")"; then
+      echo "No commissioned projector gray for cameras ${CAMERAS}; pass --foreground-gray-u8 explicitly" >&2
+      exit 2
+    fi
+    FOREGROUND_GRAY_U8="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["foreground_gray_u8"])' <<<"${authority_text}")"
+    INTENSITY_AUTHORITY_TEXT="${authority_text}"
+  else
+    FOREGROUND_GRAY_U8=76
+  fi
 fi
 
 case "${RECIPE}" in
@@ -394,6 +432,32 @@ if [[ -z "${RESULT_JSON}" ]]; then
 fi
 CITRUS_LOG="/tmp/orange_gui_guided_capture_${STAMP}_citrus.log"
 ORANGE_LOG="/tmp/orange_gui_guided_capture_${STAMP}_orange.log"
+if [[ -z "${RECORD_STEP_NAME}" ]]; then
+  RECORD_STEP_NAME="guided_capture_${PROFILE:-no_profile}_${PURPOSE}"
+fi
+
+# Append this run to the commissioning record (launcher result, both logs,
+# the intensity authority, the sessions it saved), passed or failed.
+record_step() {
+  local exit_code="$1"
+  if [[ -z "${RECORD_DIR}" || ${EXECUTE} -ne 1 || ${RECORD_DONE} -ne 0 ]]; then
+    return 0
+  fi
+  RECORD_DONE=1
+  local step_status="passed"
+  (( exit_code == 0 )) || step_status="failed"
+  local record_args=(
+    step --record "${RECORD_DIR}" --name "${RECORD_STEP_NAME}"
+    --status "${step_status}" --exit-code "${exit_code}"
+    --result-json "${RESULT_JSON}" --log "${ORANGE_LOG}" --log "${CITRUS_LOG}"
+  )
+  if [[ -n "${INTENSITY_AUTHORITY_JSON}" && -f "${INTENSITY_AUTHORITY_JSON}" ]]; then
+    record_args+=(--file "projector_intensity_authority=${INTENSITY_AUTHORITY_JSON}")
+  fi
+  python3 "${REPO_ROOT}/scripts/commissioning_record.py" "${record_args[@]}" \
+    -- "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" >/dev/null ||
+    echo "WARNING: could not append this run to the commissioning record ${RECORD_DIR}" >&2
+}
 
 if (( START_AT_CALIBRATION_TIMING )); then
   # The GUI intentionally discovers selectable camera configurations only as
@@ -446,6 +510,7 @@ ORANGE_ENV=(
   "ORANGE_GUI_AUTORUN_ENABLE_RECORD=0"
   "ORANGE_GUI_AUTORUN_ENABLE_YOLO=0"
   "ORANGE_GUI_AUTORUN_ENABLE_CROP=0"
+  "ORANGE_GUI_AUTORUN_ENABLE_POSE=0"
   "ORANGE_GUI_AUTORUN_START_RECORDING=0"
   "ORANGE_GUI_RECORDING_SINK_MODE=none"
   "ORANGE_CROP_RECORDING_SINK_MODE=none"
@@ -498,6 +563,10 @@ if [[ -n "${SWEEP_FOREGROUND_GRAYS_U8}" ]]; then
   echo "  sweep_grays_u8=${SWEEP_FOREGROUND_GRAYS_U8} sweep_repeats=${SWEEP_REPEATS} arena_outline_reference=${INCLUDE_ARENA_OUTLINE_REFERENCE} one_process=true one_session=true"
 fi
 echo "  ptp_gate_start_timing=${START_AT_CALIBRATION_TIMING} config=${ORANGE_CONFIG_DIR}"
+if [[ -n "${INTENSITY_AUTHORITY_TEXT}" ]]; then
+  echo "  foreground_gray_source=commissioned (scripts/projector_intensity_authority.py)"
+fi
+echo "  record=${RECORD_DIR:-none} step=${RECORD_STEP_NAME}"
 echo "  result=${RESULT_JSON}"
 echo "  citrus_log=${CITRUS_LOG}"
 echo "  orange_log=${ORANGE_LOG}"
@@ -507,6 +576,19 @@ if (( ! EXECUTE )); then
   echo "Dry-run only; add --execute to control the real display and cameras."
   exit 0
 fi
+
+if [[ -n "${RECORD_DIR}" ]]; then
+  python3 "${REPO_ROOT}/scripts/commissioning_record.py" show --record "${RECORD_DIR}" |
+    grep -q '"status": "open"' || {
+      echo "Commissioning record is not an open record: ${RECORD_DIR}" >&2
+      exit 2
+    }
+fi
+if [[ -n "${INTENSITY_AUTHORITY_TEXT}" ]]; then
+  INTENSITY_AUTHORITY_JSON="/tmp/orange_gui_guided_capture_${STAMP}_intensity_authority.json"
+  printf '%s\n' "${INTENSITY_AUTHORITY_TEXT}" >"${INTENSITY_AUTHORITY_JSON}"
+fi
+trap 'record_step $?' EXIT
 
 if [[ -e "${CITRUS_SOCKET}" || -e "${ORANGE_SOCKET}" ]]; then
   echo "Refusing to start while a local-control socket already exists:" >&2
@@ -537,7 +619,8 @@ cleanup_citrus() {
     rm -rf -- "${TIMING_CONFIG_DIR}"
   fi
 }
-trap cleanup_citrus EXIT INT TERM
+trap 'exit_code=$?; cleanup_citrus; record_step "${exit_code}"' EXIT
+trap 'cleanup_citrus; record_step 130; exit 130' INT TERM
 
 env "${CITRUS_ENV[@]}" "${CITRUS_BIN}" >"${CITRUS_LOG}" 2>&1 &
 citrus_pid=$!
@@ -568,7 +651,8 @@ orange_status=$?
 set -e
 
 cleanup_citrus
-trap - EXIT INT TERM
+trap 'record_step $?' EXIT
+trap - INT TERM
 
 if [[ ${orange_status} -ne 0 ]]; then
   echo "Orange guided GUI process failed with status ${orange_status}" >&2

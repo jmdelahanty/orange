@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.commissioning_record.v1",
+  "title": "Orange commissioning record v1",
+  "description": "record.json of one (re)commissioning session folder, written by scripts/commissioning_record.py. Steps reference calibration sessions by session_index.json sha256; copied files and referenced folders carry sha256 per file; SHA256SUMS covers the closed folder.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "schema_version", "record_id", "rig_id", "reason", "status", "opened_at_utc", "closed_at_utc", "operator", "agents", "tool_git_commit", "declarations", "steps", "attachments", "release"],
+  "properties": {
+    "schema_id": {"const": "orange.commissioning_record"},
+    "schema_version": {"const": 1},
+    "record_id": {"type": "string", "pattern": "^[a-z0-9_]+_[0-9]{8}T[0-9]{6}Z_[a-z0-9_]+$"},
+    "rig_id": {"type": "string", "minLength": 1},
+    "reason": {"type": "string", "minLength": 1},
+    "status": {"enum": ["open", "closed"]},
+    "opened_at_utc": {"$ref": "#/$defs/utc"},
+    "closed_at_utc": {"anyOf": [{"$ref": "#/$defs/utc"}, {"type": "null"}]},
+    "operator": {"type": ["string", "null"]},
+    "agents": {"type": "array", "items": {"type": "string"}},
+    "tool_git_commit": {"type": ["string", "null"]},
+    "declarations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at_utc", "key", "value", "source", "declared_by"],
+        "properties": {
+          "at_utc": {"$ref": "#/$defs/utc"},
+          "key": {"$ref": "#/$defs/key"},
+          "value": {"type": "string"},
+          "source": {"type": "string", "minLength": 1},
+          "declared_by": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}},
+    "attachments": {"type": "array", "items": {"$ref": "#/$defs/file_row"}},
+    "release": {"anyOf": [{"$ref": "#/$defs/file_row"}, {"type": "null"}]}
+  },
+  "$defs": {
+    "utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"},
+    "key": {"type": "string", "pattern": "^[a-z][a-z0-9_.]*$"},
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "file_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "sha256", "bytes"],
+      "properties": {
+        "role": {"$ref": "#/$defs/key"},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "copied_from": {"type": "string"}
+      }
+    },
+    "missing_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "missing"],
+      "properties": {"role": {"$ref": "#/$defs/key"}, "missing": {"type": "string"}}
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "session_dir", "session_index_sha256"],
+      "properties": {
+        "session_id": {"type": "string", "pattern": "^calsess_[A-Za-z0-9_]+$"},
+        "session_dir": {"type": "string"},
+        "session_index_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "note": {"type": "string"}
+      }
+    },
+    "referenced_dir": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "dir", "file_count", "files"],
+      "properties": {
+        "role": {"$ref": "#/$defs/key"},
+        "dir": {"type": "string"},
+        "file_count": {"type": "integer", "minimum": 0},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256", "bytes"],
+            "properties": {
+              "path": {"type": "string"},
+              "sha256": {"$ref": "#/$defs/sha256"},
+              "bytes": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["at_utc", "reviewer", "verdict", "note", "evidence"],
+      "properties": {
+        "at_utc": {"$ref": "#/$defs/utc"},
+        "reviewer": {"enum": ["claude", "jeremy"]},
+        "verdict": {"enum": ["accepted", "rejected", "characterization", "needs_operator"]},
+        "note": {"type": "string"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/file_row"}}
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step_index", "name", "dir", "recorded_at_utc", "status", "exit_code", "launcher_result_status", "command", "tool_git_commit", "sessions", "files", "referenced_dirs", "state_at_step", "verdicts"],
+      "properties": {
+        "step_index": {"type": "integer", "minimum": 1},
+        "name": {"type": "string", "minLength": 1},
+        "dir": {"type": "string"},
+        "recorded_at_utc": {"$ref": "#/$defs/utc"},
+        "status": {"enum": ["passed", "failed"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "launcher_result_status": {"type": ["string", "null"]},
+        "command": {"type": "array", "items": {"type": "string"}},
+        "tool_git_commit": {"type": ["string", "null"]},
+        "sessions": {"type": "array", "items": {"$ref": "#/$defs/session"}},
+        "files": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/file_row"}, {"$ref": "#/$defs/missing_file"}]}},
+        "referenced_dirs": {"type": "array", "items": {"$ref": "#/$defs/referenced_dir"}},
+        "state_at_step": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["value", "source", "declared_at_utc"],
+            "properties": {
+              "value": {"type": "string"},
+              "source": {"type": "string"},
+              "declared_at_utc": {"$ref": "#/$defs/utc"}
+            }
+          }
+        },
+        "verdicts": {"type": "array", "items": {"$ref": "#/$defs/verdict"}}
+      }
+    }
+  }
+}
