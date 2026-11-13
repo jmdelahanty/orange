@@ -282,6 +282,54 @@ void fail(GuidedCaptureAutorunState* state, const std::string& error)
     enter_stage(state, GuidedCaptureAutorunStage::kStopStream);
 }
 
+void restore_guided_capture_preflight(
+    GuidedCaptureAutorunState* state,
+    SpatialLayoutUiState* spatial_state,
+    const CameraControl* camera_control,
+    CameraEmergent* ecams,
+    CameraParams* cameras_params,
+    const int num_cameras)
+{
+    if (!state->preflight_applied || state->preflight_restore_attempted) {
+        return;
+    }
+    state->preflight_restore_attempted = true;
+    int light_camera_index = -1;
+    for (int index = 0; index < num_cameras; ++index) {
+        if (camera_has_exposed_mapped_nir_strobe(cameras_params[index])) {
+            light_camera_index = index;
+            break;
+        }
+    }
+    const bool mapped_strobe_available = light_camera_index >= 0;
+    state->preflight_restore_ok =
+        restore_calibration_capture_preflight_all_cameras(
+            spatial_state,
+            ecams,
+            cameras_params,
+            num_cameras,
+            mapped_strobe_available ? &ecams[light_camera_index] : nullptr,
+            mapped_strobe_available ? &cameras_params[light_camera_index] : nullptr,
+            mapped_strobe_available,
+            camera_control->record_video || camera_control->recording_draining,
+            &state->preflight_restore_status);
+    set_calibration_preflight_result(
+        spatial_state,
+        state->preflight_restore_ok,
+        state->preflight_restore_status);
+    std::cout << "[GUI][guided_capture_autorun] calibration settings restored after stream "
+              << (camera_control->subscribe ? "stop timeout (still streaming)" : "stop")
+              << ": " << (state->preflight_restore_ok ? "ok" : "failed") << std::endl;
+    if (!state->preflight_restore_ok) {
+        state->run_passed = false;
+        if (state->error_message.empty()) {
+            state->error_message =
+                "guided capture calibration restore failed: " +
+                state->preflight_restore_status;
+        }
+    }
+}
+
 void apply_diagnostic_black_reference_metadata(SpatialLayoutUiState* spatial_state)
 {
     spatial_state->calibration_image_set_purpose = "diagnostic_black_reference";
@@ -1319,40 +1367,10 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
     }
 
     case GuidedCaptureAutorunStage::kStopStream:
-        if (state->preflight_applied && !state->preflight_restore_attempted) {
-            state->preflight_restore_attempted = true;
-            int light_camera_index = -1;
-            for (int index = 0; index < num_cameras; ++index) {
-                if (camera_has_exposed_mapped_nir_strobe(cameras_params[index])) {
-                    light_camera_index = index;
-                    break;
-                }
-            }
-            const bool mapped_strobe_available = light_camera_index >= 0;
-            state->preflight_restore_ok =
-                restore_calibration_capture_preflight_all_cameras(
-                    spatial_state,
-                    ecams,
-                    cameras_params,
-                    num_cameras,
-                    mapped_strobe_available ? &ecams[light_camera_index] : nullptr,
-                    mapped_strobe_available ? &cameras_params[light_camera_index] : nullptr,
-                    mapped_strobe_available,
-                    camera_control->record_video || camera_control->recording_draining,
-                    &state->preflight_restore_status);
-            set_calibration_preflight_result(
-                spatial_state,
-                state->preflight_restore_ok,
-                state->preflight_restore_status);
-            if (!state->preflight_restore_ok) {
-                state->run_passed = false;
-                if (state->error_message.empty()) {
-                    state->error_message =
-                        "guided capture calibration restore failed: " +
-                        state->preflight_restore_status;
-                }
-            }
-        }
+        // The calibration settings and the mapped NIR strobe are restored only
+        // after the stream has stopped (kWaitForStreamStop). Restoring first
+        // re-enabled the strobe while frames still ran at the calibration
+        // exposure (100 ms at 5 fps = 50 % duty, above the 8 % limit).
         if (camera_control->subscribe &&
             orange::calibration::global_transaction_coordinator().active() &&
             !spatial_layout::spatial_calibration_transaction_owned_by(
@@ -1364,6 +1382,8 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
                         .rejection_message("Guided commissioning stream stop");
             }
             state->run_passed = false;
+            restore_guided_capture_preflight(
+                state, spatial_state, camera_control, ecams, cameras_params, num_cameras);
             enter_stage(state, GuidedCaptureAutorunStage::kWriteResult);
         } else if (camera_control->subscribe) {
             if (!state->action_requested) {
@@ -1374,18 +1394,26 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
             }
             enter_stage(state, GuidedCaptureAutorunStage::kWaitForStreamStop);
         } else {
+            restore_guided_capture_preflight(
+                state, spatial_state, camera_control, ecams, cameras_params, num_cameras);
             enter_stage(state, GuidedCaptureAutorunStage::kWriteResult);
         }
         break;
 
     case GuidedCaptureAutorunStage::kWaitForStreamStop:
         if (!camera_control->subscribe) {
+            restore_guided_capture_preflight(
+                state, spatial_state, camera_control, ecams, cameras_params, num_cameras);
             enter_stage(state, GuidedCaptureAutorunStage::kWriteResult);
         } else if (stage_elapsed_seconds(*state) >= 60.0) {
             state->run_passed = false;
             if (state->error_message.empty()) {
                 state->error_message = "timed out stopping Orange stream";
             }
+            // Still streaming: restore anyway rather than leave calibration
+            // settings and a suppressed strobe on the cameras.
+            restore_guided_capture_preflight(
+                state, spatial_state, camera_control, ecams, cameras_params, num_cameras);
             enter_stage(state, GuidedCaptureAutorunStage::kWriteResult);
         }
         break;

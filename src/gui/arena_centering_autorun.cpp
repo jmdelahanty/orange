@@ -1310,6 +1310,48 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
         return requests;
     }
 
+    // Runs once, after the stream has stopped (or its stop timed out).
+    const auto restore_preflight = [&]() {
+        if (state->preflight_applied && !state->preflight_restore_attempted) {
+            state->preflight_restore_attempted = true;
+            int light_index = -1;
+            for (int i = 0; i < num_cameras; ++i) {
+                if (camera_has_exposed_mapped_nir_strobe(cameras_params[i])) {
+                    light_index = i;
+                    break;
+                }
+            }
+            const bool mapped_strobe = light_index >= 0;
+            state->preflight_restore_ok =
+                restore_calibration_capture_preflight_all_cameras(
+                    spatial_state,
+                    ecams,
+                    cameras_params,
+                    num_cameras,
+                    mapped_strobe ? &ecams[light_index] : nullptr,
+                    mapped_strobe ? &cameras_params[light_index] : nullptr,
+                    mapped_strobe,
+                    camera_control->record_video || camera_control->recording_draining,
+                    &state->preflight_restore_status);
+            set_calibration_preflight_result(
+                spatial_state,
+                state->preflight_restore_ok,
+                state->preflight_restore_status);
+            if (!state->preflight_restore_ok) {
+                state->run_passed = false;
+                if (state->error_message.empty()) {
+                    state->error_message = "camera preflight restore failed: " +
+                        state->preflight_restore_status;
+                }
+            }
+        }
+        if (state->preflight_applied) {
+            std::cout << "[GUI][arena_centering] calibration settings restored after stream "
+                      << (camera_control->subscribe ? "stop timeout (still streaming)" : "stop")
+                      << ": " << (state->preflight_restore_ok ? "ok" : "failed") << std::endl;
+        }
+    };
+
     switch (state->stage) {
     case ArenaCenteringAutorunStage::kWaitForStream:
         if (camera_control->subscribe && ecams != nullptr && cameras_params != nullptr &&
@@ -2383,43 +2425,12 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
         break;
     }
 
-    case ArenaCenteringAutorunStage::kRestorePreflight: {
-        if (state->preflight_applied && !state->preflight_restore_attempted) {
-            state->preflight_restore_attempted = true;
-            int light_index = -1;
-            for (int i = 0; i < num_cameras; ++i) {
-                if (camera_has_exposed_mapped_nir_strobe(cameras_params[i])) {
-                    light_index = i;
-                    break;
-                }
-            }
-            const bool mapped_strobe = light_index >= 0;
-            state->preflight_restore_ok =
-                restore_calibration_capture_preflight_all_cameras(
-                    spatial_state,
-                    ecams,
-                    cameras_params,
-                    num_cameras,
-                    mapped_strobe ? &ecams[light_index] : nullptr,
-                    mapped_strobe ? &cameras_params[light_index] : nullptr,
-                    mapped_strobe,
-                    camera_control->record_video || camera_control->recording_draining,
-                    &state->preflight_restore_status);
-            set_calibration_preflight_result(
-                spatial_state,
-                state->preflight_restore_ok,
-                state->preflight_restore_status);
-            if (!state->preflight_restore_ok) {
-                state->run_passed = false;
-                if (state->error_message.empty()) {
-                    state->error_message = "camera preflight restore failed: " +
-                        state->preflight_restore_status;
-                }
-            }
-        }
+    case ArenaCenteringAutorunStage::kRestorePreflight:
+        // The calibration settings and the mapped NIR strobe are restored after
+        // the stream stops (kWaitForStreamStop): restoring first re-enabled the
+        // strobe while frames still ran at the calibration exposure.
         enter_stage(state, ArenaCenteringAutorunStage::kStopStream);
         break;
-    }
 
     case ArenaCenteringAutorunStage::kStopStream:
         if (camera_control->subscribe &&
@@ -2433,11 +2444,13 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
                         .rejection_message("Arena-centering stream stop");
             }
             state->run_passed = false;
+            restore_preflight();
             enter_stage(state, ArenaCenteringAutorunStage::kWriteResult);
         } else if (camera_control->subscribe) {
             requests.toggle_streaming = true;
             enter_stage(state, ArenaCenteringAutorunStage::kWaitForStreamStop);
         } else {
+            restore_preflight();
             enter_stage(state, ArenaCenteringAutorunStage::kWriteResult);
         }
         break;
@@ -2450,6 +2463,9 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
                     state->error_message = "timed out stopping Orange stream";
                 }
             }
+            // After the stop; on a stop timeout restore anyway rather than
+            // leave calibration settings and a suppressed strobe behind.
+            restore_preflight();
             enter_stage(state, ArenaCenteringAutorunStage::kWriteResult);
         }
         break;

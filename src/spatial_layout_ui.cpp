@@ -810,38 +810,20 @@ void handle_spatial_layout_persistence_event(
     }
 }
 
-void render_spatial_layout_window(
+// Save workers, group capture and the registration workflows advance every
+// frame whether the window is shown, collapsed or closed: on 2026-11-13 a
+// collapsed Spatial Layout window (ImGui::Begin returned false) stalled the
+// commissioning group capture until its timeout.
+static void advance_spatial_layout_background_work(
     SpatialLayoutUiState* ui_state,
     CameraControl* camera_control,
     CameraEmergent* ecams,
     CameraParams* cameras_params,
     CameraEachSelect* cameras_select,
     int num_cameras,
-    bool other_calibration_tool_busy,
     const std::string& artifact_root_dir,
-    const GLuint* live_preview_texture_ids,
-    const uint64_t* live_preview_uploaded_serials,
     SpatialSnapshotWorker* const* spatial_snapshot_workers)
 {
-    if (ui_state == nullptr) {
-        return;
-    }
-
-    initialize_spatial_layout_defaults(ui_state);
-
-    // Completion and lease release must not depend on panel visibility.
-    orange::gui::spatial_layout::poll_daily_native_context_capture(ui_state, cameras_params, num_cameras, spatial_snapshot_workers,
-        camera_control && (camera_control->record_video || camera_control->recording_draining));
-
-    if (!ui_state->show_window) {
-        return;
-    }
-
-    if (!ImGui::Begin("Spatial Layout / Experimental Area Registration", &ui_state->show_window)) {
-        ImGui::End();
-        return;
-    }
-
     poll_top_rim_observation_save_worker(ui_state);
     poll_generic_calibration_image_set_save_worker(ui_state);
 
@@ -851,58 +833,9 @@ void render_spatial_layout_window(
         ecams == nullptr ||
         camera_control == nullptr ||
         !camera_control->open) {
-        ImGui::TextDisabled("Open cameras before using spatial layout view registration.");
-        ImGui::End();
         return;
     }
-
     ui_state->selected_camera = std::clamp(ui_state->selected_camera, 0, std::max(0, num_cameras - 1));
-
-    std::vector<std::string> camera_labels_storage;
-    std::vector<const char*> camera_labels;
-    camera_labels_storage.reserve(num_cameras);
-    camera_labels.reserve(num_cameras);
-    for (int i = 0; i < num_cameras; ++i) {
-        std::ostringstream label;
-        label << i << ": " << cameras_params[i].camera_serial;
-        camera_labels_storage.push_back(label.str());
-    }
-    for (const std::string& label : camera_labels_storage) {
-        camera_labels.push_back(label.c_str());
-    }
-
-    ImGui::Combo("Camera", &ui_state->selected_camera, camera_labels.data(), num_cameras);
-    if (ui_state->configured_camera_index != ui_state->selected_camera) {
-        ui_state->configured_camera_index = ui_state->selected_camera;
-        clear_spatial_layout_texture(ui_state);
-        ui_state->preview_status = "Capture a frame to preview the selected camera.";
-        ui_state->preview_error.clear();
-        clear_detected_experimental_area_circle(ui_state);
-    }
-
-    CameraParams& selected_camera = cameras_params[ui_state->selected_camera];
-    if (!ui_state->citrus_canvas_templates.empty()) {
-        const int matching_citrus_index =
-            find_citrus_template_index_for_camera(*ui_state, selected_camera.camera_serial);
-        if (matching_citrus_index >= 0 &&
-            matching_citrus_index != ui_state->citrus_canvas_template_index) {
-            std::string status;
-            std::string error;
-            if (select_citrus_template_by_index(
-                    ui_state,
-                    matching_citrus_index,
-                    &status,
-                    &error)) {
-                ui_state->citrus_import_status =
-                    status + " Auto-selected from loaded Citrus canvas for selected Orange camera.";
-                ui_state->citrus_import_error.clear();
-            } else {
-                ui_state->citrus_import_error = error;
-            }
-        }
-    }
-    SpatialSnapshotWorker* selected_snapshot_worker =
-        spatial_snapshot_workers ? spatial_snapshot_workers[ui_state->selected_camera] : nullptr;
     initialize_group_capture_camera_scope(
         ui_state,
         cameras_params,
@@ -995,6 +928,108 @@ void render_spatial_layout_window(
         cameras_select,
         num_cameras,
         spatial_snapshot_workers);
+}
+
+void render_spatial_layout_window(
+    SpatialLayoutUiState* ui_state,
+    CameraControl* camera_control,
+    CameraEmergent* ecams,
+    CameraParams* cameras_params,
+    CameraEachSelect* cameras_select,
+    int num_cameras,
+    bool other_calibration_tool_busy,
+    const std::string& artifact_root_dir,
+    const GLuint* live_preview_texture_ids,
+    const uint64_t* live_preview_uploaded_serials,
+    SpatialSnapshotWorker* const* spatial_snapshot_workers)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+
+    initialize_spatial_layout_defaults(ui_state);
+
+    // Completion and lease release must not depend on panel visibility.
+    orange::gui::spatial_layout::poll_daily_native_context_capture(ui_state, cameras_params, num_cameras, spatial_snapshot_workers,
+        camera_control && (camera_control->record_video || camera_control->recording_draining));
+
+    advance_spatial_layout_background_work(
+        ui_state,
+        camera_control,
+        ecams,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        artifact_root_dir,
+        spatial_snapshot_workers);
+
+    if (!ui_state->show_window) {
+        return;
+    }
+
+    if (!ImGui::Begin("Spatial Layout / Experimental Area Registration", &ui_state->show_window)) {
+        ImGui::End();
+        return;
+    }
+
+    if (num_cameras <= 0 ||
+        cameras_params == nullptr ||
+        cameras_select == nullptr ||
+        ecams == nullptr ||
+        camera_control == nullptr ||
+        !camera_control->open) {
+        ImGui::TextDisabled("Open cameras before using spatial layout view registration.");
+        ImGui::End();
+        return;
+    }
+
+    ui_state->selected_camera = std::clamp(ui_state->selected_camera, 0, std::max(0, num_cameras - 1));
+
+    std::vector<std::string> camera_labels_storage;
+    std::vector<const char*> camera_labels;
+    camera_labels_storage.reserve(num_cameras);
+    camera_labels.reserve(num_cameras);
+    for (int i = 0; i < num_cameras; ++i) {
+        std::ostringstream label;
+        label << i << ": " << cameras_params[i].camera_serial;
+        camera_labels_storage.push_back(label.str());
+    }
+    for (const std::string& label : camera_labels_storage) {
+        camera_labels.push_back(label.c_str());
+    }
+
+    ImGui::Combo("Camera", &ui_state->selected_camera, camera_labels.data(), num_cameras);
+    if (ui_state->configured_camera_index != ui_state->selected_camera) {
+        ui_state->configured_camera_index = ui_state->selected_camera;
+        clear_spatial_layout_texture(ui_state);
+        ui_state->preview_status = "Capture a frame to preview the selected camera.";
+        ui_state->preview_error.clear();
+        clear_detected_experimental_area_circle(ui_state);
+    }
+
+    CameraParams& selected_camera = cameras_params[ui_state->selected_camera];
+    if (!ui_state->citrus_canvas_templates.empty()) {
+        const int matching_citrus_index =
+            find_citrus_template_index_for_camera(*ui_state, selected_camera.camera_serial);
+        if (matching_citrus_index >= 0 &&
+            matching_citrus_index != ui_state->citrus_canvas_template_index) {
+            std::string status;
+            std::string error;
+            if (select_citrus_template_by_index(
+                    ui_state,
+                    matching_citrus_index,
+                    &status,
+                    &error)) {
+                ui_state->citrus_import_status =
+                    status + " Auto-selected from loaded Citrus canvas for selected Orange camera.";
+                ui_state->citrus_import_error.clear();
+            } else {
+                ui_state->citrus_import_error = error;
+            }
+        }
+    }
+    SpatialSnapshotWorker* selected_snapshot_worker =
+        spatial_snapshot_workers ? spatial_snapshot_workers[ui_state->selected_camera] : nullptr;
     ImGui::Text("Current settings: focus=%u iris=%u exposure=%u frame_rate=%u gain=%u size=%ux%u",
                 selected_camera.focus,
                 selected_camera.iris,
