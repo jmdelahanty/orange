@@ -1720,6 +1720,9 @@ if(BUILD_TESTING)
     target_include_directories(runtime_paths_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(runtime_paths_tests PRIVATE cxx_std_17)
     add_test(NAME runtime_paths_tests COMMAND runtime_paths_tests)
+    add_test(NAME orange_data_root_tests
+             COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/orange_data_root_tests.py"
+                     $<TARGET_FILE:runtime_paths_tests>)
 
     add_executable(arena_centering_analysis_tests
         "tools/arena_centering_analysis_tests.cpp"

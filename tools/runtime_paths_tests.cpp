@@ -3,7 +3,10 @@
 //
 //   runtime_paths_tests                     run the tests
 //   runtime_paths_tests --resolve <rel>     print find_support_file(rel) (used by the tests)
+//   runtime_paths_tests --data-root         print the data root, or "ERROR: <reason>" (used by
+//                                           tools/orange_data_root_tests.py for C++/Python parity)
 
+#include "orange_data_root.h"
 #include "runtime_paths.h"
 
 #include <cstdio>
@@ -91,6 +94,12 @@ void test_installed_release_wins_over_cwd(const fs::path& self)
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--data-root") {
+        std::string error;
+        const fs::path root = orange::data_root::resolve(&error);
+        std::cout << (root.empty() ? "ERROR: " + error : root.string()) << "\n";
+        return 0;
+    }
     if (argc == 3 && std::string(argv[1]) == "--resolve") {
         std::cout << find_support_file(argv[2]).string() << "\n";
         return 0;

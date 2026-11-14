@@ -10,6 +10,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from orange_paths import orange_data_root  # noqa: E402
+
 
 PROFILE_DEFAULTS = {
     "default": {
@@ -31,7 +35,7 @@ PROFILE_DEFAULTS = {
 
 
 def default_config_path() -> Path:
-    return Path.home() / "orange_data" / "config" / "app" / "default.json"
+    return orange_data_root() / "config" / "app" / "default.json"
 
 
 def nonnegative_int_in_range(max_value: int):

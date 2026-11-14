@@ -1,3 +1,4 @@
+#include "orange_data_root.h"
 #include "gui/post_finalize_validation.h"
 #include "runtime_paths.h"
 
@@ -244,7 +245,12 @@ void StartPostFinalizeValidation(const std::string& recording_folder)
     }
     groups.resize(static_cast<std::size_t>(std::max(group_count, 0)));
 
-    const std::filesystem::path out_dir = std::filesystem::path(home) / "orange_data" / "recording_validation";
+    // The person's data root (src/orange_data_root.h); the passwd home of the
+    // invoking user if it cannot be resolved.
+    const std::filesystem::path data_root = orange::data_root::resolve();
+    const std::filesystem::path out_dir =
+        (data_root.empty() ? std::filesystem::path(home) / "orange_data" : data_root) /
+        "recording_validation";
     run.view.json_path = (out_dir / (run.view.recording_name + ".json")).string();
     run.log_path = (out_dir / (run.view.recording_name + ".log")).string();
     int log_fd = -1;

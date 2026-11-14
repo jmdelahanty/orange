@@ -1,6 +1,7 @@
 // src/project.cpp
 #include "project.h"
 #include "build_info.h"
+#include "orange_data_root.h"
 #include "outputs/common/safe_path.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
@@ -1122,43 +1123,13 @@ nlohmann::json orange_source_version_snapshot()
 
 std::string build_default_orange_root_dir(std::string* warning_out)
 {
+    // One rule for every caller: src/orange_data_root.h.
+    std::string error;
+    const std::filesystem::path root = orange::data_root::resolve(&error);
     if (warning_out) {
-        warning_out->clear();
+        *warning_out = root.empty() ? "Failed to resolve Orange data root: " + error : std::string();
     }
-
-    auto build_for_home = [](const std::string& home_dir) -> std::string {
-        if (home_dir.empty()) {
-            return std::string();
-        }
-        return (std::filesystem::path(home_dir) / "orange_data").string();
-    };
-
-    const char* sudo_user = std::getenv("SUDO_USER");
-    if (sudo_user && sudo_user[0] != '\0') {
-        if (passwd* pw = getpwnam(sudo_user)) {
-            if (pw->pw_dir && pw->pw_dir[0] != '\0') {
-                return build_for_home(pw->pw_dir);
-            }
-        } else if (warning_out) {
-            *warning_out = std::string("Failed to resolve SUDO_USER home for `") + sudo_user + "`";
-        }
-    }
-
-    const char* home = std::getenv("HOME");
-    if (home && home[0] != '\0') {
-        return build_for_home(home);
-    }
-
-    if (passwd* pw = getpwuid(getuid())) {
-        if (pw->pw_dir && pw->pw_dir[0] != '\0') {
-            return build_for_home(pw->pw_dir);
-        }
-    }
-
-    if (warning_out) {
-        *warning_out = "Failed to resolve Orange data root from runtime environment";
-    }
-    return std::string();
+    return root.string();
 }
 
 std::string build_default_app_config_path(const std::string& orange_root_dir_str)

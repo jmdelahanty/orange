@@ -16,8 +16,8 @@ struct RecordingPhysicalCamera {
 };
 
 // Resolves the normal Orange calibration root. Tests and deployments may set
-// ORANGE_CALIBRATION_BASE_DIR; otherwise this follows the GUI's established
-// $HOME/orange_data/calibrations layout.
+// ORANGE_CALIBRATION_BASE_DIR; otherwise <data root>/calibrations, with the data
+// root from src/orange_data_root.h (the invoking person's ~/orange_data).
 std::filesystem::path resolve_recording_calibration_base_dir();
 
 // Revalidates each participating camera's exact active physical-registration

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pwd
 import socket
 import sys
 import time
@@ -15,20 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from orange_paths import orange_data_root  # noqa: E402
+
 
 def default_orange_root() -> Path:
-    sudo_user = os.environ.get("SUDO_USER", "")
-    if sudo_user:
-        try:
-            home = pwd.getpwnam(sudo_user).pw_dir
-        except KeyError:
-            home = ""
-        if home:
-            return Path(home) / "orange_data"
-    home_env = os.environ.get("HOME", "")
-    if home_env:
-        return Path(home_env) / "orange_data"
-    return Path.home() / "orange_data"
+    # One rule for every caller: scripts/orange_paths.py (src/orange_data_root.h).
+    return orange_data_root()
 
 
 def default_config_path() -> Path:

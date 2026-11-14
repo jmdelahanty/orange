@@ -123,7 +123,7 @@ Sibling patterns on this host:
 Each change is a normal dish-branch change with tests, promoted on Jeremy's
 word. None needs the rig until step 5.
 
-**a. Build-time version stamp.**
+**a. Build-time version stamp.** Done in 8b05058.
 - CMake writes `build_info.h`: commit, describe, branch and dirty flag at
   configure and build time.
 - `build_source_version_snapshot()` falls back to it, plus the release's
@@ -132,7 +132,7 @@ word. None needs the rig until step 5.
 - The launcher's source-version requirement accepts an installed stamp, and
   refuses a dirty one.
 
-**b. Install-relative support files.**
+**b. Install-relative support files.** Done in 9549912.
 - One `orange_share_dir()` tries, in order:
   - `<exe>/../share/orange` (installed);
   - `<exe>/../../..` (`targets/release` in a tree);
@@ -140,11 +140,12 @@ word. None needs the rig until step 5.
 - The fonts, the post-finalize validator, the recorder verifier and
   `external_video_sanity.py` all use it, so the GUI no longer depends on the
   folder it starts in.
-- The run-time script subset is listed in one file,
-  `scripts/runtime_files.txt`, which the installer copies and a test checks
-  against what the code references.
+- The install copies the whole `scripts/` folder (about 110 small files), not
+  a hand-kept subset: launchers live there too, and a subset would miss the
+  modules the scripts import. Done in 9549912 (`src/runtime_paths.h`).
 
-**c. One data-root resolver.** One function in C++, mirrored by one Python
+**c. One data-root resolver.** Done (per-person root) in the commit after
+9549912. One function in C++, mirrored by one Python
 helper, used everywhere. It replaces:
 - the `HOME`-only paths in `recording_physical_registration.cpp` and
   `post_finalize_validation.cpp`;

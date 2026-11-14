@@ -29,9 +29,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from orange_paths import orange_data_root  # noqa: E402
+
 SOCKET = Path("/tmp/citrus_local_control.sock")
 DEFAULT_CANVAS = Path("/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json")
-SESSIONS_ROOT = Path.home() / "orange_data" / "calibrations" / "sessions"
+SESSIONS_ROOT = orange_data_root() / "calibrations" / "sessions"
 
 
 def sha256_file(path: Path) -> str:

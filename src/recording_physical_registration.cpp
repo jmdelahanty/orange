@@ -1,3 +1,4 @@
+#include "orange_data_root.h"
 #include "recording_physical_registration.h"
 
 #include "dish_top_rim_observation.h"
@@ -192,9 +193,10 @@ fs::path resolve_recording_calibration_base_dir()
         configured != nullptr && configured[0] != '\0') {
         return configured;
     }
-    if (const char* home = std::getenv("HOME");
-        home != nullptr && home[0] != '\0') {
-        return fs::path(home) / "orange_data" / "calibrations";
+    // The person's data root (src/orange_data_root.h), never $HOME: under sudo
+    // $HOME can be root's.
+    if (const fs::path root = orange::data_root::resolve(); !root.empty()) {
+        return root / "calibrations";
     }
     return fs::path("orange_data") / "calibrations";
 }

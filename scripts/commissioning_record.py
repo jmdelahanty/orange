@@ -48,14 +48,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from orange_paths import orange_data_root  # noqa: E402
+
 SCHEMA_ID = "orange.commissioning_record"
 SCHEMA_VERSION = 1
 RECORD_FILE = "record.json"
 SUMS_FILE = "SHA256SUMS"
 README_FILE = "README.md"
 LOCK_FILE = ".record.lock"
-DEFAULT_ROOT = Path.home() / "orange_data" / "calibrations" / "commissioning"
-DEFAULT_SESSIONS_ROOT = Path.home() / "orange_data" / "calibrations" / "sessions"
+DEFAULT_ROOT = orange_data_root() / "calibrations" / "commissioning"
+DEFAULT_SESSIONS_ROOT = orange_data_root() / "calibrations" / "sessions"
 VERDICTS = ("accepted", "rejected", "characterization", "needs_operator")
 STEP_STATUSES = ("passed", "failed")
 SESSION_ID = re.compile(r"^calsess_[A-Za-z0-9_]+$")

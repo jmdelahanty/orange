@@ -42,6 +42,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import brightness_map as bm  # noqa: E402
+from orange_paths import orange_data_root  # noqa: E402
 
 SCHEMA_ID = "orange.commissioning.dot_contrast"
 SCHEMA_VERSION = 1
@@ -120,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--session", required=True)
     parser.add_argument("--dark-session", required=True)
-    parser.add_argument("--sessions-root", type=Path, default=Path.home() / "orange_data" / "calibrations" / "sessions")
+    parser.add_argument("--sessions-root", type=Path, default=orange_data_root() / "calibrations" / "sessions")
     parser.add_argument("--citrus-config", type=Path,
                         default=Path("/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json"))
     parser.add_argument("--core-fraction", type=float, default=0.6)
