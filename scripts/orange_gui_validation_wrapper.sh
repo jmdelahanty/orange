@@ -344,7 +344,7 @@ validate_env_item() {
       }
       ;;
     ORANGE_GUI_GUIDED_CAPTURE_RECIPE_SEQUENCE)
-      [[ -z "$value" || "$value" =~ ^(black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots)(,(black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots))*$ ]] || {
+      [[ -z "$value" || "$value" =~ ^(black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots|static_dots)(,(black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots|static_dots))*$ ]] || {
         echo "Invalid guided-capture recipe sequence: $value" >&2
         return 2
       }

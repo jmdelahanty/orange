@@ -14,6 +14,7 @@ PHYSICAL_TARGET_PLANE_Z_MM=""
 PHYSICAL_TARGET_PLANE_Z_UNCERTAINTY_MM=""
 PHYSICAL_TARGET_PLANE_Z_SOURCE=""
 PROJECTOR_LIGHT_BLOCKED=0
+STATIC_DOTS_SCENES=""
 PROFILE=""
 RECIPE="black_reference"
 RECIPE_EXPLICIT=0
@@ -98,6 +99,9 @@ Options:
   --projector-light-blocked dark frame: Citrus shows black_reference, the operator
                             blocks the projector output (recipe sequence of
                             black_reference only)
+  --static-dots-scenes <file> Citrus static_dots scenes ({"scenes": [{"label", "scene_options"}]});
+                            without --recipe-sequence the sequence is black_reference then one
+                            static_dots per scene; needs --save
   --record <dir>            commissioning record to append this run to
                             (default: $ORANGE_COMMISSIONING_RECORD)
   --record-step-name <name> step name in the record (default from profile/recipe)
@@ -296,6 +300,12 @@ while [[ $# -gt 0 ]]; do
       PROJECTOR_LIGHT_BLOCKED=1
       shift
       ;;
+    --static-dots-scenes)
+      shift
+      require_value --static-dots-scenes "$#"
+      STATIC_DOTS_SCENES="$1"
+      shift
+      ;;
     --record)
       shift
       require_value --record "$#"
@@ -359,6 +369,22 @@ if (( PROJECTOR_LIGHT_BLOCKED )); then
   [[ -z "${PHYSICAL_TARGET_STAGE}" ]] || {
     echo "--projector-light-blocked cannot be combined with --physical-target-stage" >&2; exit 2; }
 fi
+if [[ -n "${STATIC_DOTS_SCENES}" ]]; then
+  STATIC_DOTS_SCENES="$(realpath -e "${STATIC_DOTS_SCENES}")" || {
+    echo "--static-dots-scenes file not found" >&2; exit 2; }
+  static_dots_count="$(python3 -c '
+import json, sys
+scenes = json.load(open(sys.argv[1]))["scenes"]
+assert isinstance(scenes, list) and scenes
+print(len(scenes))' "${STATIC_DOTS_SCENES}")" || {
+    echo "--static-dots-scenes must be JSON with a non-empty \"scenes\" list" >&2; exit 2; }
+  if [[ -z "${RECIPE_SEQUENCE}" ]]; then
+    RECIPE_SEQUENCE="black_reference"
+    for ((i = 0; i < static_dots_count; ++i)); do RECIPE_SEQUENCE+=",static_dots"; done
+  fi
+  (( PROJECTOR_LIGHT_BLOCKED == 0 )) && [[ -z "${PHYSICAL_TARGET_STAGE}" ]] || {
+    echo "--static-dots-scenes cannot be combined with a dark frame or a physical target" >&2; exit 2; }
+fi
 if [[ ${PURPOSE_EXPLICIT} -eq 0 ]]; then
   case "${RECIPE}" in
     arena_outline) PURPOSE="arena_projection" ;;
@@ -408,7 +434,7 @@ if [[ -n "${RECIPE_SEQUENCE}" ]]; then
   IFS=',' read -r -a sequence_recipes <<<"${RECIPE_SEQUENCE}"
   for sequence_recipe in "${sequence_recipes[@]}"; do
     case "${sequence_recipe}" in
-      black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots) ;;
+      black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots|static_dots) ;;
       *)
         echo "Unsupported recipe in sequence: ${sequence_recipe}" >&2
         exit 2
@@ -503,6 +529,9 @@ ORANGE_LOG="/tmp/orange_gui_guided_capture_${STAMP}_orange.log"
 if [[ -z "${RECORD_STEP_NAME}" ]]; then
   if (( PROJECTOR_LIGHT_BLOCKED )); then
     RECORD_STEP_NAME="dark_frame_${PROFILE:-no_profile}"
+  elif [[ -n "${STATIC_DOTS_SCENES}" ]]; then
+    scenes_stem="$(basename "${STATIC_DOTS_SCENES}" .json)"
+    RECORD_STEP_NAME="static_dots_${PROFILE:-no_profile}_${scenes_stem//[^A-Za-z0-9_.-]/_}"
   elif [[ -n "${RECIPE_SEQUENCE}" ]]; then
     RECORD_STEP_NAME="guided_capture_${PROFILE:-no_profile}_${RECIPE_SEQUENCE//,/_}"
   else
@@ -527,6 +556,9 @@ record_step() {
   )
   if [[ -n "${INTENSITY_AUTHORITY_JSON}" && -f "${INTENSITY_AUTHORITY_JSON}" ]]; then
     record_args+=(--file "projector_intensity_authority=${INTENSITY_AUTHORITY_JSON}")
+  fi
+  if [[ -n "${STATIC_DOTS_SCENES}" && -f "${STATIC_DOTS_SCENES}" ]]; then
+    record_args+=(--file "static_dots_scenes=${STATIC_DOTS_SCENES}")
   fi
   python3 "${REPO_ROOT}/scripts/commissioning_record.py" "${record_args[@]}" \
     -- "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" >/dev/null ||
@@ -612,6 +644,9 @@ ORANGE_ENV=(
   "ORANGE_GUI_GUIDED_CAPTURE_RESULT_JSON=${RESULT_JSON}"
   "ORANGE_GUI_GUIDED_CAPTURE_PROJECTOR_LIGHT_BLOCKED=${PROJECTOR_LIGHT_BLOCKED}"
 )
+if [[ -n "${STATIC_DOTS_SCENES}" ]]; then
+  ORANGE_ENV+=("ORANGE_GUI_GUIDED_CAPTURE_STATIC_DOTS_SCENES_PATH=${STATIC_DOTS_SCENES}")
+fi
 if [[ -n "${PHYSICAL_TARGET_STAGE}" ]]; then
   ORANGE_ENV+=(
     "ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_STAGE=${PHYSICAL_TARGET_STAGE}"
@@ -634,6 +669,9 @@ echo "Guided capture smoke plan:"
 echo "  profile=${PROFILE:-none} recipe=${RECIPE} purpose=${PURPOSE} cameras=${CAMERAS} frame_count=${FRAME_COUNT} save=${SAVE}"
 if [[ -n "${RECIPE_SEQUENCE}" ]]; then
   echo "  recipe_sequence=${RECIPE_SEQUENCE} fixture_aperture_shape=${FIXTURE_APERTURE_SHAPE} one_process=true one_session=true"
+fi
+if [[ -n "${STATIC_DOTS_SCENES}" ]]; then
+  echo "  static_dots_scenes=${STATIC_DOTS_SCENES}"
 fi
 echo "  projected_gray_u8=${FOREGROUND_GRAY_U8} preflight=${APPLY_CALIBRATION_PREFLIGHT} timing=${CALIBRATION_FRAME_RATE_HZ}fps/${CALIBRATION_EXPOSURE_US}us"
 if [[ "${PURPOSE}" == "projected_surface_scale_calibration" ]]; then

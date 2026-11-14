@@ -3,8 +3,10 @@
 #include "gui/env_util.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -119,6 +121,56 @@ std::string default_recipe_for_profile(const std::string& profile_id)
     return {};
 }
 
+bool static_dots_label_valid(const std::string& label)
+{
+    return !label.empty() && label.size() <= 64 &&
+           std::all_of(label.begin(), label.end(), [](const char c) {
+               return std::isalnum(static_cast<unsigned char>(c)) || c == '_' ||
+                      c == '-' || c == '.';
+           });
+}
+
+void load_static_dots_scenes(const std::string& path,
+                             std::vector<nlohmann::json>* scenes_out,
+                             std::string* error_out)
+{
+    std::ifstream input(path);
+    if (!input) {
+        *error_out = "cannot read static_dots scenes file " + path;
+        return;
+    }
+    nlohmann::json root;
+    try {
+        input >> root;
+    } catch (const std::exception& error) {
+        *error_out = "static_dots scenes file is not JSON: " + std::string(error.what());
+        return;
+    }
+    if (!root.is_object() || !root.contains("scenes") || !root["scenes"].is_array() ||
+        root["scenes"].empty()) {
+        *error_out = "static_dots scenes file needs a non-empty \"scenes\" array";
+        return;
+    }
+    std::set<std::string> labels;
+    for (const nlohmann::json& scene : root["scenes"]) {
+        if (!scene.is_object() || !scene.contains("label") || !scene["label"].is_string() ||
+            !scene.contains("scene_options") || !scene["scene_options"].is_object() ||
+            !scene["scene_options"].contains("dots") ||
+            !scene["scene_options"]["dots"].is_array()) {
+            *error_out = "every static_dots scene needs a string \"label\" and "
+                         "\"scene_options\" with a \"dots\" array";
+            return;
+        }
+        const std::string label = scene["label"].get<std::string>();
+        if (!static_dots_label_valid(label) || !labels.insert(label).second) {
+            *error_out = "static_dots scene labels must be unique, 1-64 of [A-Za-z0-9_.-]: " +
+                         label;
+            return;
+        }
+        scenes_out->push_back(scene);
+    }
+}
+
 }  // namespace
 
 GuidedCaptureAutorunConfig resolve_guided_capture_autorun_config()
@@ -207,6 +259,13 @@ GuidedCaptureAutorunConfig resolve_guided_capture_autorun_config()
         env_string("ORANGE_GUI_GUIDED_CAPTURE_PHYSICAL_TARGET_PLANE_Z_SOURCE");
     config.projector_light_blocked = gui_env_flag_enabled(
         "ORANGE_GUI_GUIDED_CAPTURE_PROJECTOR_LIGHT_BLOCKED", false);
+    config.static_dots_scenes_path =
+        env_string("ORANGE_GUI_GUIDED_CAPTURE_STATIC_DOTS_SCENES_PATH");
+    if (!config.static_dots_scenes_path.empty()) {
+        load_static_dots_scenes(config.static_dots_scenes_path,
+                                &config.static_dots_scenes,
+                                &config.static_dots_scenes_error);
+    }
     config.result_json_path =
         env_string("ORANGE_GUI_GUIDED_CAPTURE_RESULT_JSON");
     if (config.result_json_path.empty()) {
@@ -256,6 +315,24 @@ std::string guided_capture_operator_state_error(const GuidedCaptureAutorunConfig
     } else if (config.purpose == "camera_only_physical_target_calibration" ||
                config.purpose == "dry_physical_target_height_parallax_diagnostic") {
         return "purpose " + config.purpose + " needs a physical target stage";
+    }
+    const auto static_dots_entries = static_cast<std::size_t>(std::count(
+        config.recipe_sequence.begin(), config.recipe_sequence.end(), "static_dots"));
+    if (!config.static_dots_scenes_error.empty()) {
+        return config.static_dots_scenes_error;
+    }
+    if (static_dots_entries != config.static_dots_scenes.size()) {
+        return "the recipe sequence has " + std::to_string(static_dots_entries) +
+               " static_dots entries but the scenes file has " +
+               std::to_string(config.static_dots_scenes.size()) +
+               " scenes; they must match one to one";
+    }
+    if (static_dots_entries > 0 &&
+        (!config.sweep_foreground_grays_u8.empty() || config.include_arena_outline_reference ||
+         config.fit_homographies_after_capture || config.projector_light_blocked ||
+         !config.save_captures)) {
+        return "a static_dots capture is saved, without sweep, outline reference, "
+               "homography fit or light-blocked dark frame";
     }
     if (config.projector_light_blocked) {
         const bool all_black =

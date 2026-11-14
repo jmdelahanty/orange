@@ -72,6 +72,14 @@ struct GuidedCaptureAutorunConfig {
     // projector output (card or cap), so the image is the camera dark level.
     // ORANGE_GUI_GUIDED_CAPTURE_PROJECTOR_LIGHT_BLOCKED.
     bool projector_light_blocked = false;
+    // Citrus static_dots scenes, one per static_dots entry of the recipe
+    // sequence, in order: {"label": ..., "scene_options": {...}} each, from
+    // the file ORANGE_GUI_GUIDED_CAPTURE_STATIC_DOTS_SCENES_PATH
+    // ({"scenes": [...]}). Citrus validates the scene options and refuses
+    // bad ones; Orange checks only the shape of the file.
+    std::string static_dots_scenes_path;
+    std::vector<nlohmann::json> static_dots_scenes;
+    std::string static_dots_scenes_error;
     int preflight_settle_milliseconds = 1000;
     int startup_timeout_seconds = 120;
     int workflow_timeout_seconds = 60;

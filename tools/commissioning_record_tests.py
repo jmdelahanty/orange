@@ -167,6 +167,8 @@ def test_guided_launcher_record_step(tmp: Path) -> None:
     log.write_text("x\n")
     authority = tmp / "authority.json"
     authority.write_text('{"foreground_gray_u8": 24}')
+    scenes = tmp / "dots.json"
+    scenes.write_text('{"scenes": []}')
     function = launcher_function("run_gui_guided_capture_smoke.sh", "record_step")
     script = f"""
 set -euo pipefail
@@ -179,6 +181,7 @@ RESULT_JSON={result}
 ORANGE_LOG={log}
 CITRUS_LOG={tmp / "missing_citrus.log"}
 INTENSITY_AUTHORITY_JSON={authority}
+STATIC_DOTS_SCENES={scenes}
 ORIGINAL_ARGS=(--execute --save)
 {function}
 record_step 3
@@ -192,7 +195,8 @@ record_step 0
     assert step["launcher_result_status"] == "fail"
     assert step["command"][-2:] == ["--execute", "--save"]
     roles = sorted(f["role"] for f in step["files"])
-    assert roles == ["launcher_result", "log", "log", "projector_intensity_authority"], roles
+    assert roles == ["launcher_result", "log", "log", "projector_intensity_authority",
+                     "static_dots_scenes"], roles
 
 
 def test_arena_launcher_record_step(tmp: Path) -> None:
@@ -240,9 +244,30 @@ def test_python_launcher_step(tmp: Path) -> None:
     assert step["referenced_dirs"][0]["file_count"] == 2
 
 
+def test_launcher_env_keys_allowed_by_wrapper(tmp: Path) -> None:
+    """Every ORANGE_GUI_* key the calibration launchers pass must have a case in the sudo
+    wrapper's allow-list (2026-11-13: the new guided-capture keys were refused on the rig)."""
+    import re
+    wrapper = (REPO / "scripts" / "orange_gui_validation_wrapper.sh").read_text(encoding="utf-8")
+    allowed: set[str] = set()
+    for pattern in re.findall(r"^\s{4}([A-Z0-9_|]+)\)\s*$", wrapper, flags=re.MULTILINE):
+        allowed.update(pattern.split("|"))
+    missing = {}
+    for launcher in ("run_gui_guided_capture_smoke.sh", "run_gui_arena_centering_commissioning.sh"):
+        text = (REPO / "scripts" / launcher).read_text(encoding="utf-8")
+        keys = set(re.findall(r'"(ORANGE_GUI_[A-Z0-9_]+)=', text))
+        # Read by run_gui_fourcam_external_ipc_validation.sh, never forwarded to the wrapper.
+        absent = sorted(keys - allowed - {"ORANGE_GUI_EXPECT_CAMERAS"})
+        if absent:
+            missing[launcher] = absent
+    assert not missing, f"launcher env keys the wrapper refuses: {missing}"
+    assert "static_dots" in wrapper, "the wrapper recipe sequence allows static_dots"
+
+
 def main() -> int:
     tests = [test_full_lifecycle, test_record_from_environment, test_guided_launcher_record_step,
-             test_arena_launcher_record_step, test_python_launcher_step]
+             test_arena_launcher_record_step, test_python_launcher_step,
+             test_launcher_env_keys_allowed_by_wrapper]
     failures = 0
     for test in tests:
         with tempfile.TemporaryDirectory() as tmp:

@@ -43,8 +43,8 @@ def validate_result(
         payload.get("schema_id") == "orange.gui_guided_capture_smoke_result",
         f"unexpected schema_id={payload.get('schema_id')!r}",
     )
-    require(payload.get("schema_version") in (1, 2, 3, 4, 5),
-            "schema_version must be 1 through 5")
+    require(payload.get("schema_version") in (1, 2, 3, 4, 5, 6),
+            "schema_version must be 1 through 6")
     require(payload.get("status") == "pass", f"status={payload.get('status')!r}")
 
     config = payload.get("config") if isinstance(payload.get("config"), dict) else {}

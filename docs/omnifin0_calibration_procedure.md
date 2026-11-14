@@ -250,17 +250,27 @@ contrast `(I_dot - I_bg) / I_bg` from the local annulus, not the arena mean.
 Exposure and gain fixed and stated; capture session ids recorded. The
 contrast is in the camera's spectral response, not the fish's.
 
-Rendering: a new Citrus calibration scene `static_dots` (citrus-agent,
-2026-11-13; not built). A protocol run is ruled out: it is a recording (H5,
-binding, freeze and transfer rules), its step clock cannot wait for a
-capture, and it draws the photodiode marker. `static_dots` takes
-`background` and per-dot `color` as `{"gray_u8": n}` or `{"rgb_u8": [r,g,b]}`
-(first runs gray and black only), dot `position_preset` and `diameter_mm`,
-resolved exactly as the chaser resolves its presets; its status echoes the
-drawn centres and radii, per-arena px/mm and a presentation fence that the
-grouped capture waits for; the scene holds until the next scene. Orange needs
-a launcher path that sends one scene per frame and captures after the fence.
-Jeremy approves the exact scene before it is shown.
+Rendering: the Citrus calibration scene `static_dots` (Citrus abf1da6,
+rig-installed 2026-11-13; options and refusals in Citrus
+`docs/citrus_gui_automation_control.md`). A protocol run is ruled out: it is
+a recording (H5, binding, freeze and transfer rules), its step clock cannot
+wait for a capture, and it draws the photodiode marker. Orange's guided
+capture has a `static_dots` recipe: `--static-dots-scenes <file>` (a JSON
+`{"scenes": [{"label", "scene_options"}]}`) runs `black_reference` then one
+`static_dots` capture per scene in one session, each after Citrus's
+presentation fence, and saves each with image role `stimulus_dot_contrast`,
+the scene options in the capture membership and Citrus's scene status (drawn
+centres and radii) before and after. The record step is
+`static_dots_<profile>_<file stem>` and keeps a copy of the scenes file.
+Jeremy approves the exact scenes file before it is shown. The first file is
+`~/orange_data/calibrations/commissioning/static_dots_scenes/omnifin0_dot_contrast_corners_latin_v1.json`
+(background only, then the four Latin-square rows of sweep (a)):
+
+```bash
+scripts/run_gui_guided_capture_smoke.sh --profile wet_tank_projected_surface \
+  --static-dots-scenes ~/orange_data/calibrations/commissioning/static_dots_scenes/omnifin0_dot_contrast_corners_latin_v1.json \
+  --calibration-exposure-us 60000 --frame-count 10 --save --record "$ORANGE_COMMISSIONING_RECORD" --execute
+```
 
 Black floor: the dots' contrast depends on the projector's black floor (code
 0 emits about 0.13 % of white, about 13 % of the code-30 background). A dark
@@ -311,8 +321,10 @@ and closed records are never edited after they are written.
 - `P_floor` depth-gauge measurement and the winglet underside relative to the
   floor top (no dish CAD exists); meaning of the 2.8 mm "tank rim"; dish names
   (Citrus vs Jeremy); fish eye height. Tracked in rig-designer's record.
-- The `static_dots` launcher recipe (Citrus PR open), PDU switching of the IR
-  outlets, the first rig run of the new launcher options: plan
+- The first rig run of the `static_dots` recipe and the new launcher options
+  (the sudo GUI wrapper must allow every launcher env key: the 2026-11-13
+  holder check was refused until 436fcfc), PDU switching of the IR outlets:
+  plan
   `docs/commissioning_record_plan_2026-11-13.md` section 6.
 - Brightness-map artifact type and its place in the commissioning release.
 - Citrus flat-field correction design (after the wet map).

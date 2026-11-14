@@ -1,6 +1,8 @@
 #include "gui/guided_capture_autorun.h"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -371,6 +373,76 @@ void test_physical_target_and_dark_frame()
 
 }  // namespace
 
+void test_static_dots_scenes()
+{
+    ScopedEnv path("ORANGE_GUI_GUIDED_CAPTURE_STATIC_DOTS_SCENES_PATH");
+    ScopedEnv sequence("ORANGE_GUI_GUIDED_CAPTURE_RECIPE_SEQUENCE");
+    ScopedEnv save("ORANGE_GUI_GUIDED_CAPTURE_SAVE");
+    ScopedEnv blocked("ORANGE_GUI_GUIDED_CAPTURE_PROJECTOR_LIGHT_BLOCKED");
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "orange_static_dots_config_test";
+    std::filesystem::create_directories(dir);
+    auto write = [&](const std::string& name, const std::string& text) {
+        const std::filesystem::path file = dir / name;
+        std::ofstream(file) << text;
+        return file.string();
+    };
+    const std::string good = write("good.json", R"({"scenes": [
+        {"label": "background_only", "scene_options": {"background": {"gray_u8": 30}, "dots": []}},
+        {"label": "latin_row_1", "scene_options": {"background": {"gray_u8": 30}, "dots": [
+            {"dot_id": "a1_tl", "arena_id": "arena_1", "position_preset": "top_left",
+             "diameter_mm": 10, "color": {"gray_u8": 0}}]}}]})");
+
+    path.Set(good);
+    sequence.Set("black_reference,static_dots,static_dots");
+    save.Set("1");
+    auto config = orange::gui::resolve_guided_capture_autorun_config();
+    require(config.static_dots_scenes.size() == 2 && config.static_dots_scenes_error.empty(),
+            "two static_dots scenes load");
+    require(orange::gui::guided_capture_operator_state_error(config).empty(),
+            "a saved black_reference + two static_dots sequence is accepted: " +
+                orange::gui::guided_capture_operator_state_error(config));
+
+    sequence.Set("black_reference,static_dots");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!orange::gui::guided_capture_operator_state_error(config).empty(),
+            "static_dots entries and scenes must match one to one");
+    sequence.Set("black_reference,static_dots,static_dots");
+    save.Set("0");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!orange::gui::guided_capture_operator_state_error(config).empty(),
+            "a static_dots capture is saved");
+    save.Set("1");
+    blocked.Set("1");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!orange::gui::guided_capture_operator_state_error(config).empty(),
+            "static_dots is not a dark frame");
+    blocked.Set("");
+
+    path.Set(write("dup.json", R"({"scenes": [
+        {"label": "x", "scene_options": {"dots": []}},
+        {"label": "x", "scene_options": {"dots": []}}]})"));
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!config.static_dots_scenes_error.empty(), "duplicate labels are refused");
+    path.Set(write("nodots.json", R"({"scenes": [{"label": "x", "scene_options": {}}]})"));
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!config.static_dots_scenes_error.empty(), "scene_options needs a dots array");
+    path.Set(write("bad.json", "not json"));
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!orange::gui::guided_capture_operator_state_error(config).empty(),
+            "an unreadable scenes file stops the run");
+    path.Set((dir / "missing.json").string());
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!config.static_dots_scenes_error.empty(), "a missing scenes file is refused");
+
+    path.Set("");
+    sequence.Set("black_reference,static_dots");
+    config = orange::gui::resolve_guided_capture_autorun_config();
+    require(!orange::gui::guided_capture_operator_state_error(config).empty(),
+            "static_dots without a scenes file is refused");
+    std::filesystem::remove_all(dir);
+}
+
 int main()
 {
     try {
@@ -380,6 +452,7 @@ int main()
         test_profile_derives_recipe_and_purpose();
         test_start_state();
         test_physical_target_and_dark_frame();
+        test_static_dots_scenes();
     } catch (const std::exception& error) {
         std::cerr << "guided_capture_autorun_config_tests failed: "
                   << error.what() << std::endl;

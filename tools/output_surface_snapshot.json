@@ -2236,6 +2236,8 @@
    "samples",
    "saturation_pixel_threshold_u8",
    "save_captures",
+   "scenes",
+   "scenes_path",
    "schema_id",
    "schema_version",
    "session_dir",
@@ -2247,6 +2249,8 @@
    "span_ns",
    "stage",
    "state",
+   "static_dots",
+   "static_dots_scene",
    "status",
    "status_text",
    "stream_stopped",
@@ -2266,7 +2270,7 @@
   "schemas": [
    [
     "orange.gui_guided_capture_smoke_result",
-    "5"
+    "6"
    ]
   ]
  },

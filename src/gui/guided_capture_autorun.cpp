@@ -56,7 +56,8 @@ bool recipe_supported(const std::string& recipe)
            recipe == "experimental_area_center_and_outline" ||
            recipe == "homography_grid" ||
            recipe == "homography_rings" ||
-           recipe == "verification_dots";
+           recipe == "verification_dots" ||
+           recipe == "static_dots";
 }
 
 bool purpose_is_schema_saveable(const std::string& purpose)
@@ -103,6 +104,7 @@ std::string purpose_for_recipe(const std::string& recipe)
     if (recipe == "verification_dots") {
         return "verification_dots";
     }
+    // static_dots (stimulus-dot contrast) is a validation pattern too.
     return "validation_pattern";
 }
 
@@ -369,6 +371,51 @@ std::string current_purpose(const GuidedCaptureAutorunState& state,
     return state.current_sample_is_arena_outline ? "arena_projection" : config.purpose;
 }
 
+// The scene of the current static_dots entry: the Nth static_dots in the
+// recipe sequence takes the Nth scene of the scenes file (checked one to one
+// before the run). Null for any other recipe.
+const nlohmann::json* current_static_dots_scene(const GuidedCaptureAutorunState& state,
+                                                const GuidedCaptureAutorunConfig& config)
+{
+    if (config.recipe_sequence.empty() ||
+        state.recipe_sequence_index >= config.recipe_sequence.size() ||
+        config.recipe_sequence[state.recipe_sequence_index] != "static_dots") {
+        return nullptr;
+    }
+    const auto index = static_cast<std::size_t>(std::count(
+        config.recipe_sequence.begin(),
+        config.recipe_sequence.begin() +
+            static_cast<std::ptrdiff_t>(state.recipe_sequence_index),
+        "static_dots"));
+    return index < config.static_dots_scenes.size() ? &config.static_dots_scenes[index]
+                                                    : nullptr;
+}
+
+void apply_static_dots_metadata(const nlohmann::json& scene,
+                                SpatialLayoutUiState* spatial_state)
+{
+    const std::string label = scene.value("label", std::string());
+    spatial_state->calibration_image_set_image_role = "stimulus_dot_contrast";
+    spatial_state->calibration_image_set_projected_pattern_id = "citrus_static_dots:" + label;
+    spatial_state->calibration_image_set_projected_pattern_type = "static_dots";
+    spatial_state->calibration_pattern_type = "other";
+    spatial_state->calibration_pattern_domain = "circular_experimental_domain";
+    spatial_state->calibration_projector_state = "static_dots";
+    spatial_state->calibration_projector_visible_to_camera = true;
+    spatial_state->calibration_target_method = "projected_pattern_on_diffuser";
+    spatial_state->calibration_projected_pattern_used_as_coordinate_target = false;
+    spatial_state->calibration_reference_only = true;
+    spatial_state->calibration_homography_role = "validation_only";
+    spatial_state->calibration_image_set_notes =
+        "Stimulus-dot contrast: Citrus static_dots scene '" + label +
+        "', scene_options " + scene.at("scene_options").dump() +
+        ". Drawn dot centres and radii are in the Citrus scene status saved with "
+        "this capture.";
+    spatial_state->calibration_operator_notes =
+        "Automated static_dots capture for stimulus Weber contrast; not a "
+        "coordinate target.";
+}
+
 void apply_sequence_recipe_metadata(const std::string& recipe,
                                     const GuidedCaptureAutorunConfig& config,
                                     SpatialLayoutUiState* spatial_state)
@@ -620,6 +667,10 @@ void apply_current_sweep_scene(GuidedCaptureAutorunState* state,
         spatial_state->group_capture_scene_options["foreground_gray_u8"] =
             current_sweep_gray(*state, config);
     }
+    if (const nlohmann::json* scene = current_static_dots_scene(*state, config)) {
+        apply_static_dots_metadata(*scene, spatial_state);
+        spatial_state->group_capture_scene_options = scene->at("scene_options");
+    }
 }
 
 void append_completed_sample(GuidedCaptureAutorunState* state,
@@ -637,6 +688,10 @@ void append_completed_sample(GuidedCaptureAutorunState* state,
         {"repeat_index", config.recipe_sequence.empty()
                              ? state->sweep_repeat_index
                              : 1},
+        {"static_dots_scene", [&]() {
+             const nlohmann::json* scene = current_static_dots_scene(*state, config);
+             return scene ? *scene : nlohmann::json(nullptr);
+         }()},
         {"workflow", workflow_json(spatial_state)},
         {"captures", captures_json(spatial_state)},
         {"ptp_capture_alignment", ptp_alignment_json(spatial_state)},
@@ -683,6 +738,9 @@ bool request_current_sweep_sample(
                   << " with center fiducial" << std::endl;
     } else {
         std::cout << "[GUI][guided_capture_autorun] requesting recipe=" << recipe;
+        if (const nlohmann::json* scene = current_static_dots_scene(*state, config)) {
+            std::cout << " scene=" << scene->value("label", std::string());
+        }
         if (recipe_supports_foreground_gray(recipe)) {
             std::cout << " gray="
                       << static_cast<unsigned int>(current_sweep_gray(*state, config));
@@ -1528,8 +1586,9 @@ nlohmann::json guided_capture_autorun_result_json(
     return {
         {"schema_id", "orange.gui_guided_capture_smoke_result"},
         // v5 (2026-11-13): config.physical_target and
-        // config.projector_light_blocked.
-        {"schema_version", 5},
+        // config.projector_light_blocked. v6 (2026-11-13): config.static_dots
+        // and completed_samples[].static_dots_scene.
+        {"schema_version", 6},
         {"created_utc", get_current_utc_timestamp()},
         {"calibration_transaction_id", state.calibration_transaction_id},
         {"status", state.run_passed ? "pass" : "fail"},
@@ -1551,6 +1610,13 @@ nlohmann::json guided_capture_autorun_result_json(
                         {"illumination", "projector_backlit_uniform_gray"},
                     }},
              {"projector_light_blocked", config.projector_light_blocked},
+             {"static_dots",
+              config.static_dots_scenes_path.empty()
+                  ? nlohmann::json(nullptr)
+                  : nlohmann::json{
+                        {"scenes_path", config.static_dots_scenes_path},
+                        {"scenes", config.static_dots_scenes},
+                    }},
              {"workflow_profile_id", config.workflow_profile_id},
              {"recipe", config.recipe},
              {"purpose", config.purpose},
