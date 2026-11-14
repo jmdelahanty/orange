@@ -333,4 +333,4 @@ Still open:
 - P1: about a day of agent work plus one short rig check.
 - P2: about half a day plus a 1-2 hour rig session.
 - P3: small.
-- P4: depends on the decisions; the capability test alone is a rig session.
+- P4: the host.yml paths with pancake-batter, the operator group and sudoers rule (Jeremy), the per-person folders, and one test as a non-sudo operator.
