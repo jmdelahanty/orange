@@ -4,6 +4,16 @@
 The source config is never modified. Starting Orange from this derived config
 ensures the shared PTP gate is established at the intended commissioning frame
 period, instead of changing each live camera's timing sequentially afterward.
+
+A camera that drives the NIR strobe (exposed `nir_strobe_trigger` output) opens
+with that output held LOW in manual mode (`GPO_0_Polarity=false`,
+`GPO_0_Mode=GPO`), not mapped to exposure. Calibration exposures are long
+(10-100 ms at 5 fps, 5-50 % duty) and the strobe must never exceed 8 % duty;
+before 2026-11-14 the output opened in `Exposure` mode and only the GUI's
+calibration preflight, which runs after the stream starts, forced it low, so a
+lit strobe depended on the PTP gate's start-up delay. The preflight still
+captures and restores this state; `keep_or_restore_mapped_pulse` re-enables the
+mapped pulse explicitly (and is refused above 8 % duty).
 """
 
 from __future__ import annotations
@@ -11,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -69,6 +80,28 @@ def validate_mapped_strobe_startup_contract(payload: dict, source_path: Path) ->
             )
 
 
+def hold_mapped_strobe_low_at_open(payload: dict) -> bool:
+    """Rewrite the strobe output nodes to manual low. True when a strobe is mapped."""
+    if payload.get("gpio_pinout_access") != "exposed":
+        return False
+    mapped = any(
+        isinstance(item, dict)
+        and item.get("purpose") == "nir_strobe_trigger"
+        and item.get("direction") == "output"
+        for item in payload.get("rig_io", {}).get("connections", [])
+    )
+    if not mapped:
+        return False
+    nodes = payload["gpio"]["nodes"]
+    others = [n for n in nodes if n.get("name") not in ("GPO_0_Polarity", "GPO_0_Mode")]
+    # Polarity first, so the line is low before it leaves Exposure mode.
+    payload["gpio"]["nodes"] = others + [
+        {"name": "GPO_0_Polarity", "type": "bool", "value": False},
+        {"name": "GPO_0_Mode", "type": "enum", "value": "GPO"},
+    ]
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("source_dir", type=Path)
@@ -115,6 +148,9 @@ def main() -> int:
             parser.error(str(exc))
         payload["frame_rate"] = args.frame_rate_hz
         payload["exposure"] = args.exposure_us
+        if hold_mapped_strobe_low_at_open(payload):
+            print(f"{source_path.stem}: NIR strobe output held low at open (GPO_0_Mode=GPO, polarity low)",
+                  file=sys.stderr)
         if source_path.stem in args.camera_iris_overrides:
             payload["iris"] = args.camera_iris_overrides[source_path.stem]
         destination = args.output_dir / source_path.name

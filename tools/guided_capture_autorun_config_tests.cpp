@@ -1,4 +1,5 @@
 #include "gui/guided_capture_autorun.h"
+#include "gui/spatial_layout/strobe_safety.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -443,6 +444,25 @@ void test_static_dots_scenes()
     std::filesystem::remove_all(dir);
 }
 
+void test_calibration_strobe_safety()
+{
+    using orange::gui::spatial_layout::calibration_strobe_safety_error;
+    require(calibration_strobe_safety_error("suppress_mapped_strobe", 100000, 5).empty(),
+            "suppressing the strobe is always allowed");
+    require(calibration_strobe_safety_error("leave_current", 100000, 5).empty(),
+            "leave_current makes no GPO write");
+    require(!calibration_strobe_safety_error("force_manual_active", 100, 1).empty(),
+            "a constant-on strobe is always refused");
+    require(calibration_strobe_safety_error("keep_or_restore_mapped_pulse", 100, 100).empty(),
+            "runtime timing (1 %) may pulse");
+    require(calibration_strobe_safety_error("keep_or_restore_mapped_pulse", 16000, 5).empty(),
+            "exactly 8 % is allowed");
+    require(!calibration_strobe_safety_error("keep_or_restore_mapped_pulse", 16001, 5).empty(),
+            "above 8 % is refused");
+    require(!calibration_strobe_safety_error("keep_or_restore_mapped_pulse", 100000, 5).empty(),
+            "100 ms at 5 fps (50 %) is refused");
+}
+
 int main()
 {
     try {
@@ -453,6 +473,7 @@ int main()
         test_start_state();
         test_physical_target_and_dark_frame();
         test_static_dots_scenes();
+        test_calibration_strobe_safety();
     } catch (const std::exception& error) {
         std::cerr << "guided_capture_autorun_config_tests failed: "
                   << error.what() << std::endl;

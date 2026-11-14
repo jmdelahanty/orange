@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/preflight.h"
+#include "gui/spatial_layout/strobe_safety.h"
 
 #include "project.h"
 
@@ -755,6 +756,15 @@ bool prepare_calibration_capture_preflight(
         }
         return false;
     }
+    if (const std::string safety_error =
+            calibration_strobe_safety_error(requested_light_handling,
+                                            timing.exposure_us, timing.frame_rate_hz);
+        !safety_error.empty()) {
+        if (status_out) {
+            *status_out = safety_error;
+        }
+        return false;
+    }
 
     const bool needs_mapped_strobe =
         calibration_light_handling_needs_mapped_strobe(requested_light_handling);
@@ -848,6 +858,15 @@ bool prepare_calibration_capture_preflight_camera_serials(
     if (recording_mutation_locked) {
         if (status_out) {
             *status_out = "Scoped calibration prepare blocked while recording/finalizing.";
+        }
+        return false;
+    }
+    if (const std::string safety_error =
+            calibration_strobe_safety_error(requested_light_handling,
+                                            timing.exposure_us, timing.frame_rate_hz);
+        !safety_error.empty()) {
+        if (status_out) {
+            *status_out = safety_error;
         }
         return false;
     }

@@ -13,6 +13,7 @@ struct CalibrationCaptureTiming {
     std::uint32_t exposure_us = 100000;
 };
 
+
 const CameraRigIoConnection* find_mapped_nir_strobe_output_connection(
     const CameraParams& camera_params);
 
