@@ -1,3 +1,4 @@
+#include "runtime_paths.h"
 #include "external_recorder_lifecycle.h"
 
 #include "external_recorder_contract_utils.h"
@@ -156,7 +157,8 @@ bool StartSupervisedRecorderLifecycle(const SupervisedRecorderLifecycleOptions& 
     state.process_options = options.process_options;
     state.analytics_root = options.analytics_root;
     state.verifier_path = options.verifier_path.empty()
-                              ? "scripts/verify_external_recorder_session.py"
+                              ? orange::runtime_paths::support_file_or_relative(
+                                    "scripts/verify_external_recorder_session.py")
                               : options.verifier_path;
 
     SupervisorPlanOptions plan_options;

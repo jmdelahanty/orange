@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "runtime_paths.h"
 #include "outputs/common/csv.h"
 #include "outputs/common/atomic_file.h"
 #include "timing/diagnostics_index.h"
@@ -6322,26 +6323,8 @@ std::filesystem::path resolve_headless_repo_relative_path(const std::string& rel
             return std::filesystem::path(env);
         }
     }
-
-    std::error_code ec;
-    const std::filesystem::path cwd_candidate =
-        std::filesystem::current_path(ec) / relative_path;
-    if (!ec && std::filesystem::exists(cwd_candidate)) {
-        return cwd_candidate;
-    }
-
-    std::array<char, 4096> exe_path{};
-    const ssize_t size = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
-    if (size > 0) {
-        exe_path[static_cast<std::size_t>(size)] = '\0';
-        const std::filesystem::path repo_candidate =
-            std::filesystem::path(exe_path.data()).parent_path().parent_path().parent_path() /
-            relative_path;
-        if (std::filesystem::exists(repo_candidate)) {
-            return repo_candidate;
-        }
-    }
-    return std::filesystem::path(relative_path);
+    // The tree or /opt release this binary belongs to, else the current folder.
+    return std::filesystem::path(orange::runtime_paths::support_file_or_relative(relative_path));
 }
 
 bool run_headless_shell_command(const std::string& command,
@@ -9915,7 +9898,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         const std::string verifier_path =
             (verifier_env && *verifier_env)
                 ? verifier_env
-                : "scripts/verify_external_recorder_session.py";
+                : orange::runtime_paths::support_file_or_relative(
+                      "scripts/verify_external_recorder_session.py");
         const std::filesystem::path analytics_root =
             std::filesystem::path(active_record_folder).parent_path();
         orange::external_recorder::SupervisedRecorderLifecycleOptions lifecycle_options;
@@ -10040,7 +10024,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             std::filesystem::path(active_record_folder).filename().string();
         crop_lifecycle_options.analytics_root =
             std::filesystem::path(active_record_folder).parent_path().string();
-        crop_lifecycle_options.verifier_path = "scripts/verify_external_recorder_session.py";
+        crop_lifecycle_options.verifier_path = orange::runtime_paths::support_file_or_relative(
+            "scripts/verify_external_recorder_session.py");
         crop_lifecycle_options.process_options = external_recorder_process_options;
         std::string crop_supervisor_error;
         if (!orange::external_recorder::StartSupervisedRecorderLifecycle(

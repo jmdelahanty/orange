@@ -18,6 +18,7 @@
 #include "gx_context.h"
 #include "imgui_glfw_size_cache.h"
 #include "types.h"
+#include "runtime_paths.h"
 
 
 static void gx_glfw_error_callback(int error, const char *description)
@@ -306,14 +307,19 @@ void gx_imgui_init(gx_context *context)
     ImGui_ImplGlfw_InitForOpenGL(context->render_target, true);
     ImGui_ImplOpenGL3_Init(context->glsl_version);
 
-    // Load a nice font
-    io.Fonts->AddFontFromFileTTF("fonts/Roboto-Regular.ttf", 15.0f);
+    // Load a nice font (from the tree or release this binary belongs to, not the
+    // folder it was started in: src/runtime_paths.h).
+    const std::string text_font =
+        orange::runtime_paths::support_file_or_relative("fonts/Roboto-Regular.ttf");
+    const std::string icon_font =
+        orange::runtime_paths::support_file_or_relative("fonts/forkawesome-webfont.ttf");
+    io.Fonts->AddFontFromFileTTF(text_font.c_str(), 15.0f);
     // merge in icons from Font Awesome
     static const ImWchar icons_ranges[] = {ICON_MIN_FK, ICON_MAX_16_FK, 0};
     ImFontConfig icons_config;
     icons_config.MergeMode = true;
     icons_config.PixelSnapH = true;
-    io.Fonts->AddFontFromFileTTF("fonts/forkawesome-webfont.ttf", 15.0f, &icons_config, icons_ranges);
+    io.Fonts->AddFontFromFileTTF(icon_font.c_str(), 15.0f, &icons_config, icons_ranges);
     // use FONT_ICON_FILE_NAME_FAR if you want regular instead of solid
 }
 

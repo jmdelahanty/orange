@@ -1,3 +1,4 @@
+#include "runtime_paths.h"
 #include "timing/phase_timer.h"
 #include "session/recording_session.h"
 #include "outputs/common/csv.h"
@@ -3537,7 +3538,8 @@ PreparedRecordingRunStart prepare_recording_run(
         prepared.external_recorder_lifecycle_options.default_session_id = recording_id;
         prepared.external_recorder_lifecycle_options.analytics_root = recording_folder;
         prepared.external_recorder_lifecycle_options.verifier_path =
-            "scripts/verify_external_recorder_session.py";
+            orange::runtime_paths::support_file_or_relative(
+                "scripts/verify_external_recorder_session.py");
         orange::external_recorder::ApplyLifecycleEnvOverrides(
             &prepared.external_recorder_lifecycle_options);
     }
@@ -3599,7 +3601,8 @@ PreparedRecordingRunStart prepare_recording_run(
         prepared.external_crop_recorder_lifecycle_options.default_session_id = recording_id;
         prepared.external_crop_recorder_lifecycle_options.analytics_root = recording_folder;
         prepared.external_crop_recorder_lifecycle_options.verifier_path =
-            "scripts/verify_external_recorder_session.py";
+            orange::runtime_paths::support_file_or_relative(
+                "scripts/verify_external_recorder_session.py");
     }
 
     prepared.valid = true;

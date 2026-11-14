@@ -1716,6 +1716,11 @@ if(BUILD_TESTING)
     target_compile_features(guided_capture_autorun_config_tests PRIVATE cxx_std_17)
     add_test(NAME guided_capture_autorun_config_tests COMMAND guided_capture_autorun_config_tests)
 
+    add_executable(runtime_paths_tests "tools/runtime_paths_tests.cpp")
+    target_include_directories(runtime_paths_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(runtime_paths_tests PRIVATE cxx_std_17)
+    add_test(NAME runtime_paths_tests COMMAND runtime_paths_tests)
+
     add_executable(arena_centering_analysis_tests
         "tools/arena_centering_analysis_tests.cpp"
         "${SRC_DIR}/gui/arena_centering_analysis.cpp"

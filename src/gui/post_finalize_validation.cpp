@@ -1,4 +1,5 @@
 #include "gui/post_finalize_validation.h"
+#include "runtime_paths.h"
 
 #include "fsuid_guard.h"
 #include "json.hpp"
@@ -47,26 +48,13 @@ Run& run_state()
     return run;
 }
 
+// The folder holding scripts/<validator>: the tree or /opt release this binary
+// belongs to (src/runtime_paths.h), else the current folder.
 std::filesystem::path repo_root()
 {
-    std::array<char, 4096> buffer{};
-    const ssize_t length = ::readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
-    std::error_code cwd_ec;
-    std::vector<std::filesystem::path> candidates = {std::filesystem::current_path(cwd_ec)};
-    if (length > 0) {
-        // <tree>/targets/release/orange
-        candidates.push_back(std::filesystem::path(std::string(buffer.data(), static_cast<std::size_t>(length)))
-                                 .parent_path()
-                                 .parent_path()
-                                 .parent_path());
-    }
-    for (const auto& candidate : candidates) {
-        std::error_code ec;
-        if (std::filesystem::exists(candidate / "scripts" / kValidatorScript, ec)) {
-            return std::filesystem::absolute(candidate, ec);
-        }
-    }
-    return {};
+    const std::filesystem::path script =
+        orange::runtime_paths::find_support_file(std::string("scripts/") + kValidatorScript);
+    return script.empty() ? std::filesystem::path() : script.parent_path().parent_path();
 }
 
 // "0-5,7,9-11" -> the listed CPUs.

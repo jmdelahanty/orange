@@ -22,7 +22,9 @@ struct SupervisedRecorderLifecycleOptions {
     int full_frame_extra_output_delay = -1;
     std::string default_session_id;
     std::string analytics_root;
-    std::string verifier_path = "scripts/verify_external_recorder_session.py";
+    // Empty: scripts/verify_external_recorder_session.py of the tree or release
+    // this binary belongs to (src/runtime_paths.h), resolved at Start.
+    std::string verifier_path;
     SupervisorProcessOptions process_options;
 };
 
