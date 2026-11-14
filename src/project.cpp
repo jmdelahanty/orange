@@ -1,5 +1,6 @@
 // src/project.cpp
 #include "project.h"
+#include "build_info.h"
 #include "outputs/common/safe_path.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
@@ -658,14 +659,9 @@ nlohmann::json read_git_head_direct(const std::filesystem::path& worktree)
     return out;
 }
 
-nlohmann::json build_source_version_snapshot()
+nlohmann::json read_worktree_source_state()
 {
-    nlohmann::json source = {
-        {"schema_version", 1},
-        {"captured_at_utc", get_current_utc_timestamp()},
-        {"vcs", "git"},
-        {"available", false}
-    };
+    nlohmann::json source = {{"available", false}};
 
     const std::filesystem::path worktree = resolve_source_worktree();
     if (worktree.empty()) {
@@ -741,7 +737,7 @@ nlohmann::json build_source_version_snapshot()
             {"uid", static_cast<uint64_t>(geteuid())}
         };
     }
-    source["worktree"] = top_level.empty() ? worktree_string : top_level;
+    source["path"] = top_level.empty() ? worktree_string : top_level;
     if (!branch.empty()) {
         source["branch"] = branch;
     }
@@ -759,6 +755,123 @@ nlohmann::json build_source_version_snapshot()
         source["dirty_tracked"] = !tracked_status.empty();
         source["status_porcelain_tracked"] = tracked_status;
     }
+    return source;
+}
+
+// Release metadata of an /opt install: <release>/bin/<binary> with
+// <release>/INSTALLED.json (docs/opt_install_plan_2026-11-14.md). Null when the
+// binary is not running from an installed release.
+nlohmann::json read_installed_release()
+{
+    std::error_code ec;
+    const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec || exe.empty()) {
+        return nullptr;
+    }
+    const std::filesystem::path release_dir = exe.parent_path().parent_path();
+    const std::filesystem::path manifest = release_dir / "INSTALLED.json";
+    if (!std::filesystem::is_regular_file(manifest, ec)) {
+        return nullptr;
+    }
+    nlohmann::json out = {{"release_dir", release_dir.string()},
+                          {"manifest_path", manifest.string()}};
+    std::string error;
+    const std::string text = read_file_to_string(manifest.string(), &error);
+    try {
+        const nlohmann::json installed = nlohmann::json::parse(text);
+        for (const char* key : {"release", "tag", "installed_at", "installed_by"}) {
+            if (installed.contains(key) && installed[key].is_string()) {
+                out[key] = installed[key];
+            }
+        }
+        if (installed.contains("source") && installed["source"].is_object()) {
+            const nlohmann::json& installed_source = installed["source"];
+            for (const char* key : {"commit", "describe", "branch"}) {
+                if (installed_source.contains(key) && installed_source[key].is_string()) {
+                    out[std::string("source_") + key] = installed_source[key];
+                }
+            }
+        }
+    } catch (const std::exception& parse_error) {
+        out["error"] = std::string("INSTALLED.json is not valid JSON: ") + parse_error.what();
+    }
+    return out;
+}
+
+// source_version v2 (2026-11-14): the top-level commit, commit_short, branch,
+// describe and dirty_tracked describe the BINARY, from the stamp written at build
+// time (src/build_info.h). They stay true for an /opt install and when the source
+// tree has moved on since the build. The tree found from the cwd or the
+// executable, if any, is reported in worktree_state (with matches_build); an
+// installed release adds `install`. v1 reported the run-time worktree only. Kept
+// for v1 readers when a worktree is found: worktree, git_command_available and
+// git_command_user.
+nlohmann::json build_source_version_snapshot()
+{
+    nlohmann::json source = {
+        {"schema_version", 2},
+        {"captured_at_utc", get_current_utc_timestamp()},
+        {"vcs", "git"},
+        {"available", false}
+    };
+
+    const orange::build_info::BuildStamp& stamp = orange::build_info::stamp();
+    source["build"] = {
+        {"available", stamp.available},
+        {"commit", std::string(stamp.commit)},
+        {"commit_short", std::string(stamp.commit_short)},
+        {"branch", std::string(stamp.branch)},
+        {"describe", std::string(stamp.describe)},
+        {"dirty_tracked_known", stamp.dirty_known},
+        {"dirty_tracked", stamp.dirty_tracked},
+    };
+
+    nlohmann::json worktree = read_worktree_source_state();
+    source["install"] = read_installed_release();
+
+    if (stamp.available && !stamp.commit.empty()) {
+        source["available"] = true;
+        source["provenance"] = "build_stamp";
+        source["commit"] = std::string(stamp.commit);
+        source["commit_short"] = std::string(stamp.commit_short);
+        if (!stamp.branch.empty()) {
+            source["branch"] = std::string(stamp.branch);
+        }
+        if (!stamp.describe.empty()) {
+            source["describe"] = std::string(stamp.describe);
+        }
+        source["dirty_tracked_available"] = stamp.dirty_known;
+        if (stamp.dirty_known) {
+            source["dirty_tracked"] = stamp.dirty_tracked;
+        }
+    } else if (worktree.value("available", false)) {
+        // Built from a tree without git metadata: report the run-time tree, as v1 did.
+        source["available"] = true;
+        source["provenance"] = "worktree";
+        for (const char* key : {"commit", "commit_short", "branch", "describe",
+                                "dirty_tracked_available", "dirty_tracked"}) {
+            if (worktree.contains(key)) {
+                source[key] = worktree[key];
+            }
+        }
+    } else {
+        source["provenance"] = "none";
+        source["error"] = "no build stamp and no git worktree from cwd or executable path";
+    }
+
+    if (worktree.contains("path")) {
+        source["worktree"] = worktree["path"];
+        for (const char* key : {"git_command_available", "git_command_user"}) {
+            if (worktree.contains(key)) {
+                source[key] = worktree[key];
+            }
+        }
+        const std::string tree_commit = worktree.value("commit", std::string());
+        worktree["matches_build"] =
+            stamp.available && !tree_commit.empty() && tree_commit == stamp.commit &&
+            !stamp.dirty_tracked && !worktree.value("dirty_tracked", false);
+    }
+    source["worktree_state"] = worktree;
     return source;
 }
 
@@ -1001,6 +1114,11 @@ bool app_config_schema_version_supported(int schema_version)
 }
 
 } // namespace
+
+nlohmann::json orange_source_version_snapshot()
+{
+    return build_source_version_snapshot();
+}
 
 std::string build_default_orange_root_dir(std::string* warning_out)
 {

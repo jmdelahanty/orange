@@ -315,6 +315,28 @@ void test_spatial_calibration_artifact_resolution()
             "empty serial should resolve to an empty path");
 }
 
+void test_source_version_snapshot_v2()
+{
+    const nlohmann::json source = orange_source_version_snapshot();
+    require(source.value("schema_version", 0) == 2, "source_version is v2");
+    require(source.contains("build") && source["build"].is_object(), "build stamp block present");
+    const nlohmann::json& build = source["build"];
+    // The test binary is built from a git checkout, so the stamp is available.
+    require(build.value("available", false), "build stamp available in a git build");
+    require(build.value("commit", std::string()).size() == 40, "build commit is a full sha");
+    require(source.value("provenance", std::string()) == "build_stamp", "provenance is the build stamp");
+    require(source.value("commit", std::string()) == build.value("commit", std::string()),
+            "top-level commit describes the binary");
+    require(source.value("commit_short", std::string()) == build.value("commit_short", std::string()),
+            "top-level commit_short describes the binary");
+    require(source.contains("worktree_state"), "worktree_state present");
+    // Run from targets/release inside the tree, so the worktree is found through the executable.
+    require(source["worktree_state"].contains("path"), "worktree found from the executable");
+    require(source["worktree_state"].contains("matches_build"), "matches_build reported");
+    require(source.contains("install") && source["install"].is_null(),
+            "not an /opt release: install is null");
+}
+
 void test_gui_camera_has_acquisition_work()
 {
     CameraEachSelect camera_select;
@@ -1275,6 +1297,7 @@ int main()
         {"pose_model_snapshot", &test_pose_model_snapshot},
         {"spatial_calibration_artifact_resolution",
          &test_spatial_calibration_artifact_resolution},
+        {"source_version_snapshot_v2", &test_source_version_snapshot_v2},
         {"gui_camera_has_acquisition_work", &test_gui_camera_has_acquisition_work},
         {"citrus_runtime_geometry_unavailable_is_nonblocking",
          &test_citrus_runtime_geometry_unavailable_is_nonblocking},

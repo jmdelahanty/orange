@@ -2097,6 +2097,13 @@ def check_source_version(
         return source
 
     producer_version = snapshot.get("producer_version")
+    schema_version = source.get("schema_version")
+    # v2 (2026-11-14): top-level commit/dirty_tracked describe the binary (build
+    # stamp); the run-time tree, if any, is in worktree_state.
+    build = source.get("build") if isinstance(source.get("build"), dict) else {}
+    worktree_state = (source.get("worktree_state")
+                      if isinstance(source.get("worktree_state"), dict) else {})
+    has_worktree = schema_version == 1 or bool(worktree_state.get("path"))
     commit = source.get("commit")
     commit_short = source.get("commit_short")
     git_user = source.get("git_command_user")
@@ -2111,9 +2118,9 @@ def check_source_version(
             "recording_snapshot source_version missing",
         )
         reporter.check(
-            source.get("schema_version") == 1,
-            "source_version schema_version=1",
-            f"source_version schema_version={source.get('schema_version')!r}",
+            schema_version in (1, 2),
+            f"source_version schema_version={schema_version}",
+            f"source_version schema_version={schema_version!r}",
         )
         reporter.check(
             source.get("vcs") == "git",
@@ -2125,11 +2132,23 @@ def check_source_version(
             "source_version Git provenance available",
             f"source_version available={source.get('available')!r}",
         )
-        reporter.check(
-            isinstance(source.get("worktree"), str) and bool(source.get("worktree")),
-            "source_version worktree present",
-            f"source_version worktree={source.get('worktree')!r}",
-        )
+        if schema_version == 2:
+            reporter.check(
+                build.get("available") is True and build.get("commit") == commit,
+                "source_version build stamp present and describes the binary",
+                f"source_version build={build!r}",
+            )
+            if has_worktree and worktree_state.get("matches_build") is False:
+                reporter.warn(
+                    "source_version: the binary does not match the source tree it ran from "
+                    f"(build {build.get('describe')!r}, tree {worktree_state.get('describe')!r})"
+                )
+        if has_worktree:
+            reporter.check(
+                isinstance(source.get("worktree"), str) and bool(source.get("worktree")),
+                "source_version worktree present",
+                f"source_version worktree={source.get('worktree')!r}",
+            )
         reporter.check(
             isinstance(commit, str) and len(commit) >= 7,
             "source_version commit present",
@@ -2151,16 +2170,17 @@ def check_source_version(
                 f"source_version.commit_short={commit_short!r}"
             ),
         )
-        reporter.check(
-            source.get("git_command_available") is True,
-            "source_version git command available",
-            f"source_version git_command_available={source.get('git_command_available')!r}",
-        )
-        reporter.check(
-            bool(git_user.get("mode")),
-            "source_version git_command_user mode present",
-            f"source_version git_command_user.mode={git_user.get('mode')!r}",
-        )
+        if has_worktree:
+            reporter.check(
+                source.get("git_command_available") is True,
+                "source_version git command available",
+                f"source_version git_command_available={source.get('git_command_available')!r}",
+            )
+            reporter.check(
+                bool(git_user.get("mode")),
+                "source_version git_command_user mode present",
+                f"source_version git_command_user.mode={git_user.get('mode')!r}",
+            )
         reporter.check(
             dirty_tracked_available is True,
             "source_version tracked dirty-state telemetry available",
@@ -2172,7 +2192,7 @@ def check_source_version(
             f"source_version dirty_tracked={dirty_tracked!r}",
         )
 
-    if expected_git_command_user_mode is not None:
+    if expected_git_command_user_mode is not None and has_worktree:
         reporter.check(
             git_user.get("mode") == expected_git_command_user_mode,
             f"source_version git_command_user.mode={expected_git_command_user_mode}",
@@ -2195,6 +2215,10 @@ def check_source_version(
 
     if expected_dirty_tracked is not None:
         expected_bool = bool(expected_dirty_tracked)
+        # The launcher's expectation ("auto") is the tree's state at launch; in v2
+        # that is worktree_state, not the binary's build stamp.
+        if schema_version == 2 and "dirty_tracked" in worktree_state:
+            dirty_tracked = worktree_state.get("dirty_tracked")
         reporter.check(
             dirty_tracked == expected_bool,
             f"source_version dirty_tracked={expected_bool}",

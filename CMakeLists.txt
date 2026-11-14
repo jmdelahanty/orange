@@ -631,6 +631,24 @@ target_include_directories(orange_project_warnings SYSTEM INTERFACE
 )
 link_libraries(orange_project_warnings)
 
+# Build-time source stamp (src/build_info.h): regenerated on every build, but the
+# generated file is rewritten only when the commit, branch, describe or tracked
+# dirty state changes. Linked into every target below (like the warnings target),
+# so any binary can report the source it was built from.
+set(ORANGE_BUILD_INFO_CPP "${CMAKE_BINARY_DIR}/generated/orange_build_info.cpp")
+add_custom_target(orange_build_info_stamp
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DOUTPUT=${ORANGE_BUILD_INFO_CPP}
+            -P ${CMAKE_SOURCE_DIR}/cmake/write_build_info.cmake
+    BYPRODUCTS ${ORANGE_BUILD_INFO_CPP}
+    COMMENT "Stamping build_info (git commit and tracked dirty state)"
+    VERBATIM)
+set_source_files_properties(${ORANGE_BUILD_INFO_CPP} PROPERTIES GENERATED TRUE)
+add_library(orange_build_info STATIC ${ORANGE_BUILD_INFO_CPP})
+add_dependencies(orange_build_info orange_build_info_stamp)
+target_include_directories(orange_build_info PUBLIC "${SRC_DIR}")
+target_compile_features(orange_build_info PUBLIC cxx_std_17)
+link_libraries(orange_build_info)
+
 add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_media_plan.cpp"
     "${SRC_DIR}/recording_context.cpp"
@@ -803,6 +821,7 @@ if(BUILD_TESTING)
     set_tests_properties(crop_only_evidence_cli_tests PROPERTIES TIMEOUT 60)
     add_test(NAME crop_only_runner_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/crop_only_runner_tests.py")
     add_test(NAME commissioning_record_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/commissioning_record_tests.py")
+    add_test(NAME source_version_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/source_version_tests.py")
     add_executable(generated_outputs_tests "tools/generated_outputs_tests.cpp")
     target_include_directories(generated_outputs_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     add_test(NAME generated_outputs_tests COMMAND generated_outputs_tests
