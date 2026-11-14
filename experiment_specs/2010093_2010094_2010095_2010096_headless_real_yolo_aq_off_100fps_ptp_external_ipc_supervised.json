@@ -23,7 +23,7 @@
     "stream_only": false,
     "sync_mode": "ptp_gate",
     "recording_sink_mode": "external_ipc",
-    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "config_folder": "/home/jeremy/orange/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "ptp_register_read_decimate": 100,
     "nvenc_direct_input": false,

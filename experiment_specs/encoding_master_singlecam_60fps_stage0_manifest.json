@@ -10,7 +10,7 @@
     "analytics_output_root": "/home/jeremy/orange_data/exp/unsorted",
     "duration_s": 6,
     "warmup_s": 1,
-    "orange_client": "/home/jeremy/orange-gop-split-a16/targets/release/orange_client",
+    "orange_client": "/home/jeremy/orange/targets/release/orange_client",
     "benchmark": "/usr/local/bin/orange-local-benchmark",
     "sudo": true,
     "verify_external_recorder": true,

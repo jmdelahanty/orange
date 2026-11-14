@@ -68,7 +68,7 @@ for required in \
   "--yolo-spatial-mask-input-context-outset-px" \
   "--yolo-spatial-mask-apply-timeout-ms" \
   "--citrus-recording-canvas-config-path" \
-  "/home/jeremy/orange-gop-split-a16/experiment_specs"; do
+  "/home/jeremy/orange/experiment_specs"; do
   if [[ "$HELP_TEXT" != *"$required"* ]]; then
     echo "Installed wrapper help is missing expected text: $required" >&2
     exit 1

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ORANGE_ROOT="/home/jeremy/orange-jeremy"
-DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
-EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange-gop-split-a16"
+ORANGE_ROOT="/home/jeremy/orange"
+DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/targets/release/orange_client"
+EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange"
 EXPERIMENT_ORANGE_CLIENT="$EXPERIMENT_ORANGE_ROOT/targets/release/orange_client"
 ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
 DRY_RUN=0
@@ -59,11 +59,9 @@ Options:
 Behavior:
   - Runs orange_client in local experiment mode as root.
   - Only accepts orange_client binaries at:
-      /home/jeremy/orange-jeremy/build/orange_client
-      /home/jeremy/orange-gop-split-a16/targets/release/orange_client
+      /home/jeremy/orange/targets/release/orange_client
   - Only accepts spec files under:
-      /home/jeremy/orange-jeremy/experiment_specs
-      /home/jeremy/orange-gop-split-a16/experiment_specs
+      /home/jeremy/orange/experiment_specs
       /tmp
   - Stream-only mode only accepts config folders under:
       /home/jeremy/orange_data/config/local

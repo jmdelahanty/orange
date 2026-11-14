@@ -2,19 +2,20 @@
 
 ## Current Branch Context
 
-- Production worktree: `/home/jeremy/orange-gop-split-a16`, branch
-  `agent/acquisition/shaman-v2-authoritative-20260824`. Its
-  `targets/release/{orange,orange_client}` are the binaries to run through the
-  sudo wrappers (the GUI wrapper's default; pass `--orange-client` to the
-  headless one, whose default is still the old `/home/jeremy/orange-jeremy`
-  build). Work lands on the dish branch
-  `agent/gui/per-camera-dish-20261011` (`/home/jeremy/orange-per-camera-dish-20261011`)
-  and is promoted by fast-forwarding production.
-- The integration worktree (`/home/jeremy/orange-integration-20260921`, branch
-  `integration/device-roi-into-shaman-20260921`) was retired on 2026-11-14:
-  since the device-ROI merge (2026-09-21, `docs/device_roi_merge_plan_2026_09_21.md`)
-  it only mirrored production, and its build went stale. The branch stays on
-  the fork as history; do not promote to it.
+- Production: the main checkout `/home/jeremy/orange` (moved from
+  `/home/jeremy/orange-jeremy` on 2026-11-14; the production worktree
+  `/home/jeremy/orange-gop-split-a16` is gone), branch
+  `agent/acquisition/shaman-v2-authoritative-20260824`. `origin` is the fork
+  (jmdelahanty/orange); `upstream` (JohnsonLabJanelia/orange) has push
+  disabled and is never pushed. `targets/release/{orange,orange_client}` are
+  the binaries all four sudo wrappers run (GUI validation, local benchmark,
+  evt stream smoke, gdb headless backtrace).
+- Work lands on the dish branch `agent/gui/per-camera-dish-20261011`
+  (worktree `/home/jeremy/orange-per-camera-dish-20261011`) and is promoted by
+  fast-forwarding production in `/home/jeremy/orange`.
+- The integration branch `integration/device-roi-into-shaman-20260921` was
+  retired on 2026-11-14 (it only mirrored production); it stays on the fork as
+  history.
 - Running journal (Claude Doc, every explanation and result since
   2026-09-16): see the memory note "Pose journal doc"; add an entry per
   session.
@@ -312,7 +313,7 @@ Orange/Citrus commissioning) are in git history of this file and in
 ## Production 5c6a26d, 2026-10-14
 
 - Production (`agent/acquisition/shaman-v2-authoritative-20260824`,
-  `/home/jeremy/orange-gop-split-a16`) and integration
+  `/home/jeremy/orange`) and integration
   (`integration/device-roi-into-shaman-20260921`) are at 5c6a26d, promoted
   from the dish branch `agent/gui/per-camera-dish-20261011` (38 commits since
   91b80df). After checking out a new commit run

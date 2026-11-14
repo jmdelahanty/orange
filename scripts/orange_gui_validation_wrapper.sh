@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_ORANGE_ROOT="/home/jeremy/orange-jeremy"
-EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange-gop-split-a16"
-DEFAULT_ORANGE_BIN="$DEFAULT_ORANGE_ROOT/build/orange"
+DEFAULT_ORANGE_ROOT="/home/jeremy/orange"
+EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange"
+DEFAULT_ORANGE_BIN="$DEFAULT_ORANGE_ROOT/targets/release/orange"
 EXPERIMENT_ORANGE_BIN="$EXPERIMENT_ORANGE_ROOT/targets/release/orange"
 ORANGE_BIN="$EXPERIMENT_ORANGE_BIN"
 EVT_PROFILE="/etc/profile.d/evt.sh"
@@ -26,8 +26,7 @@ Options:
   --help
 
 Allowed Orange binaries:
-  /home/jeremy/orange-jeremy/build/orange
-  /home/jeremy/orange-gop-split-a16/targets/release/orange
+  /home/jeremy/orange/targets/release/orange
 
 Allowed env values are intentionally limited to the GUI validation launcher
 contract: display/session variables, GUI autorun controls such as
@@ -234,7 +233,7 @@ validate_env_item() {
     ORANGE_DEFAULT_DETECT_ENGINE)
       value="$(validate_existing_path_under_allowed_roots "$value" \
         "/home/jeremy/orange_data/detect" \
-        "/home/jeremy/orange-gop-split-a16" \
+        "/home/jeremy/orange" \
         "/tmp")" || {
         echo "Detect engine path is outside allowed roots or missing: $value" >&2
         return 2
@@ -268,7 +267,7 @@ validate_env_item() {
     ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT_PATH)
       value="$(validate_existing_path_under_allowed_roots "$value" \
         "/home/jeremy/orange_data" \
-        "/home/jeremy/orange-gop-split-a16" \
+        "/home/jeremy/orange" \
         "/tmp")" || {
         echo "External recorder contract path is outside allowed roots or missing: $value" >&2
         return 2
@@ -367,7 +366,7 @@ validate_env_item() {
     ORANGE_GUI_GUIDED_CAPTURE_STATIC_DOTS_SCENES_PATH)
       value="$(validate_existing_path_under_allowed_roots "$value" \
         "/home/jeremy/orange_data" \
-        "/home/jeremy/orange-gop-split-a16" \
+        "/home/jeremy/orange" \
         "/home/jeremy/orange-per-camera-dish-20261011" \
         "/tmp")" || {
         echo "Guided-capture static_dots scenes file is outside allowed roots or missing: $value" >&2

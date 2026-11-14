@@ -79,7 +79,7 @@ for required in \
   "--env KEY=VALUE" \
   "--ptp-stack-mode" \
   "ORANGE_GUI_AUTORUN" \
-  "/home/jeremy/orange-gop-split-a16/targets/release/orange"; do
+  "/home/jeremy/orange/targets/release/orange"; do
   if [[ "$HELP_TEXT" != *"$required"* ]]; then
     echo "Installed wrapper help is missing expected text: $required" >&2
     exit 1

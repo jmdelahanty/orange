@@ -84,7 +84,7 @@ for required in \
   "--gpu-direct" \
   "--frame-stats" \
   "evt_stream_smoke" \
-  "/home/jeremy/orange-gop-split-a16/targets/release/evt_stream_smoke"; do
+  "/home/jeremy/orange/targets/release/evt_stream_smoke"; do
   if [[ "$HELP_TEXT" != *"$required"* ]]; then
     echo "Installed wrapper help is missing expected text: $required" >&2
     exit 1

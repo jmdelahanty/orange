@@ -13,7 +13,7 @@
     "stream_only": false,
     "sync_mode": "ptp_gate",
     "recording_sink_mode": "external_ipc",
-    "config_folder": "/home/jeremy/orange-gop-split-a16/config/encoding_quality_screen_2010096_30fps",
+    "config_folder": "/home/jeremy/orange/config/encoding_quality_screen_2010096_30fps",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "ptp_register_read_decimate": 100,
     "nvenc_direct_input": false,

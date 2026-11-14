@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange-gop-split-a16"
+EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange"
 EVT_STREAM_SMOKE_BIN="$EXPERIMENT_ORANGE_ROOT/targets/release/evt_stream_smoke"
 EVT_PROFILE="/etc/profile.d/evt.sh"
 DRY_RUN=0
@@ -16,7 +16,7 @@ needed by the Emergent/NIC stack. When installed with the sudoers rule, this
 command can be invoked as a normal user; it re-execs itself through sudo -n.
 
 Allowed diagnostic binary:
-  /home/jeremy/orange-gop-split-a16/targets/release/evt_stream_smoke
+  /home/jeremy/orange/targets/release/evt_stream_smoke
 
 Options:
   --config-dir <dir>       Camera config directory. Defaults to ORANGE_GUI_CONFIG_DIR before sudo.
@@ -36,7 +36,7 @@ Options:
 
 Allowed config roots:
   /home/jeremy/orange_data/config/local
-  /home/jeremy/orange-gop-split-a16/config/local
+  /home/jeremy/orange/config/local
   /tmp
 EOF
 }

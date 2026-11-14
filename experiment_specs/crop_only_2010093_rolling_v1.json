@@ -5,7 +5,7 @@
   "fixed": {
     "duration_s": 7, "warmup_s": 2, "display": false, "yolo": false,
     "stream_only": false, "sync_mode": "ptp_gate", "recording_sink_mode": "real",
-    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "config_folder": "/home/jeremy/orange/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "media_products": {"schema_version": 1, "mode": "registered_context_and_moving_crops"},
     "ptp_register_read_decimate": 100,
