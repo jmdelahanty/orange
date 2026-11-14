@@ -1,7 +1,8 @@
 # Installing Orange under /opt: plan (2026-11-14)
 
 Status: **plan only.** Nothing described here has been built or installed.
-Items marked **Decision** need Jeremy.
+Jeremy's decisions of 2026-11-14 are in section 7. Items still marked
+**Decision** need Jeremy.
 
 ## 1. Goal and what is already decided
 
@@ -112,7 +113,8 @@ Sibling patterns on this host:
 ```
 
 - Releases are immutable once installed. A fix is a new release.
-- Keep the last 5 releases. Never delete `current` or `previous`.
+- Keep every release; nothing is removed automatically (decided 2026-11-14).
+  At about 100-200 MB per release, this is cheap for a long time.
 - The source tree stays the development home. Agents build and test there as
   today, and only an install puts a build into `/opt`.
 
@@ -142,14 +144,30 @@ word. None needs the rig until step 5.
   `scripts/runtime_files.txt`, which the installer copies and a test checks
   against what the code references.
 
-**c. One data-root resolver.**
-- Order: `ORANGE_DATA_ROOT` (env, or the app config), then the `SUDO_USER`
-  home, then `HOME`.
-- Used everywhere, replacing the `HOME`-only paths in
-  `recording_physical_registration.cpp` and `post_finalize_validation.cpp`.
-- A shared Python helper replaces `Path.home() / "orange_data"` in the
-  scripts.
-- Launchers stop hard-coding `/home/jeremy/orange_data`.
+**c. One data-root resolver.** One function in C++, mirrored by one Python
+helper, used everywhere. It replaces:
+- the `HOME`-only paths in `recording_physical_registration.cpp` and
+  `post_finalize_validation.cpp`;
+- `Path.home() / "orange_data"` in the scripts;
+- the hard-coded `/home/jeremy/orange_data` in the launchers.
+
+The rule:
+- **User root**, for the person who started Orange: camera configs, models,
+  specs and personal settings.
+  - Under sudo, that is `SUDO_USER`'s home from the passwd database;
+    otherwise the real uid's home from passwd, not `HOME`.
+  - Root's own home is never used. Root without `SUDO_USER` refuses to start
+    rather than guess.
+  - Path: `<home>/orange_data`.
+- **Rig root**, shared on the data drive: calibrations (written by the
+  commissioning admin, readable by all operators) and recordings.
+  - Its location is read from a root-owned host file (for example
+    `/etc/orange/rig_paths.json`, or the pancakebatter host config), so a user
+    cannot redirect it.
+  - Example: `/mnt/Data2/rig/orange/{calibrations,exp}`. Recordings already
+    go to `/mnt/Data2/orange_data/exp` today.
+- **`ORANGE_DATA_ROOT`** override for tests only. Release binaries started
+  through the wrappers ignore it.
 
 **d. Installer `scripts/install_orange_release.sh`.** Jeremy runs it with
 sudo.
@@ -179,10 +197,10 @@ sudo.
   others. It defaults to `/opt/orange/current/bin/<binary>`.
 - The wrapper takes `ptp_stack.sh` and `host_stall_monitor.py` from the
   release's `share/orange/scripts`, not from a home folder.
-- **Decision:** whether the dev-tree path
-  `/home/jeremy/orange/targets/release` stays allowed for Jeremy's
-  development runs. Recommended: yes, in a separate `orange-dev-*` wrapper
-  that only jeremy's sudoers entry may run.
+- Development builds stay runnable (decided 2026-11-14) through separate
+  `orange-dev-*` wrappers. They accept only the dev-tree path
+  `/home/jeremy/orange/targets/release`, and only jeremy's sudoers entry may
+  run them. The release wrappers never accept a dev-tree binary.
 
 **f. Operator entry points.**
 - `/usr/local/bin/orange-gui` runs the release's GUI launcher, and
@@ -235,13 +253,22 @@ afterwards.
     every path Orange opens or runs is pinned. `ORANGE_PTP_PMC_PATH` is run
     as root by `popen`, and `ptp_stack.sh` starts ptp4l with `sudo -b`.
     These must take no user-controlled path.
-- **Data.**
-  - A shared rig root, for example `/mnt/Data2/rig/`. Calibrations live
-    there, Jeremy-writable and world-readable. The recordings root is already
-    on Data2.
-  - Per-user configs and specs in each user's data root.
-  - **Decision:** whether camera configs and models are shared (rig) or per
-    user.
+- **Data** (decided 2026-11-14):
+  - Camera configs, models, specs and settings are per user, in each user's
+    `~/orange_data`.
+  - Shared data lives on the data drive(s) in the rig root (section 4c):
+    calibrations, readable by all and written by the admin, and recordings.
+- **Accounts** (decided 2026-11-14):
+  - Jeremy is the only full-sudo admin. Operators do not get their own broad
+    sudo.
+  - One sudoers rule for a group lets its members run the release wrappers as
+    root with no password, and nothing else:
+    `%orange-operators ALL=(root) NOPASSWD: /usr/local/bin/orange-gui, ...`
+  - Adding a user:
+    1. create the account;
+    2. add it to `orange-operators` and `ipc`;
+    3. its `~/orange_data` is created on first run from the release's
+       defaults.
 - **IPC.**
   - Operators join group `ipc` for SHAMAN shared memory.
   - A per-boot `/run/orange/` (tmpfiles.d, group `orange`, 0770) for the
@@ -253,18 +280,33 @@ afterwards.
 - **One operator at a time.** The `/run/orange` lock refuses a second
   Orange, and the GUI shows who holds it.
 
-## 7. Decisions for Jeremy
+## 7. Decisions
 
-1. Release naming: `<YYYY.MM.DD>-<short commit>`, or a git tag per install
-   (`orange-v2026.11.14`). A tag makes the fork the record of what was
-   installed.
-2. Whether the dev-tree binaries stay runnable through a jeremy-only wrapper
-   (recommended).
-3. How many releases to keep (proposed: 5).
-4. Whether the native recorder joins the release (proposed: yes, so a
-   release is the whole Orange runtime).
-5. The phase 4 questions: sudo or capabilities; the shared data root; shared
-   or per-user camera configs and models.
+Decided by Jeremy, 2026-11-14:
+- A separate jeremy-only dev wrapper; dev builds stay runnable for
+  development.
+- The rollout order as in section 5: code first, then an install alongside
+  the dev tree with a rig comparison, then the defaults switch, then
+  multi-user last.
+- Every release is kept.
+- The native recorder is part of the release; the installer builds both
+  CMake projects.
+- Camera configs and models are per user. Shared data roots live on the data
+  drive(s). Operators get the group's narrow passwordless rule, not their own
+  sudo.
+
+Still open:
+1. Release naming.
+   - Recommended: a git tag per install (`orange-v2026.11.14`, plus `.N` for
+     a second install that day). The installer creates the tag, and it names
+     the release folder.
+   - Pushing each tag to the fork follows the usual push-needs-Jeremy's-word
+     rule.
+   - The alternative, a folder name like `<date>-<short commit>`, records the
+     release only on this machine.
+2. Sudo wrappers or file capabilities, after the non-root camera-open test.
+3. The rig root's exact path and the host file that names it, with
+   pancake-batter.
 
 ## 8. Effort
 
