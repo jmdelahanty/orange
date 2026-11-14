@@ -673,7 +673,7 @@ def main():
     a.add_argument("mp4")
     a = sub.add_parser("repair")
     a.add_argument("mp4")
-    a.add_argument("--recorder", default="/home/jeremy/orange-integration-20260921/targets/native/external_recorder_ipc_probe_native")
+    a.add_argument("--recorder", default="/opt/orange/bin/external_recorder_ipc_probe_native")
     a.add_argument("--encode-gpu", type=int, required=True)
     a.add_argument("--decode-threads", type=int, default=8)
     a.add_argument("--work-dir", default="/mnt/Data1/orange_data/chroma_repair_work")

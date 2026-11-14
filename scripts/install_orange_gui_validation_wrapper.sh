@@ -75,7 +75,6 @@ fi
 
 HELP_TEXT="$("$TARGET" --help)"
 for required in \
-  "/home/jeremy/orange-integration-20260921/targets/release/orange" \
   "--orange-bin" \
   "--env KEY=VALUE" \
   "--ptp-stack-mode" \

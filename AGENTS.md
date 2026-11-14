@@ -2,14 +2,19 @@
 
 ## Current Branch Context
 
-- Integration worktree: `/home/jeremy/orange-integration-20260921`, branch
-  `integration/device-roi-into-shaman-20260921` = production line
-  `agent/acquisition/shaman-v2-authoritative-20260824` + the analytics line
-  `agent/analytics/device-roi-20260912` (merged 2026-09-21) + GUI parity for
-  the validated recorder shape. Plan and gates:
-  `docs/device_roi_merge_plan_2026_09_21.md`.
-- The shared worktree `/home/jeremy/orange-gop-split-a16` belongs to the GUI
-  registration session; do not edit it from an integration session.
+- Production worktree: `/home/jeremy/orange-gop-split-a16`, branch
+  `agent/acquisition/shaman-v2-authoritative-20260824`. Its
+  `targets/release/{orange,orange_client}` are the binaries to run through the
+  sudo wrappers (the GUI wrapper's default; pass `--orange-client` to the
+  headless one, whose default is still the old `/home/jeremy/orange-jeremy`
+  build). Work lands on the dish branch
+  `agent/gui/per-camera-dish-20261011` (`/home/jeremy/orange-per-camera-dish-20261011`)
+  and is promoted by fast-forwarding production.
+- The integration worktree (`/home/jeremy/orange-integration-20260921`, branch
+  `integration/device-roi-into-shaman-20260921`) was retired on 2026-11-14:
+  since the device-ROI merge (2026-09-21, `docs/device_roi_merge_plan_2026_09_21.md`)
+  it only mirrored production, and its build went stale. The branch stays on
+  the fork as history; do not promote to it.
 - Running journal (Claude Doc, every explanation and result since
   2026-09-16): see the memory note "Pose journal doc"; add an entry per
   session.
@@ -416,3 +421,18 @@ Orange/Citrus commissioning) are in git history of this file and in
 - 250 Hz: `~/orange_data/config/local/250_cam4_ptp_fourcam` (4512x1792 at
   250 fps, offset_y 1360) needs no app config change. It has not been run in
   the GUI with analytics and crops yet.
+
+## Production 8592c50, 2026-11-14
+
+- Production is at 8592c50 (tree 1379), pushed to the fork: the commissioning
+  record (`scripts/commissioning_record.py`, every commissioning launcher
+  appends to it), physical-target labels and light-blocked dark frames in
+  guided capture, the `static_dots` recipe (`--static-dots-scenes`), the fit
+  CLI, brightness-map tool, and calibration autorun with YOLO/pose off. All ran
+  on the rig on 2026-11-13/14 (omnifin0 wet commissioning, record
+  `~/orange_data/calibrations/commissioning/omnifin0_20261113T230405Z_*`).
+- Any new launcher env key needs a sudo-wrapper allow-list entry and a wrapper
+  reinstall; `commissioning_record_tests` fails if one is missing.
+- omnifin0: with PDU outlets 7/8 on and the trigger unplugged, the IR
+  illuminators still glow (arena 1 27 DN at 50 ms, filters off); a true dark
+  frame needs 7/8 off.
