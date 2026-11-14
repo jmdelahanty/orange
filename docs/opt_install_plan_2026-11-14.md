@@ -159,13 +159,27 @@ The rule:
   - Root's own home is never used. Root without `SUDO_USER` refuses to start
     rather than guess.
   - Path: `<home>/orange_data`.
-- **Rig root**, shared on the data drive: calibrations (written by the
-  commissioning admin, readable by all operators) and recordings.
-  - Its location is read from a root-owned host file (for example
-    `/etc/orange/rig_paths.json`, or the pancakebatter host config), so a user
-    cannot redirect it.
-  - Example: `/mnt/Data2/rig/orange/{calibrations,exp}`. Recordings already
-    go to `/mnt/Data2/orange_data/exp` today.
+- **Per-person data on the data drive** (Jeremy, 2026-11-14):
+  `/mnt/Data2/<username>/<rig>/orange/`, for that person's recordings and run
+  outputs.
+  - `<username>` is the account that started Orange (`SUDO_USER`).
+    Orange already writes files as that user (6af7c8b).
+  - Open: one person can have two accounts, for example the local `jeremy`
+    and the HHMI `delahantyj`. Which identity names the folder?
+- **Rig-wide shared data:** `/mnt/Data2/rigs/<rig>/calibrations`, written by
+  whoever commissions the rig and readable by every operator. Every operator
+  must use the rig's commissioned calibration, so it is not per person.
+- **Where these paths come from:** the root-owned machine description that
+  pancakebatter installs, `/etc/pancakebatter/host.yml` `paths:`. It already
+  has `data_root: /home/jeremy/orange_data`, and its comment says the username
+  stays embedded until the shared-machine migration. Add the drive root and
+  the per-person and rig patterns there, via pancake-batter's installer.
+  - Orange already pins `/etc/pancakebatter` documents into every recording
+    (`session.rig_config`), so a run records the paths it used.
+  - A user cannot redirect them.
+- Today recordings go to `/mnt/Data2/orange_data/exp/unsorted` and
+  calibrations to `~/orange_data/calibrations`. Moving the existing data is a
+  separate, explicit step, not part of the resolver change.
 - **`ORANGE_DATA_ROOT`** override for tests only. Release binaries started
   through the wrappers ignore it.
 
@@ -242,13 +256,10 @@ afterwards.
 
 ## 6. Multi-user (phase 4; mostly open)
 
-- **Running Orange.**
-  - Keep the passwordless sudo wrappers, now pinned to `/opt`, with
-    `env_reset`, no `ORANGE_*` env passthrough, and the wrapper's env
-    allow-list. That is a decision already half-made.
-  - Alternative: file capabilities (`cap_net_raw`, `cap_net_admin`,
-    `cap_ipc_lock`, `cap_sys_nice` on the root-owned binary, no sudo). This
-    needs one non-root camera-open, GPUDirect and recording test first.
+- **Running Orange** (decided 2026-11-14): the cameras need root, as now,
+  so Orange runs through the passwordless sudo wrappers, pinned to `/opt`,
+  with `env_reset`, no `ORANGE_*` env passthrough and the wrapper's env
+  allow-list. File capabilities are dropped.
   - Note: a sudo rule for Orange is effectively root for its holder unless
     every path Orange opens or runs is pinned. `ORANGE_PTP_PMC_PATH` is run
     as root by `popen`, and `ptp_stack.sh` starts ptp4l with `sudo -b`.
@@ -264,11 +275,18 @@ afterwards.
   - One sudoers rule for a group lets its members run the release wrappers as
     root with no password, and nothing else:
     `%orange-operators ALL=(root) NOPASSWD: /usr/local/bin/orange-gui, ...`
+  - Users are HHMI domain accounts (for example `delahantyj`, uid 64406,
+    home `/home/delahantyj@hhmi.org`). Permissions on this machine come from
+    local groups, which domain accounts can join.
   - Adding a user:
-    1. create the account;
-    2. add it to `orange-operators` and `ipc`;
+    1. the domain account exists;
+    2. add it to the local groups `orange-operators` and `ipc`;
     3. its `~/orange_data` is created on first run from the release's
-       defaults.
+       defaults;
+    4. create its folder on the data drive.
+  - Testing: `delahantyj` is already in the local `sudo` group (full sudo).
+    It can test domain-account homes and per-person folders, but not the
+    narrow operator rule. That needs an account without sudo.
 - **IPC.**
   - Operators join group `ipc` for SHAMAN shared memory.
   - A per-boot `/run/orange/` (tmpfiles.d, group `orange`, 0770) for the
@@ -295,18 +313,20 @@ Decided by Jeremy, 2026-11-14:
   drive(s). Operators get the group's narrow passwordless rule, not their own
   sudo.
 
+- Releases are named by a git tag per install (`orange-v2026.11.14`, plus
+  `.N` for a second install that day). The installer creates the tag, and it
+  names the release folder. Pushing each tag to the fork follows the usual
+  push-needs-Jeremy's-word rule.
+- Sudo wrappers, not file capabilities: the cameras need root.
+- Per-person data on the data drive at `/mnt/Data2/<username>/<rig>/orange/`.
+  Paths come from the installed `/etc/pancakebatter/host.yml`.
+
 Still open:
-1. Release naming.
-   - Recommended: a git tag per install (`orange-v2026.11.14`, plus `.N` for
-     a second install that day). The installer creates the tag, and it names
-     the release folder.
-   - Pushing each tag to the fork follows the usual push-needs-Jeremy's-word
-     rule.
-   - The alternative, a folder name like `<date>-<short commit>`, records the
-     release only on this machine.
-2. Sudo wrappers or file capabilities, after the non-root camera-open test.
-3. The rig root's exact path and the host file that names it, with
-   pancake-batter.
+1. Which account names a person's folder when they have both a local and an
+   HHMI account (`jeremy` and `delahantyj`).
+2. The exact `paths:` keys in `host.yml`. pancake-batter owns the file and
+   its installer.
+3. A test account without sudo, for the operator rule.
 
 ## 8. Effort
 
