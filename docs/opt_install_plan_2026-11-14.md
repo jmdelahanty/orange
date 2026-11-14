@@ -164,8 +164,15 @@ The rule:
   outputs.
   - `<username>` is the account that started Orange (`SUDO_USER`).
     Orange already writes files as that user (6af7c8b).
-  - Open: one person can have two accounts, for example the local `jeremy`
-    and the HHMI `delahantyj`. Which identity names the folder?
+  - One person can have two accounts. Jeremy logs in locally as `jeremy`;
+    `delahantyj` is his HHMI domain identity, used for `/groups` transfers.
+    Future operators will most likely log in with their HHMI accounts.
+    Proposed: the folder uses the HHMI identity, through a small map in
+    `host.yml` `paths` (`jeremy: delahantyj`; domain accounts map to
+    themselves). That gives one folder per person, named as the lab and
+    `/groups` know them. The alternative is the login name with no map, at
+    the cost of a second folder if the same person runs from another
+    account.
 - **Rig-wide shared data:** `/mnt/Data2/rigs/<rig>/calibrations`, written by
   whoever commissions the rig and readable by every operator. Every operator
   must use the rig's commissioned calibration, so it is not per person.
@@ -322,8 +329,8 @@ Decided by Jeremy, 2026-11-14:
   Paths come from the installed `/etc/pancakebatter/host.yml`.
 
 Still open:
-1. Which account names a person's folder when they have both a local and an
-   HHMI account (`jeremy` and `delahantyj`).
+1. Folder name: the HHMI identity through a `host.yml` map (proposed), or
+   the login name.
 2. The exact `paths:` keys in `host.yml`. pancake-batter owns the file and
    its installer.
 3. A test account without sudo, for the operator rule.
