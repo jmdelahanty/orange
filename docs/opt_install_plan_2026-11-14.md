@@ -332,8 +332,33 @@ Decided by Jeremy, 2026-11-14:
   Paths come from the installed `/etc/pancakebatter/host.yml`.
 
 Still open:
-1. The exact `paths:` keys in `host.yml`. pancake-batter owns the file and
-   its installer.
+1. The `host.yml` keys. pancake-batter proposed (2026-11-14), pending
+   Jeremy's approval in its session:
+   - **Owner:** `host.yml` only. The drive, the folder layout and the
+     accounts belong to the machine; the rig is just a template variable,
+     and it must be a rig bound to this host.
+   - **Keys** (`system_config` v1, additive):
+     ```
+     paths:
+       data_root: /home/jeremy/orange_data       # unchanged meaning
+       data_drive_root: /mnt/Data2
+       person_data_template: "{data_drive_root}/{identity}/{rig_id}/orange"
+       rig_shared_template: "{data_drive_root}/rigs/{rig_id}"
+     operators:
+       identities: {jeremy: delahantyj, delahantyj: delahantyj}
+     ```
+   - **Templates:** only `{data_drive_root}`, `{identity}` and `{rig_id}`
+     are allowed. The result must be absolute and normalized. Identities
+     must match `^[a-z][a-z0-9_-]{0,31}$`.
+   - **Calibrations** are `<rig_shared>/calibrations`, a sub-name fixed in
+     Orange.
+   - **Identity resolution:** an explicit allowlist. Every account that may
+     run Orange is listed, domain accounts included; anything else refuses.
+     An optional `operators.domain_suffix` is possible later, but the
+     allowlist stays the default.
+   - **Installing:** a `host.yml` change alters its sha, which is pinned
+     into every recording, so install between sessions. pancake-batter adds
+     `/opt/orange/` to its process matching at P3.
 2. A test account without sudo, for the operator rule.
 
 ## 8. Effort
