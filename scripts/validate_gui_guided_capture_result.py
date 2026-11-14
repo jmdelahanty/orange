@@ -303,6 +303,7 @@ def validate_result(
             "homography_grid": "homography_grid",
             "homography_rings": "homography_grid",
             "verification_dots": "verification_dots",
+            "static_dots": "validation_pattern",
         }
         session_ids: set[str] = set()
         for index, sample in enumerate(samples):

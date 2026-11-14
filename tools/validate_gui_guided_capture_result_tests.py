@@ -209,6 +209,37 @@ def main() -> int:
         )
         assert errors == [], errors
 
+    # static_dots samples (schema v6) are validation patterns.
+    dots_sequence = ["black_reference", "static_dots", "static_dots"]
+    dots_payload = valid_payload()
+    dots_payload["schema_version"] = 6
+    dots_payload["config"].update({
+        "recipe_sequence": dots_sequence,
+        "fixture_aperture_shape": "circle",
+    })
+    dots_payload["samples"] = [
+        {
+            "recipe": recipe,
+            "purpose": "validation_pattern",
+            "workflow": {"state": "complete", "terminal_outcome": "complete"},
+            "captures": [
+                {"camera_serial": serial, "valid": True}
+                for serial in ("2010093", "2010094")
+            ],
+        }
+        for recipe in dots_sequence
+    ]
+    dots_payload["session_policy"] = "one_session_per_recipe_sequence"
+    errors = validate_result(
+        dots_payload,
+        ["2010093", "2010094"],
+        "black_reference",
+        False,
+        expected_recipe_sequence=dots_sequence,
+        expected_fixture_aperture_shape="circle",
+    )
+    assert errors == [], errors
+
     print("validate_gui_guided_capture_result_tests passed")
     return 0
 
