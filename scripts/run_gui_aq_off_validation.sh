@@ -672,21 +672,32 @@ else:
                 for item in data.get("gpio", {}).get("nodes", [])
                 if isinstance(item, dict) and isinstance(item.get("name"), str)
             }
-            required_strobe_nodes = {
-                "GPO_0_Polarity": ("bool", False),
-                "GPO_0_Mode": ("enum", "Exposure"),
-            }
-            for node_name, (node_type, node_value) in required_strobe_nodes.items():
-                node = gpio_nodes.get(node_name)
-                if (
-                    not node
-                    or node.get("type") != node_type
-                    or node.get("value") != node_value
-                ):
-                    errors.append(
-                        f"{path}: exposed mapped NIR strobe requires gpio.nodes "
-                        f"{node_name}={node_value!r} ({node_type})"
-                    )
+            # Recordings need the strobe mapped to exposure. A calibration
+            # autorun that cannot record opens it held low in manual mode
+            # (make_guided_calibration_timing_config.py, 2026-11-14) so long
+            # calibration exposures can never pulse the IR.
+            calibration_without_recording = (
+                os.environ.get("ORANGE_GUI_AUTORUN_ENABLE_RECORD", "") == "0"
+                and (
+                    os.environ.get("ORANGE_GUI_GUIDED_CAPTURE_AUTORUN", "") == "1"
+                    or os.environ.get("ORANGE_GUI_ARENA_CENTERING_AUTORUN", "") == "1"
+                )
+            )
+            allowed_modes = ("Exposure", "GPO") if calibration_without_recording else ("Exposure",)
+            polarity = gpio_nodes.get("GPO_0_Polarity")
+            if not polarity or polarity.get("type") != "bool" or polarity.get("value") is not False:
+                errors.append(
+                    f"{path}: exposed mapped NIR strobe requires gpio.nodes "
+                    "GPO_0_Polarity=False (bool)"
+                )
+            mode = gpio_nodes.get("GPO_0_Mode")
+            if not mode or mode.get("type") != "enum" or mode.get("value") not in allowed_modes:
+                errors.append(
+                    f"{path}: exposed mapped NIR strobe requires gpio.nodes GPO_0_Mode in "
+                    f"{allowed_modes!r} (enum)"
+                    + ("" if calibration_without_recording else
+                       "; GPO (held low) is accepted only for a calibration autorun without recording")
+                )
         if (
             crop_recording_sink_mode == "external_ipc"
             and crop_external_require_separate_gpu_raw == "1"

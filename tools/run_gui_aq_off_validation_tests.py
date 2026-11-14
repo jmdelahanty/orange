@@ -2130,6 +2130,49 @@ def test_gui_privilege_wrapper_rejects_missing_app_config_env() -> None:
     )
 
 
+def test_strobe_held_low_only_for_calibration_without_recording() -> None:
+    """A calibration autorun may open the strobe camera with GPO_0 held low (GPO mode);
+    any run that can record must still map it to Exposure."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010096")
+        path = config_dir / "2010096.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["gpio_pinout_access"] = "exposed"
+        payload["rig_io"] = {"connections": [
+            {"purpose": "nir_strobe_trigger", "direction": "output", "camera_line": "GPO_0"}]}
+        payload["gpio"] = {"nodes": [
+            {"name": "GPO_0_Polarity", "type": "bool", "value": False},
+            {"name": "GPO_0_Mode", "type": "enum", "value": "GPO"},
+        ]}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        calibration = {"ORANGE_GUI_AUTORUN_ENABLE_RECORD": "0",
+                       "ORANGE_GUI_GUIDED_CAPTURE_AUTORUN": "1"}
+
+        result = run_launcher(config_dir, detect_engine, extra_env=calibration)
+        require("exposed mapped NIR strobe" not in result.stderr,
+                "a non-recording calibration autorun accepts the held-low strobe: " + result.stderr)
+
+        result = run_launcher(config_dir, detect_engine,
+                              extra_env={**calibration, "ORANGE_GUI_AUTORUN_ENABLE_RECORD": "1"})
+        require(result.returncode != 0 and "accepted only for a calibration autorun" in result.stderr,
+                "a run that can record must map the strobe to Exposure")
+
+        result = run_launcher(config_dir, detect_engine)
+        require(result.returncode != 0 and "exposed mapped NIR strobe" in result.stderr,
+                "a plain GUI run must map the strobe to Exposure")
+
+        payload["gpio"]["nodes"][0]["value"] = True
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        result = run_launcher(config_dir, detect_engine, extra_env=calibration)
+        require(result.returncode != 0 and "GPO_0_Polarity=False" in result.stderr,
+                "manual mode with polarity true (strobe held ON) is always refused")
+
+
 def main() -> int:
     tests = [
         test_discovers_all_camera_json_files,
@@ -2163,6 +2206,7 @@ def main() -> int:
         test_expected_camera_gate_fails_when_missing,
         test_expected_camera_subset_validates_only_requested_files,
         test_bad_config_fails_preflight,
+        test_strobe_held_low_only_for_calibration_without_recording,
         test_crop_preview_env_controls_are_forwarded_to_exec_env,
         test_yolo_worker_scheduling_env_controls_are_forwarded_to_exec_env,
         test_external_crop_ipc_autosizes_crop_frame_pool,
