@@ -182,10 +182,10 @@ Palette's requirements (2026-11-15):
 
 pancake-plate (2026-11-15): the copies are written as the exact bytes
 received, never re-serialized by Orange (Palette re-canonicalizes and
-compares). A third copy is proposed, not decided:
-`plan_canonical_copy_relative_path` = `run_plan/<plan_sha256>.json`, the
-canonical JSON `plan_sha256` is computed over, so Palette can verify it
-without parsing YAML.
+compares). Third copy, decided by Jeremy (2026-11-15):
+`source.plan_json_copy_relative_path` = `run_plan/<plan_sha256>.json`, the
+canonical JSON `plan_sha256` is computed over (written by declare.py), so
+Palette verifies `plan_sha256` without parsing YAML.
 
 Orange's rule, so it holds whatever files the generator adds: Orange copies
 the generator's `run_plan/` folder as is and refuses unless every file in it
