@@ -121,17 +121,19 @@ the cross shown at 0.75x with the arrows and a 1 mm bar to that same scale (no e
 
 Figures:
 - `Cam<serial>_dish_rim.png` (every camera with a uniform-gray frame, 1/4 size, legend below):
-  the floor-edge fit (green) and the wall-top fit (magenta) with their centres and inlier points,
-  the observed crosshair centre with the arrow to the floor-edge centre (cyan, drawn 10x longer)
-  and its value in mm, and the active registration's circle where one exists (yellow), labelled
-  with its artifact id and "EXPIRED <time>" or "valid until <time>". Sides without edge points
-  are named in the legend.
+  the fixed-radius wall-top fit (white, THE measurement) with its centre, the free wall-top fit
+  (magenta, cross-check) with its inlier points, the observed crosshair centre with the arrow to
+  the dish centre (cyan, drawn 10x longer, labelled so) and its value +/- 1-sigma in mm, and the
+  active registration's circle where one exists (yellow), labelled with its artifact id and
+  "EXPIRED <time>" or "valid until <time>". Sides without points are named in the legend. The
+  floor edge (green) appears only with `--floor-diagnostic`.
 - `Cam<serial>_dish_rim_zoom.png`: 320 x 320 native-pixel crops (shown x2) at the top, right,
-  bottom and left, centred between the two edges, with both fits, their inlier points and the
-  registration's fit; a crop says "NO ... EDGE POINTS HERE" and "black = outside the frame".
+  bottom and left (one always falls on the side nearest the frame), with both wall-top fits, their
+  points and the registration's fit; a crop says "NO ... EDGE POINTS HERE" and "black = outside
+  the frame".
 - `Cam<serial>_projection.png` (green: predicted dot, red: measured) and
   `Cam<serial>_crosshair.png` (cyan: fitted arms and outline, red: observed centre, green:
-  predicted centre, yellow: the registration's fit, magenta: today's rim).
+  predicted centre, yellow: the registration's fit).
 
 Caveats:
 - The outline is drawn at the experimental-area radius on the film (40.5 mm today). Where it runs
@@ -139,7 +141,7 @@ Caveats:
 - The gate's edge-support limit (>= 12 DN per px step) was set on the registration workflow's
   own rim frames. On a dimmer frame (uniform gray 64 at 10 ms, 2026-11-15) true rims step only
   2.6-5.6 DN/px and score 0.00-0.22, so a low edge support on this check's frame says nothing
-  about a fit; compare `observed_rim` and `registration_vs_today` instead.
+  about a fit; compare the wall-top fits and `registration_vs_today` instead.
 
 ## Results, 2026-11-15
 
