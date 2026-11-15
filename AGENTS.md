@@ -370,7 +370,7 @@ Orange/Citrus commissioning) are in git history of this file and in
 - Pins: `contracts/citrus_subject_reference_v2.schema.json` and
   `contracts/citrus_recording_observation_finalized_receipt_v4.schema.json`.
   Test data: `tools/fixtures/citrus_subject_v4`.
-- Citrus still writes receipt v3. Citrus v4 needs `subject_identity_version: 4`
+- (2026-10-15; stale, see the last section) Citrus still writes receipt v3. Citrus v4 needs `subject_identity_version: 4`
   with receipt 4 and acceptance 3 together, and Jeremy flips it.
 - No rig run on b40b94d yet. The finalize change is inert while Citrus writes
   receipt v3.
@@ -409,7 +409,7 @@ Orange/Citrus commissioning) are in git history of this file and in
     blank dish declares `not_collected`; Confirm is still required.
 - Installed native recorder: built from 6a03180 (includes 49df0bd), sha256
   fff3621e...
-- Citrus still writes receipt v3 (`~/citrus/system_config.yml`); the transfer
+- (2026-11-10; stale, see the last section) Citrus still writes receipt v3 (`~/citrus/system_config.yml`); the transfer
   pre-check still pins sealer 3.3.0.
 - Rig runs on edc5450, 2026-11-10: QP29 crop test `2026_11_10_14_14_34` and
   the 30-min four-arena Citrus run at 240 Hz `2026_11_10_15_55_37` (Orange side
@@ -492,3 +492,33 @@ Orange/Citrus commissioning) are in git history of this file and in
 - Sealer: pancake-plate (`JohnsonLabJanelia/pancake-plate`, agent
   `pancake-plate`) owns the sealer and the provenance questions; Orange's
   pre-check still pins 3.3.0.
+
+## Production bbdc057, 2026-11-15 (acceptance v4)
+
+- Production and the fork: bbdc057 (tree 1367), on Jeremy's go after a clean
+  headless gate (`..._od8ff_s16_20261115_011819`: 0 gaps, NIC unchanged,
+  5900/5900 per recorder, detect p95 1.82-1.85 ms) and a bound run
+  `2026_11_15_01_20_29` (Citrus 1b918dd, 4 H5s COMPLETE, receipts in 4.5 s,
+  0 drops).
+- Citrus writes acceptance v3 and receipt v4 on the rig (checked on
+  2026-11-14 runs; the 2/2 compiled defaults are overridden by the rig's
+  Orange-completion config).
+- Orange accepts acceptance v4 (agent-contracts #126 + erratum #127, pin
+  `contracts/citrus_recording_observation_binding_acceptance_v4.schema.json`
+  f0a4da8a): contract.subject is citrus.subject_declaration v1 or v2 (from
+  a signed orchard run plan), outer and inner version 4, answering a v2
+  request; only receipt v4 answers it. Citrus switches the whole batch to v4
+  with `recording_observation_acceptance_schema_version: 4`, on Jeremy's
+  word, after Palette pins f0a4da8a.
+- `subject_cross_check.json` is v2: besides dish and count it refuses the
+  arm on `blank_pairing` (Orange `declared_blank` only with a Citrus plan
+  blank, other Orange absences only with a Citrus panel blank) and
+  `run_plan` (Citrus's run_plan vs Orange's declaration v2 source, canonical
+  bytes, the rule Palette's later check uses). A Citrus panel edit of a
+  plan-declared arena therefore refuses the arm. Palette does not read the
+  file.
+- Camera height above the film: 778 +/- 35 mm, one value for all four
+  cameras (pancakebatter rig.yml rev 16, Jeremy's choice; from the
+  2026-11-13 fish-plane fit). Fish 10 mm above the film appear 1.30 % of
+  their distance from the principal point further out (0.59 mm at 45 mm);
+  no correction is applied anywhere until Jeremy decides.
