@@ -220,6 +220,10 @@ set(ORANGE_GENERATED_SCHEMAS
     "orange_image_levels_v1:image_levels_v1"
     "orange_empty_background_capture_v1:empty_background_capture_v1"
     "orange_recording_empty_background_v1:recording_empty_background_v1"
+    # Version 2 drafts (proposed to Palette 2026-11-15; Orange writes version 1 until agreed).
+    "orange_requester_v1:requester_v1"
+    "orange_empty_background_capture_v2:empty_background_capture_v2"
+    "orange_recording_empty_background_v2:recording_empty_background_v2"
 )
 set(ORANGE_CODEGEN "${CMAKE_SOURCE_DIR}/tools/schema_codegen/codegen.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORANGE_CODEGEN}")
@@ -850,7 +854,9 @@ if(BUILD_TESTING)
     target_include_directories(empty_background_schema_fixture_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(empty_background_schema_fixture_tests PRIVATE cxx_std_17)
     add_test(NAME empty_background_schema_fixture_tests COMMAND empty_background_schema_fixture_tests
-             "${CMAKE_SOURCE_DIR}/tools/fixtures/empty_background_v1" "${CMAKE_SOURCE_DIR}/docs/schemas/examples")
+             "${CMAKE_SOURCE_DIR}/tools/fixtures/empty_background_v1" 1 "${CMAKE_SOURCE_DIR}/docs/schemas/examples")
+    add_test(NAME empty_background_v2_schema_fixture_tests COMMAND empty_background_schema_fixture_tests
+             "${CMAKE_SOURCE_DIR}/tools/fixtures/empty_background_v2" 2)
     add_test(NAME empty_background_schema_fixture_jsonschema_tests
              COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/empty_background_schema_fixture_tests.py")
     add_executable(outputs_common_tests "tools/outputs_common_tests.cpp")
