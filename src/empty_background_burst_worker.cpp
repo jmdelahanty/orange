@@ -56,7 +56,11 @@ bool EmptyBackgroundBurstWorker::Reserve(std::string* error_out)
         ~RestoreDevice() { if (active) cudaSetDevice(device); }
     } restore{restore_device, caller_device};
     auto fail = [&](const std::string& reason) {
+        // An allocation failure must not leak into another stage's
+        // cudaGetLastError(): clear it, free what was allocated, stream on.
+        cudaGetLastError();
         ReleaseReservation();
+        cudaGetLastError();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             reserve_error_ = reason;

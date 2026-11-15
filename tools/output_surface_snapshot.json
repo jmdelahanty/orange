@@ -2193,6 +2193,7 @@
   "csv_headers": [],
   "json_keys": [
    "burst_ms",
+   "bytes",
    "cameras",
    "capture_id",
    "capture_status",
@@ -2212,7 +2213,9 @@
    "received_at_utc",
    "request_id",
    "requester",
+   "reserved",
    "schema_version",
+   "staging",
    "started_at_utc",
    "state",
    "transport",

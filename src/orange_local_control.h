@@ -96,8 +96,9 @@ struct LocalControlStatusSnapshot {
     // session::recording_manifest_publication(folder). Set explicitly by the
     // owner after that write; never inferred from the flags above.
     nlohmann::json recording_manifest = nullptr;
-    // local_control.empty_background_capture: null until a capture was asked
-    // for in this process, then the last one's state (gui/empty_background_capture.h):
+    // local_control.empty_background_capture: null until the cameras stream or
+    // a capture was asked for; then the staging state per streaming camera and
+    // the last capture's state (gui/empty_background_capture.h):
     // request identity, state bursting | writing | captured | failed | refused,
     // capture_id, descriptor_path and descriptor_sha256 once written, per camera
     // the burst outcome. A capture_empty_background client polls status for it.

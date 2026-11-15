@@ -66,7 +66,9 @@ public:
     // GUI thread, every frame.
     void Poll(const Inputs& in);
     bool Busy() const { return phase_ == Phase::kBursting || phase_ == Phase::kWriting; }
-    nlohmann::json StatusJson() const { return status_; }
+    // null until streaming or a capture; then {state (idle until a capture),
+    // the last capture's fields, staging: {serial: {reserved, bytes, error}}}.
+    nlohmann::json StatusJson() const;
     // The newest capture this process wrote (GUI selection at record start).
     std::optional<empty_background::CaptureReceipt> LastReceipt() const { return last_receipt_; }
 
@@ -95,6 +97,7 @@ private:
     std::optional<orange::control::PendingLocalControlCommand> queued_;
     std::optional<empty_background::CaptureReceipt> last_receipt_;
     nlohmann::json status_ = nullptr;
+    nlohmann::json staging_ = nullptr;  // per streaming camera, refreshed by Poll
 };
 
 EmptyBackgroundCapture& GuiEmptyBackgroundCapture();

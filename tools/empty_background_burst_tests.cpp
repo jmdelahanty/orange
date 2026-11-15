@@ -265,6 +265,23 @@ void reservation_case()
     int device = -1;
     cudaGetDevice(&device);
     check(device == 0, "Reserve leaves the caller's device unchanged");
+
+    // A CUDA failure during the reservation (here: no such device) refuses the
+    // capture only, leaves no error for another stage's cudaGetLastError(), and
+    // leaves the caller's device as it was.
+    CameraParams missing = camera("2010096");
+    missing.gpu_id = 99;
+    EmptyBackgroundBurstWorker absent("burst-no-device", &missing, recycle);
+    cudaGetLastError();
+    const bool reserved = absent.Reserve(&error);
+    const cudaError_t leftover = cudaGetLastError();
+    device = -1;
+    cudaGetDevice(&device);
+    check(!reserved && !absent.reserved() && absent.reserved_bytes() == 0 &&
+              absent.reserve_error().find("cudaSetDevice") != std::string::npos,
+          "a reservation CUDA failure refuses the capture with the reason (" + absent.reserve_error() + ")");
+    check(leftover == cudaSuccess, "no CUDA error is left behind for the stream's own checks");
+    check(device == 0, "the caller's device is unchanged after a failed reservation");
 }
 
 void write_case(std::mt19937& rng)

@@ -205,8 +205,36 @@ void EmptyBackgroundCapture::finish_bursts(const Inputs& in)
     publish("writing");
 }
 
+nlohmann::json EmptyBackgroundCapture::StatusJson() const
+{
+    if (status_.is_null() && staging_.is_null()) return nullptr;
+    json out = status_.is_null() ? json{{"state", "idle"}} : status_;
+    out["staging"] = staging_;
+    return out;
+}
+
 void EmptyBackgroundCapture::Poll(const Inputs& in)
 {
+    // Whether each streaming camera can capture at all, and why not.
+    if (!in.streaming || !in.cameras || !in.selection || !in.runtimes || in.num_cameras <= 0) {
+        staging_ = nullptr;
+    } else {
+        json staging = json::object();
+        for (int i = 0; i < in.num_cameras && static_cast<std::size_t>(i) < in.runtimes->size(); ++i) {
+            if (!in.selection[i].stream_on) continue;
+            const EmptyBackgroundBurstWorker* worker =
+                (*in.runtimes)[static_cast<std::size_t>(i)].empty_background_burst_worker();
+            std::string error;
+            if (!worker) error = "no burst worker on this camera";
+            else if (!worker->reserved())
+                error = worker->reserve_error().empty() ? "no staging reserved at stream start" : worker->reserve_error();
+            staging[in.cameras[i].camera_serial] = {
+                {"reserved", worker && worker->reserved()},
+                {"bytes", worker ? worker->reserved_bytes() : 0},
+                {"error", error.empty() ? json(nullptr) : json(error)}};
+        }
+        staging_ = std::move(staging);
+    }
     if (phase_ == Phase::kIdle && queued_) {
         const orange::control::PendingLocalControlCommand command = std::move(*queued_);
         queued_.reset();

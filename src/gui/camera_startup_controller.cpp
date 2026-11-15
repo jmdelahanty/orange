@@ -941,9 +941,9 @@ struct GuiCameraStartupController::Impl {
                             name.c_str(),
                             &stream_bindings.camera_params[i],
                             *resources.recycle_queue));
-                    // Empty-dish background burst: its 17-frame staging area is
-                    // reserved here, once per stream, never mid-stream. A failed
-                    // reservation only refuses the burst for this camera.
+                    // Empty-dish background burst. Its staging area is reserved
+                    // just before acquisition starts (below), after every
+                    // allocation the stream itself needs.
                     const std::string burst_name =
                         "EmptyBackgroundBurst_Cam_" +
                         stream_bindings.camera_params[i].camera_serial;
@@ -951,21 +951,6 @@ struct GuiCameraStartupController::Impl {
                         burst_name.c_str(),
                         &stream_bindings.camera_params[i],
                         *resources.recycle_queue);
-                    std::string burst_error;
-                    if (burst->Reserve(&burst_error)) {
-                        std::cout << "[GUI][empty_background] Cam"
-                                  << stream_bindings.camera_params[i].camera_serial
-                                  << " burst staging reserved: "
-                                  << burst->reserved_bytes() << " bytes on GPU "
-                                  << stream_bindings.camera_params[i].gpu_id
-                                  << std::endl;
-                    } else {
-                        std::cerr << "[GUI][empty_background][WARN] Cam"
-                                  << stream_bindings.camera_params[i].camera_serial
-                                  << " no burst staging (background capture refused"
-                                  << " for this camera): " << burst_error
-                                  << std::endl;
-                    }
                     runtime.SetEmptyBackgroundBurstWorker(std::move(burst));
                 }
             }
@@ -1289,6 +1274,27 @@ struct GuiCameraStartupController::Impl {
                 if (EmptyBackgroundBurstWorker* burst =
                         (*stream_bindings.stream_runtimes)[static_cast<std::size_t>(i)]
                             .empty_background_burst_worker()) {
+                    // Once per stream, never mid-stream, and last: the stream's
+                    // own buffers are allocated by now, so the staging area can
+                    // only take memory the stream does not need. A failure
+                    // never stops the stream: capture is refused for this
+                    // camera with the reason (local-control status
+                    // empty_background_capture.staging).
+                    std::string burst_error;
+                    if (burst->Reserve(&burst_error)) {
+                        std::cout << "[GUI][empty_background] Cam"
+                                  << stream_bindings.camera_params[i].camera_serial
+                                  << " burst staging reserved: "
+                                  << burst->reserved_bytes() << " bytes on GPU "
+                                  << stream_bindings.camera_params[i].gpu_id
+                                  << std::endl;
+                    } else {
+                        std::cerr << "[GUI][empty_background][WARN] Cam"
+                                  << stream_bindings.camera_params[i].camera_serial
+                                  << " no burst staging (background capture refused"
+                                  << " for this camera; the stream is unaffected): "
+                                  << burst_error << std::endl;
+                    }
                     burst->SetMaxQueueSize(
                         static_cast<int>(EmptyBackgroundBurstWorker::kMaxQueuedFrames) + 1);
                     burst->StartThread();

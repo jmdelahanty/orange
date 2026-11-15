@@ -571,6 +571,12 @@ these keys:
   `capture_id`, `descriptor_path` and `descriptor_sha256` (once `captured`),
   `error`, and per camera `capture_status`, `failure_reason`, `burst_ms`,
   `median_ms`, `min_free_entries`, `min_free_events`, `max_queue_depth`.
+- While the cameras stream, `empty_background_capture.staging` says per
+  streaming camera whether its burst staging area was reserved at stream
+  start (`reserved`, `bytes`, `error`); `state` is `idle` until a capture is
+  asked for. A camera whose reservation failed (for example, not enough free
+  memory on its die) streams and records normally; only its capture is
+  refused, with that reason.
 - Refused while a recording is armed, recording or finalizing, while another
   capture runs, while an image-levels check measures a camera, and when no
   camera is streaming. A camera that cannot burst is written as `failed`; the
