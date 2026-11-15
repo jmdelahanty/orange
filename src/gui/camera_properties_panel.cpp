@@ -1139,8 +1139,10 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             // active rim observation) and the whole image
             // (src/gui/image_levels_check.h). The expectation is part of this
             // camera's config file, so each configuration folder carries its own.
-            static float tolerance_input = 0.10f;
-            static float max_saturated_input = 0.001f;
+            // Doubles, not floats: a float 0.1 widens to 0.10000000149011612 in the
+            // config file. Saved rounded to the decimals shown (SetSavedLimits).
+            static double tolerance_input = 0.10;
+            static double max_saturated_input = 0.001;
             static std::string levels_status;
             static bool levels_error = false;
             CameraParams& levels_camera = cameras_params[selected_camera];
@@ -1212,11 +1214,11 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             }
             ImGui::EndDisabled();
             ImGui::SetNextItemWidth(120.0f);
-            ImGui::InputFloat("Mean tolerance (fraction)", &tolerance_input, 0.01f, 0.05f, "%.2f");
-            tolerance_input = std::clamp(tolerance_input, 0.01f, 0.9f);
+            ImGui::InputDouble("Mean tolerance (fraction)", &tolerance_input, 0.01, 0.05, "%.2f");
+            tolerance_input = std::clamp(tolerance_input, 0.01, 0.9);
             ImGui::SetNextItemWidth(120.0f);
-            ImGui::InputFloat("Max saturated fraction", &max_saturated_input, 0.0001f, 0.001f, "%.4f");
-            max_saturated_input = std::clamp(max_saturated_input, 0.0f, 1.0f);
+            ImGui::InputDouble("Max saturated fraction", &max_saturated_input, 0.0001, 0.001, "%.4f");
+            max_saturated_input = std::clamp(max_saturated_input, 0.0, 1.0);
             const std::optional<image_levels::Measurement> last = levels_check.LastMeasurement(selected_camera);
             const std::string save_refusal =
                 last ? image_levels::SaveRefusal(*last, max_saturated_input) : std::string();
@@ -1232,9 +1234,7 @@ void render_camera_properties_panel(CameraEmergent* ecams,
                 image_levels::CameraExpectation e;
                 e.configured = true;
                 e.region = region;
-                e.expected_mean = std::round(checked.mean * 10.0) / 10.0;
-                e.mean_tolerance_fraction = tolerance_input;
-                e.max_saturated_fraction = max_saturated_input;
+                image_levels::SetSavedLimits(&e, checked.mean, tolerance_input, max_saturated_input);
                 nlohmann::json basis{{"source", "gui_measurement"},
                                      {"measured_at_utc", last->measured_at_utc},
                                      {"camera_frame_id", last->camera_frame_id},

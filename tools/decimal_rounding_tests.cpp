@@ -153,6 +153,20 @@ void statistics_text()
     check(gen_text.find("\"mean\":180.962") != std::string::npos &&
               gen_text.find("\"saturated_fraction\":0.23449868") != std::string::npos,
           "generated image_levels writer text: " + gen_text);
+
+    // The camera-config expectation a GUI Save writes (session.image_levels_check
+    // copies it): the old float inputs and the fast-math /10 gave
+    // 0.10000000149011612, 0.0010000000474974513 and 180.10000000000002.
+    orange::image_levels::CameraExpectation e;
+    e.configured = true;
+    volatile double measured = 180.1372;
+    orange::image_levels::SetSavedLimits(&e, measured, static_cast<double>(0.1f), static_cast<double>(0.001f));
+    const std::string saved = orange::image_levels::BuildCameraExpectation(e).dump();
+    check(saved.find("\"expected_mean\":180.1,") != std::string::npos &&
+              saved.find("\"mean_tolerance_fraction\":0.1,") != std::string::npos &&
+              saved.find("\"max_saturated_fraction\":0.001") != std::string::npos &&
+              saved.find("0000") == std::string::npos,
+          "saved image-levels expectation text: " + saved);
 }
 }  // namespace
 

@@ -119,6 +119,14 @@ double round_to(double value, int decimals)
 }
 }  // namespace
 
+void SetSavedLimits(CameraExpectation* e, const double measured_mean, const double mean_tolerance_fraction,
+                    const double max_saturated_fraction)
+{
+    e->expected_mean = orange::outputs::round_decimals(measured_mean, kExpectedMeanDecimals);
+    e->mean_tolerance_fraction = orange::outputs::round_decimals(mean_tolerance_fraction, kMeanToleranceDecimals);
+    e->max_saturated_fraction = orange::outputs::round_decimals(max_saturated_fraction, kMaxSaturatedDecimals);
+}
+
 nlohmann::json StatisticsToJson(const Statistics& s)
 {
     return {{"pixel_count", s.pixel_count},

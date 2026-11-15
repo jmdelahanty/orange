@@ -75,6 +75,16 @@ CameraExpectation ParseCameraExpectation(const nlohmann::json& camera_config);
 // Empty object when not configured.
 nlohmann::json BuildCameraExpectation(const CameraExpectation& expectation);
 
+// The limits a GUI Save writes into the camera config, rounded to the decimals
+// the panel shows, so the file holds their shortest decimal text (0.1, not
+// 0.10000000149011612 from a float input; 180.1, not the fast-math
+// 180.10000000000002; src/outputs/common/decimal_round.h).
+inline constexpr int kExpectedMeanDecimals = 1;
+inline constexpr int kMeanToleranceDecimals = 2;
+inline constexpr int kMaxSaturatedDecimals = 4;
+void SetSavedLimits(CameraExpectation* expectation, double measured_mean, double mean_tolerance_fraction,
+                    double max_saturated_fraction);
+
 struct Measurement {
     bool ok = false;
     std::string error;
