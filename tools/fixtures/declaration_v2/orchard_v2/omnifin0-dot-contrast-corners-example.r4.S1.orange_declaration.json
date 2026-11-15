@@ -26,30 +26,30 @@
   "source": {
     "kind": "orchard_run_plan",
     "repo": "jmdelahanty/orchard",
-    "commit": "892f79c0850409c270f9e9b30d23debca40ec3d0",
+    "commit": "11c26326c351452027d797c0cad06dafe1ac04fa",
     "path": "specs/omnifin0-dot-contrast-corners/run_plans/example_one_session.plan.yaml",
-    "file_sha256": "718c0b2112390471bfde6a826635fe5ff5d86c3e2ff14bad194b945e5f1149d8",
+    "file_sha256": "30db8dce436e44ece9d5e9cddd284f33946f38c49fb4688da57888f53623cd46",
     "tree_dirty": false,
     "plan_id": "omnifin0-dot-contrast-corners-example",
-    "plan_revision": 2,
+    "plan_revision": 4,
     "plan_session_id": "S1",
-    "plan_sha256": "60a55865368debd70ae2ad439e97cccd17b66a6d9b15e0d4c34a6c4e154a0ceb",
+    "plan_sha256": "6ab2a76e69e6a3f1816606f4c4de346e45f3d67d83c44ffd92e0f750f2451624",
     "plan_hash_rule": "orchard_run_plan_v1_plan_sha256",
     "sign_off": {
       "entry_id": "signoff-1",
-      "entry_sha256": "4cedb342af69530cf601c1108073c640542fa98788479ddac0202264df194f26",
+      "entry_sha256": "162709883b4f194cd3aa5a6c4e249f4b047c8b884aef7112bef20db5a0b1aa64",
       "by": "delahantyj",
       "at_utc": "2026-11-18T14:55:00Z",
       "record_path": "specs/omnifin0-dot-contrast-corners/run_plans/example_one_session.record.yaml",
-      "record_commit": "892f79c0850409c270f9e9b30d23debca40ec3d0"
+      "record_commit": "11c26326c351452027d797c0cad06dafe1ac04fa"
     },
     "generator": {
       "repo": "jmdelahanty/orchard",
-      "commit": "892f79c0850409c270f9e9b30d23debca40ec3d0",
+      "commit": "11c26326c351452027d797c0cad06dafe1ac04fa",
       "tool": "tools/declare.py"
     },
-    "plan_copy_relative_path": "run_plan/718c0b2112390471bfde6a826635fe5ff5d86c3e2ff14bad194b945e5f1149d8.yaml",
-    "plan_json_copy_relative_path": "run_plan/60a55865368debd70ae2ad439e97cccd17b66a6d9b15e0d4c34a6c4e154a0ceb.json",
-    "sign_off_copy_relative_path": "run_plan/sign_off/4cedb342af69530cf601c1108073c640542fa98788479ddac0202264df194f26.json"
+    "plan_copy_relative_path": "run_plan/30db8dce436e44ece9d5e9cddd284f33946f38c49fb4688da57888f53623cd46.yaml",
+    "plan_json_copy_relative_path": "run_plan/6ab2a76e69e6a3f1816606f4c4de346e45f3d67d83c44ffd92e0f750f2451624.json",
+    "sign_off_copy_relative_path": "run_plan/sign_off/162709883b4f194cd3aa5a6c4e249f4b047c8b884aef7112bef20db5a0b1aa64.json"
   }
 }

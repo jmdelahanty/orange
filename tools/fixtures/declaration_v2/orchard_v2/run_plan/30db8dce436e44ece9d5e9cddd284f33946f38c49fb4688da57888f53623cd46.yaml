@@ -1,17 +1,17 @@
-# EXAMPLE ONLY. Shows the run-plan format (schema/run_plan.v1.schema.json) for one dot-contrast session.
+# EXAMPLE ONLY. Shows the run-plan format (schema/run_plan.v2.schema.json) for one dot-contrast session.
 # Dish and fish ids are placeholders, the protocol is not generated, and nothing runs from this file.
 # A plan states intent and never changes once committed. What was done (sign-off, loading, unloading,
 # results) is in the run record beside it: example_one_session.record.yaml.
-schema_id: orchard.run_plan.v1
+schema_id: orchard.run_plan.v2
 plan_id: omnifin0-dot-contrast-corners-example
-revision: 2
+revision: 4
 created: 2026-11-14
 created_by: experiment-spec
 note: Format example. Shows a group from a dish, a single fish from a plate well, a single larva drawn from a dish, and a blank.
 
 spec:
   spec_id: omnifin0-dot-contrast-corners
-  revision: 1
+  revision: 3
   orchard_commit: null
 
 rig_id: omnifin0
@@ -33,23 +33,30 @@ sessions:
   - session_id: S1
     order: 1
     intent: experiment
-    expected_duration_s: 4510
-    max_duration_s: 4800
+    expected_duration_s: 2110
+    max_duration_s: 2400
     orange:
       recording_intent: stimulus_experiment
-      preset: PLACEHOLDER_PRESET       # camera config folder, for example 250_cam4_ptp_fourcam
-      media: full_frame_products
-      recording_mode: rolling
-      clip_seconds: 900
+      # The camera config folder, pinned by Orange's digest of its *.json files (tools/run_plan.py
+      # preset-hash DIR). The preset sets the camera settings and which media are recorded; the plan
+      # chooses media by choosing the preset. The digest here is a placeholder.
+      preset:
+        name: PLACEHOLDER_PRESET       # for example 30_cam4_ptp_fourcam
+        sha256: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        hash_rule: orange_camera_config_dir_sha256_v1
+      # With the filled dishes in place and before loading, Orange captures an empty background per camera;
+      # the start names that capture and Orange seals a copy inside the recording. The capture's id and
+      # sha256 go in the run record.
+      empty_background: capture_at_setup
       context_type: behavior
       context_subtype: dot_contrast
     citrus:
       canvas: PLACEHOLDER_CANVAS       # must be named before a sign-off covers the session
       commissioning_release: null
     protocol:
-      path: null               # written by grove from the orchard request
+      path: protocols/PLACEHOLDER_dot_contrast_corners_seed_1.json   # written by grove from the orchard request
       file_sha256: null
-      protocol_semantic_hash: null
+      protocol_semantic_hash: "0000000000000000000000000000000000000000000000000000000000000000"   # placeholder
       semantic_version: 5
       render_rate_hz: 240
       generator:
@@ -104,6 +111,7 @@ sessions:
     preconditions:
       - Projector on before boot or any display-manager restart; projector state read over RS-232 matches the recorded settings (Brightness 50).
       - Each dish filled to the recorded volume, disc covered, no bubbles (rule fill-fixed-volume).
+      - The empty background is captured with the filled dishes in place, and the dishes are not moved between the capture and loading.
       - Commissioning release current for the installed rig config.
       - Free disk space for the session on the recording volume.
       - "MetaZebrobot (tools/mzb.py subjects): source dish active, dpf inside expected, enough fish; destination dish active and of the same cross; each member alive, in the source dish, with no earlier usage link."
@@ -116,7 +124,7 @@ abort_rules:
   - { id: A5, when: "Citrus or Orange refuses START for any reason.", scope: session, action: skip_session, status: proposed, note: "No automatic retry; the refusal text goes into the run record." }
   - { id: A6, when: "Any H5 of the session seals FAILED.", scope: batch, action: stop_batch, status: proposed }
   - { id: A7, when: "A precondition check fails.", scope: session, action: refuse_start, status: proposed }
-  - { id: A8, when: "The Orange preset, config folder or commissioning release the session names is missing on the host.", scope: session, action: refuse_start, status: proposed }
+  - { id: A8, when: "The Orange preset folder the session names is missing on the host or its digest differs from the plan's, or the commissioning release is missing.", scope: session, action: refuse_start, status: proposed }
   - { id: A9, when: "A non-blank arena of the session has no load confirmation, or an earlier session's arena has no unload confirmation.", scope: session, action: refuse_start, status: proposed }
   - { id: A10, when: "The plan file is not committed or has edits.", scope: batch, action: refuse_start, status: proposed, note: "Jeremy, 2026-11-14: Citrus and Orange both refuse." }
 
