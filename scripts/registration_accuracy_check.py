@@ -611,8 +611,10 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
             draw.line([(x / f, y / f), (ex / f, ey / f)], fill=CROSS, width=3)
             if placement and placement.get("distance_mm") is not None:
                 dx, dy = placement["offset_mm"]
-                draw.text((ex / f + 8, ey / f + 4), f"floor-edge centre - cross: {placement['distance_mm']:.2f} mm "
-                          f"({dx:+.2f}, {dy:+.2f}) [arrow x10]", fill=CROSS, font=font)
+                label = f"floor-edge centre - cross: {placement['distance_mm']:.2f} mm ({dx:+.2f}, {dy:+.2f}) [arrow x10]"
+                tx = min(max(4.0, ex / f + 8), small.width - 9.5 * len(label) - 4)
+                ty = min(max(4.0, ey / f + 4), small.height - 26)
+                draw.text((tx, ty), label, fill=CROSS, font=font)
     strip = 16 + 26 * (len(legend) + 1)
     figure = Image.new("RGB", (small.width, small.height + strip), (0, 0, 0))
     figure.paste(small, (0, 0))
