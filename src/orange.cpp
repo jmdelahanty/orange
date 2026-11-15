@@ -86,6 +86,7 @@
 #include "image_levels_camera.h"
 #include "empty_background.h"
 #include "empty_background_camera.h"
+#include "gui/empty_background_capture.h"
 #include "usaf_resolution_ui.h"
 #include <opencv2/opencv.hpp>
 
@@ -1182,6 +1183,7 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     }
     snapshot.recording_finalized = recording_run.finalized;
     snapshot.recording_manifest = recording_run.recording_manifest;
+    snapshot.empty_background_capture = orange::gui::GuiEmptyBackgroundCapture().StatusJson();
     snapshot.recording_sink_mode = recording_session.recording_sink_mode;
     snapshot.expected_camera_serials = gui_split_expected_camera_serials();
     snapshot.open_camera_serials =
@@ -1348,6 +1350,21 @@ void gui_drain_local_control_commands(
         }
         gui_log_local_control_event(event_log_path, std::move(accepted_event));
 
+        if (command.method == orange::empty_background::kLocalControlCaptureMethod) {
+            // Validated and started by the capture's Poll on this thread, which
+            // has the cameras; its state is published in local-control status.
+            orange::gui::GuiEmptyBackgroundCapture().QueueLocalControl(command);
+            gui_log_local_control_event(
+                event_log_path,
+                {{"event", "empty_background_capture_queued"},
+                 {"method", command.method},
+                 {"request_id", command.request_id},
+                 {"operation_id", command.operation_id},
+                 {"command_source", command.source},
+                 {"peer", command.peer},
+                 {"received_at_utc", command.received_at_utc}});
+            continue;
+        }
         if (command.method == "start_recording") {
             if (!start_request || !start_request->enabled) {
                 if (start_request) {
@@ -1406,6 +1423,16 @@ void gui_drain_local_control_commands(
                          {"operation_id", command.operation_id},
                          {"command_source", command.source},
                          {"received_at_utc", command.received_at_utc}}};
+                    if (command.params.contains(orange::empty_background::kLocalControlStartKey)) {
+                        // The named capture is checked now (store, id, sha256) so a bad
+                        // selection refuses the start before anything is prepared, and
+                        // again when it is copied into the recording.
+                        std::string store_error;
+                        const std::filesystem::path store = orange::empty_background::DefaultStoreRoot(&store_error);
+                        if (store.empty()) throw std::runtime_error("empty background: no background store: " + store_error);
+                        remote->empty_background = orange::empty_background::SelectionFromLocalControl(
+                            command.params.at(orange::empty_background::kLocalControlStartKey), remote->requester, store);
+                    }
                 } catch (const std::exception& ex) {
                     gui_note_local_control_start_event(start_request, "ignored_invalid_declaration");
                     std::cout << "[GUI][local_control] recording start ignored"
@@ -4446,11 +4473,27 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
                         orange::empty_background::CameraConfigurationFromCamera(cameras_params[i])});
                 }
             }
-            orange::empty_background::WriteRecordingBinding(prepared.recording_folder,
-                                                            orange::empty_background::BindingSelection{},
-                                                            background_cameras,
-                                                            update_recording_snapshot_session_artifacts);
+            const bool named = remote_start && remote_start->empty_background;
+            const orange::empty_background::BindingResult background = orange::empty_background::WriteRecordingBinding(
+                prepared.recording_folder,
+                named ? *remote_start->empty_background : orange::empty_background::BindingSelection{},
+                background_cameras,
+                update_recording_snapshot_session_artifacts);
+            for (const std::string& warning : background.warnings) {
+                std::cerr << "[GUI][recording] empty background: " << warning << std::endl;
+            }
         } catch (const std::exception& ex) {
+            if (remote_start && remote_start->empty_background) {
+                // The request named this capture: a recording never starts without
+                // it, or with any other capture.
+                const std::string error = std::string("Named empty background not attached: ") + ex.what();
+                orange::session::abort_prepared_recording_run(
+                    recording_session, camera_control, prepared,
+                    orange::session::RecordingRunSupervisorStartOutcome{}, error);
+                if (recording_preflight_errors) *recording_preflight_errors = {error};
+                std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+                return GuiRecordingStartDispatch::kFailed;
+            }
             std::cerr << "[GUI][recording] WARNING empty background block not written: " << ex.what() << std::endl;
         }
     }
@@ -8658,6 +8701,21 @@ int main(int /*argc*/, char ** /*args*/) {
             orange::gui::GuiImageLevelsCheck().Poll(
                 image_levels_inputs, cameras_params, (cameras_params && ecams) ? num_cameras : 0,
                 spatialSnapshotWorkers.size() == static_cast<size_t>(num_cameras) ? spatialSnapshotWorkers.data() : nullptr);
+
+            // Empty-dish background capture (gui/empty_background_capture.h): starts
+            // queued local-control requests and collects the bursts.
+            orange::gui::EmptyBackgroundCapture::Inputs background_inputs;
+            background_inputs.streaming = image_levels_inputs.streaming;
+            background_inputs.recording_busy = image_levels_inputs.recording_busy;
+            background_inputs.housekeeping_cpu = app_storage_config.image_levels_check_housekeeping_cpu;
+            background_inputs.cameras = cameras_params;
+            background_inputs.selection = cameras_select;
+            background_inputs.num_cameras = (cameras_params && ecams) ? num_cameras : 0;
+            background_inputs.runtimes = &stream_runtimes;
+            background_inputs.image_levels_busy = [](int camera_index) {
+                return orange::gui::GuiImageLevelsCheck().Busy(camera_index);
+            };
+            orange::gui::GuiEmptyBackgroundCapture().Poll(background_inputs);
         }
 
         // Lens feedback watch (src/camera.cpp lens_watch_poll): once a second

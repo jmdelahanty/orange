@@ -50,6 +50,12 @@ Recording start (local-control `start_recording`):
 | `recording_start_triggered` | recording is on |
 | `recording_start_failed` | the start failed after it was pending; `reason` |
 
+Empty-dish background (local-control `capture_empty_background`):
+
+| event | meaning |
+| --- | --- |
+| `empty_background_capture_queued` | a capture request reached the GUI thread; `peer`. Its outcome is in status `local_control.empty_background_capture`, not in this log |
+
 Recording stop (Citrus completion or `stop_recording`):
 
 | event | meaning |

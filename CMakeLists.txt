@@ -396,6 +396,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/recording_panel.cpp"
     "${SRC_DIR}/gui/post_finalize_validation.cpp"
     "${SRC_DIR}/gui/registered_context_recording.cpp"
+    "${SRC_DIR}/gui/empty_background_capture.cpp"
     "${SRC_DIR}/gui/recording_snapshots.cpp"
     "${SRC_DIR}/gui/session_status.cpp"
     "${SRC_DIR}/gui/session_status_render.cpp"

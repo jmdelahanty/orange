@@ -36,6 +36,13 @@ namespace gen = ::orange::outputs::gen::empty_background_capture_v1;
 
 inline constexpr const char* kCaptureSchemaId = "orange.empty_background_capture";
 inline constexpr int kCaptureSchemaVersion = 1;
+// The version Orange writes, for the descriptor and the start-snapshot block
+// alike: 1 until agent-contracts PR #129 (orange-palette/empty_background_v2,
+// accepted by Palette 2026-11-15) is merged, then 2. Version 2 adds the
+// requester (orange.requester.v1), the capture's declared_by and the
+// local_control selection; a local-control capture or a start that names a
+// capture needs it and is refused while this is 1. Readers accept both.
+inline constexpr int kWriteSchemaVersion = 1;
 inline constexpr std::size_t kFrameCount = 17;  // method median_17 v1; odd, so the median is a sample
 inline constexpr const char* kDescriptorFileName = "background.json";
 inline constexpr const char* kStoreDirectoryName = "backgrounds";            // under the Orange data root
@@ -108,19 +115,27 @@ struct CameraBurst {
 };
 
 struct CapturePlan {
+    int schema_version = kWriteSchemaVersion;  // 1 or 2
     std::filesystem::path store_root;  // <data root>/backgrounds
     std::string capture_id;            // ^[A-Za-z0-9_-]{1,128}$, the directory name
     std::string captured_at_utc;       // YYYY-MM-DDThh:mm:ss.sssZ
     gen::OrangeEmptyBackgroundCaptureV1SceneDeclaration scene_declaration;
     std::optional<std::string> registration_id;
+    // Version 2 only (both required): who asked (orange.requester.v1, gui_panel
+    // or local_control_socket) and who declares the dishes empty. The display
+    // source follows the transport: operator_declared for gui_panel,
+    // request_declared for local_control_socket.
+    nlohmann::json requester = nullptr;
+    std::string declared_by;
 };
 
 struct CaptureReceipt {
+    int schema_version = 1;
     std::filesystem::path directory;
     std::filesystem::path descriptor_path;
     std::uint64_t descriptor_size_bytes = 0;
     std::string descriptor_sha256;  // sha256:<hex>
-    gen::OrangeEmptyBackgroundCaptureV1 descriptor;
+    gen::OrangeEmptyBackgroundCaptureV1 descriptor;  // the version 1 view (see StoredCapture)
 };
 
 // Writes <store_root>/<capture_id>/: each captured camera's PNG first
@@ -146,12 +161,19 @@ struct StoredCapture {
     std::filesystem::path descriptor_path;  // absolute
     std::string descriptor_bytes;           // exactly as on disk
     std::string descriptor_sha256;          // sha256:<hex>
+    int schema_version = 1;                 // of the descriptor on disk
+    // The fields every version shares, as a version 1 descriptor: a version 2
+    // descriptor is validated against its own schema, then read without its
+    // requester and declared_by (kept below). descriptor_bytes is authoritative.
     gen::OrangeEmptyBackgroundCaptureV1 descriptor;
+    nlohmann::json requester = nullptr;  // version 2
+    std::string declared_by;             // version 2
 };
 
-// Reads and validates a background.json (schema, plus the checks JSON Schema
-// cannot express: unique serials, image names that match their serial, the
-// directory named after capture_id). Throws std::runtime_error naming the problem.
+// Reads and validates a background.json, version 1 or 2 (schema, plus the
+// checks JSON Schema cannot express: unique serials, image names that match
+// their serial, the directory named after capture_id). Throws
+// std::runtime_error naming the problem.
 StoredCapture ReadCapture(const std::filesystem::path& descriptor_path);
 
 // The capture with the newest captured_at_utc under store_root, or nullopt
@@ -166,12 +188,20 @@ struct RecordingCamera {
 };
 
 struct BindingSelection {
+    int block_version = kWriteSchemaVersion;  // 1 or 2; a version 1 block never attaches a version 2 descriptor
     bool selected = false;
-    std::string selection_source;  // gui_operator | headless_spec
+    std::string selection_source;  // gui_operator | headless_spec | local_control (version 2)
     // GUI: the per-recording "scene unchanged apart from the fish" confirmation.
     // Headless: naming the capture in the spec.
     bool scene_unchanged_confirmed = false;
     std::filesystem::path descriptor_path;  // absolute path of background.json in the store
+    // Version 2: who selected the capture (orange.requester.v1); its transport
+    // must match selection_source.
+    nlohmann::json requester = nullptr;
+    // local_control: the capture the request named. A different capture_id or
+    // descriptor sha256 refuses the start; the copy is never of another capture.
+    std::optional<std::string> expected_capture_id;
+    std::optional<std::string> expected_descriptor_sha256;  // sha256:<hex>
 };
 
 struct BindingResult {
@@ -199,6 +229,29 @@ BindingResult BindToRecording(const std::filesystem::path& recording_folder, con
 // caller only calls this when the key is present. Throws std::runtime_error.
 inline constexpr const char* kHeadlessSpecKey = "empty_background_capture";
 BindingSelection SelectionFromHeadlessSpec(const nlohmann::json& value);
+
+// local-control start_recording params.empty_background:
+//   {"capture_id": "<id>", "descriptor_sha256": "sha256:<64 hex>", "scene_unchanged_confirmed": true}
+// (exactly these keys). The capture is <store_root>/<capture_id>/background.json;
+// it is read and its sha256 checked here, so a bad selection refuses the start
+// before anything is written. Needs kWriteSchemaVersion 2 (throws otherwise).
+// `requester` is the start request's (local_control_socket). Throws std::runtime_error.
+inline constexpr const char* kLocalControlStartKey = "empty_background";
+BindingSelection SelectionFromLocalControl(const nlohmann::json& params_value, const nlohmann::json& requester,
+                                           const std::filesystem::path& store_root,
+                                           int block_version = kWriteSchemaVersion);
+
+// local-control capture_empty_background params:
+//   {"declared_by": "<identity>", "dishes_empty": true, "note"?: "...",
+//    "stimulus_display": {"state": ..., "shown"?: {...}}}
+// (the descriptor's scene_declaration without its source; exactly these keys).
+// Throws std::runtime_error naming the first problem.
+struct CaptureDeclaration {
+    std::string declared_by;
+    gen::OrangeEmptyBackgroundCaptureV1SceneDeclaration scene_declaration;
+};
+inline constexpr const char* kLocalControlCaptureMethod = "capture_empty_background";
+CaptureDeclaration CaptureDeclarationFromLocalControl(const nlohmann::json& params);
 
 // Writes the block into the start snapshot (production:
 // update_recording_snapshot_session_artifacts). Same throw rules.

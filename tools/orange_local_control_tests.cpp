@@ -1356,6 +1356,64 @@ nlohmann::json blank_recording_only_declaration()
             {"subject_references", {{"schema_version", 1}}}};
 }
 
+void test_empty_background_capture_and_start_selection()
+{
+    const auto socket_path = temp_path("empty_background.sock");
+    std::filesystem::remove(socket_path);
+
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.allow_gui_start_recording_commands = true;
+    std::string error;
+    require(server.Start(options, &error), "server start should allow start_recording mode");
+    wait_until_running(&server);
+    LocalControlStatusSnapshot status = healthy_status();
+    status.recording_active = false;
+    status.active_recorders = 0;
+    status.local_control_recording_start.enabled = true;
+    status.empty_background_capture = {{"request_id", "cap-1"}, {"state", "captured"}};
+    server.UpdateStatus(status);
+
+    const nlohmann::json capture_params = {
+        {"declared_by", "jeremy"}, {"dishes_empty", true}, {"stimulus_display", {{"state", "off"}}}};
+    const nlohmann::json no_operation =
+        send_request(socket_path, request_json("capture_empty_background", "cap-noop", "", capture_params));
+    const nlohmann::json not_object = send_request(
+        socket_path, request_json("capture_empty_background", "cap-bad", "cap-op-bad", nlohmann::json::array()));
+    const nlohmann::json captured =
+        send_request(socket_path, request_json("capture_empty_background", "cap-1", "cap-op-1", capture_params));
+    const nlohmann::json selection = {{"capture_id", "2026_11_15_18_00_00"},
+                                      {"descriptor_sha256", "sha256:" + std::string(64, 'a')},
+                                      {"scene_unchanged_confirmed", true}};
+    const nlohmann::json no_declaration = send_request(
+        socket_path, request_json("start_recording", "start-nodecl", "start-op-nodecl", {{"empty_background", selection}}));
+    const nlohmann::json named = send_request(
+        socket_path, request_json("start_recording", "start-named", "start-op-named",
+                                  {{"declaration", blank_recording_only_declaration()}, {"empty_background", selection}}));
+    const std::vector<PendingLocalControlCommand> pending = server.DrainPendingCommands();
+    server.Stop();
+
+    require(!no_operation["ok"].get<bool>(), "capture_empty_background needs an operation_id (it is mutating)");
+    require(!not_object["ok"].get<bool>(), "capture_empty_background params must be an object");
+    require(captured["ok"].get<bool>() && captured["queued_for_gui_thread"].get<bool>() &&
+                captured["effect"]["empty_background_capture_requested"].get<bool>() &&
+                captured["effect"]["result_in_status"] == "local_control.empty_background_capture",
+            "a capture is accepted, queued for the GUI thread, and points at its status");
+    require(captured["status"]["local_control"]["empty_background_capture"]["request_id"] == "cap-1",
+            "status carries local_control.empty_background_capture: " + captured["status"].dump().substr(0, 200));
+    require(!no_declaration["ok"].get<bool>() &&
+                no_declaration["error"]["message"].get<std::string>().find("needs params.declaration") !=
+                    std::string::npos,
+            "a start naming a capture without its own declaration is refused");
+    require(named["ok"].get<bool>() && named["queued_for_gui_thread"].get<bool>(),
+            "a declared start naming a capture is queued");
+    require(pending.size() == 2 && pending[0].method == "capture_empty_background" &&
+                pending[0].params == capture_params && pending[0].peer.is_object() &&
+                pending[0].peer["uid"] == ::getuid() && pending[1].params["empty_background"] == selection,
+            "capture and named start reach the GUI thread with params and the SO_PEERCRED peer");
+}
+
 void test_start_recording_carries_declaration_and_peer()
 {
     const auto socket_path = temp_path("start_declaration.sock");
@@ -1978,6 +2036,8 @@ int main()
          test_start_recording_queues_when_start_mode_enabled},
         {"start_recording_carries_declaration_and_peer",
          test_start_recording_carries_declaration_and_peer},
+        {"empty_background_capture_and_start_selection",
+         test_empty_background_capture_and_start_selection},
         {"start_stop_are_rejected_in_diagnostic_mode",
          test_start_stop_are_rejected_in_diagnostic_mode},
         {"parse_rejects_invalid_epoch_and_seq",

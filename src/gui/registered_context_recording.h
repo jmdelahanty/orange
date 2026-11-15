@@ -1,7 +1,9 @@
 #pragma once
+#include "empty_background.h"
 #include "gui_recording_evidence.h"
 #include "session/recording_start_declaration.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +30,10 @@ recording::RecordingContextsConfig RecordingContextsForStream();
 struct RemoteRecordStart {
     session::RecordingStartDeclaration declaration;
     nlohmann::json requester;
+    // params.empty_background: the capture the request named, already checked
+    // against the store (empty_background::SelectionFromLocalControl). Copied
+    // into the recording at start, or the start is refused.
+    std::optional<empty_background::BindingSelection> empty_background;
 };
 // The contexts a record start uses: RecordingContextsForStream(), with every
 // entry's recording_intent replaced by a remote start's declared intent.

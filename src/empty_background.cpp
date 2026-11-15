@@ -4,7 +4,10 @@
 #include "image_levels.h"
 #include "orange_data_root.h"
 #include "orange_outputs/orange_empty_background_capture_v1.h"
+#include "orange_outputs/orange_empty_background_capture_v2.h"
 #include "orange_outputs/orange_recording_empty_background_v1.h"
+#include "orange_outputs/orange_recording_empty_background_v2.h"
+#include "orange_outputs/orange_requester_v1.h"
 #include "outputs/common/atomic_file.h"
 #include "outputs/common/digest.h"
 
@@ -28,6 +31,9 @@ namespace fs = std::filesystem;
 namespace capture_gen = ::orange::outputs::gen::empty_background_capture_v1;
 namespace levels_gen = ::orange::outputs::gen::image_levels_v1;
 namespace block_gen = ::orange::outputs::gen::recording_empty_background_v1;
+namespace capture2_gen = ::orange::outputs::gen::empty_background_capture_v2;
+namespace block2_gen = ::orange::outputs::gen::recording_empty_background_v2;
+namespace requester_gen = ::orange::outputs::gen::requester_v1;
 using json = nlohmann::json;
 
 namespace {
@@ -224,21 +230,75 @@ void check_descriptor_rules(const gen::OrangeEmptyBackgroundCaptureV1& d) {
     }
 }
 
-gen::OrangeEmptyBackgroundCaptureV1 parse_descriptor(const std::string& bytes) {
+struct ParsedDescriptor {
+    int schema_version = 1;
+    gen::OrangeEmptyBackgroundCaptureV1 view;  // the fields every version shares
+    json requester = nullptr;
+    std::string declared_by;
+};
+
+bool is_identity(const std::string& value) {
+    static const std::regex pattern("^[a-z][a-z0-9_-]{0,31}$");
+    return std::regex_match(value, pattern);
+}
+
+// The transport of an orange.requester.v1 value, after validating it; empty when invalid.
+std::string requester_transport(const json& requester, std::string* error) {
+    requester_gen::OrangeRequesterV1 parsed;
+    if (!requester.is_object() || !requester_gen::parse(requester, &parsed, error)) {
+        if (error && error->empty()) *error = "requester is not orange.requester.v1";
+        return {};
+    }
+    return requester.value("transport", std::string());
+}
+
+// A version 2 descriptor document seen as version 1: without the requester and
+// declared_by, with the display source every version 1 descriptor carries.
+json version1_view(json doc) {
+    doc["schema_version"] = 1;
+    doc.erase("requester");
+    doc["scene_declaration"].erase("declared_by");
+    doc["scene_declaration"]["stimulus_display"]["source"] = "operator_declared";
+    return doc;
+}
+
+ParsedDescriptor parse_descriptor(const std::string& bytes) {
     json doc;
     try {
         doc = json::parse(bytes);
     } catch (const std::exception& ex) {
         fail(std::string("descriptor is not JSON: ") + ex.what());
     }
-    if (!doc.is_object() || doc.value("schema_id", std::string()) != kCaptureSchemaId ||
-        !doc.contains("schema_version") || doc.at("schema_version") != kCaptureSchemaVersion)
-        fail("descriptor is not orange.empty_background_capture v1");
-    gen::OrangeEmptyBackgroundCaptureV1 descriptor;
+    if (!doc.is_object() || doc.value("schema_id", std::string()) != kCaptureSchemaId || !doc.contains("schema_version") ||
+        !doc.at("schema_version").is_number_integer() || (doc.at("schema_version") != 1 && doc.at("schema_version") != 2))
+        fail("descriptor is not orange.empty_background_capture v1 or v2");
+    ParsedDescriptor out;
+    out.schema_version = doc.at("schema_version").get<int>();
     std::string error;
-    if (!gen::parse(doc, &descriptor, &error)) fail("descriptor does not match its schema: " + error);
-    check_descriptor_rules(descriptor);
-    return descriptor;
+    if (out.schema_version == 2) {
+        capture2_gen::OrangeEmptyBackgroundCaptureV2 v2;
+        if (!capture2_gen::parse(doc, &v2, &error)) fail("descriptor does not match its schema (v2): " + error);
+        out.requester = doc.at("requester");
+        out.declared_by = doc.at("scene_declaration").at("declared_by").get<std::string>();
+        doc = version1_view(std::move(doc));
+    }
+    if (!gen::parse(doc, &out.view, &error)) fail("descriptor does not match its schema: " + error);
+    check_descriptor_rules(out.view);
+    return out;
+}
+
+// A start-snapshot block (version 1 JSON) as version 2, validated.
+json block_version2(json block, const json& requester) {
+    json out = json::object();
+    out["schema_version"] = 2;
+    for (auto it = block.begin(); it != block.end(); ++it) {
+        out[it.key()] = it.value();
+    }
+    if (!requester.is_null()) out["requester"] = requester;
+    block2_gen::OrangeRecordingEmptyBackgroundV2 parsed;
+    std::string error;
+    if (!block2_gen::parse(out, &parsed, &error)) fail("start-snapshot block does not match its schema (v2): " + error);
+    return block2_gen::to_json(parsed);  // the schema's key order
 }
 
 }  // namespace
@@ -378,6 +438,19 @@ bool DecodePngGray8(const std::string& bytes, std::vector<std::uint8_t>* pixels,
 
 CaptureReceipt WriteCapture(const CapturePlan& plan, std::vector<CameraBurst>* bursts) {
     if (!bursts || bursts->empty() || bursts->size() > 64) fail("a capture needs 1 to 64 cameras");
+    if (plan.schema_version != 1 && plan.schema_version != 2) fail("capture schema_version must be 1 or 2");
+    std::string requester_kind;
+    if (plan.schema_version == 2) {
+        std::string error;
+        requester_kind = requester_transport(plan.requester, &error);
+        if (requester_kind.empty()) fail("a version 2 capture needs a valid requester: " + error);
+        if (requester_kind != "gui_panel" && requester_kind != "local_control_socket")
+            fail("a capture's requester must be gui_panel or local_control_socket, not " + requester_kind);
+        if (!is_identity(plan.declared_by))
+            fail("declared_by must be an identity matching ^[a-z][a-z0-9_-]{0,31}$, not '" + plan.declared_by + "'");
+    } else if (!plan.requester.is_null() || !plan.declared_by.empty()) {
+        fail("a version 1 capture has no requester or declared_by");
+    }
     if (!is_capture_id(plan.capture_id)) fail("invalid capture_id '" + plan.capture_id + "'");
     if (plan.store_root.empty() || !plan.store_root.is_absolute()) fail("the store root must be an absolute path");
     std::set<std::string> serials;
@@ -458,11 +531,23 @@ CaptureReceipt WriteCapture(const CapturePlan& plan, std::vector<CameraBurst>* b
         descriptor.cameras.push_back(std::move(camera));
     }
 
-    const json doc = capture_gen::to_json(descriptor);
+    json doc = capture_gen::to_json(descriptor);
+    if (plan.schema_version == 2) {
+        doc["schema_version"] = 2;
+        doc["scene_declaration"]["declared_by"] = plan.declared_by;
+        doc["scene_declaration"]["stimulus_display"]["source"] =
+            requester_kind == "gui_panel" ? "operator_declared" : "request_declared";
+        doc["requester"] = plan.requester;
+        capture2_gen::OrangeEmptyBackgroundCaptureV2 v2;
+        std::string error;
+        if (!capture2_gen::parse(doc, &v2, &error)) fail("descriptor does not match its schema (v2): " + error);
+        doc = capture2_gen::to_json(v2);  // the schema's key order
+    }
     const std::string bytes = outputs::json_file_text(doc);
     // The written document must read back under the published schema.
     CaptureReceipt receipt;
-    receipt.descriptor = parse_descriptor(bytes);
+    receipt.schema_version = plan.schema_version;
+    receipt.descriptor = parse_descriptor(bytes).view;
     receipt.directory = directory;
     receipt.descriptor_path = directory / kDescriptorFileName;
     receipt.descriptor_size_bytes = bytes.size();
@@ -503,7 +588,11 @@ StoredCapture ReadCapture(const fs::path& descriptor_path) {
     std::string error;
     if (!read_file(out.descriptor_path, kMaxFileBytes, &out.descriptor_bytes, &error)) fail(error);
     out.descriptor_sha256 = outputs::sha256_token(out.descriptor_bytes);
-    out.descriptor = parse_descriptor(out.descriptor_bytes);
+    ParsedDescriptor parsed = parse_descriptor(out.descriptor_bytes);
+    out.schema_version = parsed.schema_version;
+    out.descriptor = std::move(parsed.view);
+    out.requester = std::move(parsed.requester);
+    out.declared_by = std::move(parsed.declared_by);
     if (out.descriptor_path.parent_path().filename() != out.descriptor.capture_id)
         fail("capture directory " + out.descriptor_path.parent_path().string() + " is not named after capture_id " +
              out.descriptor.capture_id);
@@ -539,18 +628,42 @@ BindingResult BindToRecording(const fs::path& recording_folder, const BindingSel
         if (!is_serial(camera.camera_serial)) fail("invalid recording camera serial '" + camera.camera_serial + "'");
         if (!serials.insert(camera.camera_serial).second) fail("duplicate recording camera " + camera.camera_serial);
     }
+    if (selection.block_version != 1 && selection.block_version != 2) fail("block_version must be 1 or 2");
+    const bool v2 = selection.block_version == 2;
     BindingResult result;
     if (!selection.selected) {
         block_gen::OrangeRecordingEmptyBackgroundV1NoCapture none;
         for (const auto& camera : cameras) none.cameras[camera.camera_serial] = {};
         result.block = block_gen::to_json(block_gen::OrangeRecordingEmptyBackgroundV1{none});
+        if (v2) result.block = block_version2(std::move(result.block), nullptr);
         return result;
     }
-    if (selection.selection_source != "gui_operator" && selection.selection_source != "headless_spec")
-        fail("unknown selection source '" + selection.selection_source + "'");
+    if (selection.selection_source != "gui_operator" && selection.selection_source != "headless_spec" &&
+        !(v2 && selection.selection_source == "local_control"))
+        fail("unknown selection source '" + selection.selection_source + "'" +
+             (selection.selection_source == "local_control" ? " (local_control needs block version 2)" : ""));
     if (!selection.scene_unchanged_confirmed)
         fail("a selected capture needs the per-recording scene-unchanged confirmation");
+    if (v2) {
+        static const std::map<std::string, std::string> transport_for = {
+            {"gui_operator", "gui_panel"}, {"local_control", "local_control_socket"}, {"headless_spec", "run_spec"}};
+        std::string error;
+        const std::string transport = requester_transport(selection.requester, &error);
+        if (transport.empty()) fail("a version 2 selection needs a valid requester: " + error);
+        if (transport != transport_for.at(selection.selection_source))
+            fail("requester transport " + transport + " does not match selection source " + selection.selection_source);
+    } else if (!selection.requester.is_null()) {
+        fail("a version 1 block has no requester");
+    }
     const StoredCapture capture = ReadCapture(selection.descriptor_path);
+    if (!v2 && capture.schema_version != 1)
+        fail("a version 1 block cannot attach a version " + std::to_string(capture.schema_version) + " descriptor");
+    if (selection.expected_capture_id && *selection.expected_capture_id != capture.descriptor.capture_id)
+        fail("the capture at " + capture.descriptor_path.string() + " is " + capture.descriptor.capture_id + ", not the requested " +
+             *selection.expected_capture_id);
+    if (selection.expected_descriptor_sha256 && *selection.expected_descriptor_sha256 != capture.descriptor_sha256)
+        fail("capture " + capture.descriptor.capture_id + " descriptor is " + capture.descriptor_sha256 +
+             ", not the requested " + *selection.expected_descriptor_sha256);
     const fs::path source_directory = capture.descriptor_path.parent_path();
 
     orange::ScopedFsuid fsuid_guard;
@@ -664,9 +777,17 @@ BindingResult BindToRecording(const fs::path& recording_folder, const BindingSel
         }
         attached.cameras[camera.camera_serial] = std::move(status);
     }
+    if (v2 && selection.selection_source == "local_control") {
+        // The version 1 builder knows only its own enum; the version 2 block carries local_control.
+        attached.selection_source = "gui_operator";
+    }
     result.block = block_gen::to_json(block_gen::OrangeRecordingEmptyBackgroundV1{attached});
     block_gen::OrangeRecordingEmptyBackgroundV1 check;
     if (!block_gen::parse(result.block, &check, &error)) fail("start-snapshot block does not match its schema: " + error);
+    if (v2) {
+        result.block["selection_source"] = selection.selection_source;
+        result.block = block_version2(std::move(result.block), selection.requester);
+    }
     partial.keep = true;
     return result;
 }
@@ -684,6 +805,71 @@ BindingSelection SelectionFromHeadlessSpec(const json& value) {
     selection.scene_unchanged_confirmed = true;
     selection.descriptor_path = path;
     return selection;
+}
+
+BindingSelection SelectionFromLocalControl(const json& value, const json& requester, const fs::path& store_root,
+                                           const int block_version) {
+    const std::string what = std::string("start_recording params.") + kLocalControlStartKey;
+    if (block_version != 2)
+        fail(what + " needs start-snapshot block version 2 (agent-contracts orange-palette/empty_background_v2), "
+                    "which this Orange does not write yet");
+    if (!value.is_object()) fail(what + " must be an object");
+    static const std::set<std::string> keys = {"capture_id", "descriptor_sha256", "scene_unchanged_confirmed"};
+    for (auto it = value.begin(); it != value.end(); ++it)
+        if (!keys.count(it.key())) fail(what + " has an unknown field " + it.key());
+    for (const auto& key : keys)
+        if (!value.contains(key)) fail(what + " is missing " + key);
+    if (!value.at("capture_id").is_string() || !is_capture_id(value.at("capture_id").get<std::string>()))
+        fail(what + ".capture_id must match ^[A-Za-z0-9_-]{1,128}$");
+    static const std::regex sha("^sha256:[0-9a-f]{64}$");
+    if (!value.at("descriptor_sha256").is_string() ||
+        !std::regex_match(value.at("descriptor_sha256").get<std::string>(), sha))
+        fail(what + ".descriptor_sha256 must be sha256:<64 lowercase hex>");
+    if (value.at("scene_unchanged_confirmed") != true)
+        fail(what + ".scene_unchanged_confirmed must be true (the scene is unchanged since the capture apart from the fish)");
+    std::string error;
+    if (requester_transport(requester, &error) != "local_control_socket")
+        fail(what + " needs a local_control_socket requester" + (error.empty() ? "" : ": " + error));
+    if (store_root.empty() || !store_root.is_absolute()) fail("the background store root is not an absolute path");
+    BindingSelection selection;
+    selection.block_version = block_version;
+    selection.selected = true;
+    selection.selection_source = "local_control";
+    selection.scene_unchanged_confirmed = true;
+    selection.requester = requester;
+    selection.expected_capture_id = value.at("capture_id").get<std::string>();
+    selection.expected_descriptor_sha256 = value.at("descriptor_sha256").get<std::string>();
+    selection.descriptor_path = store_root / *selection.expected_capture_id / kDescriptorFileName;
+    // Refuse a missing, invalid or different capture now, before the recording folder exists.
+    const StoredCapture capture = ReadCapture(selection.descriptor_path);
+    if (capture.descriptor_sha256 != *selection.expected_descriptor_sha256)
+        fail("capture " + capture.descriptor.capture_id + " descriptor is " + capture.descriptor_sha256 +
+             ", not the requested " + *selection.expected_descriptor_sha256);
+    return selection;
+}
+
+CaptureDeclaration CaptureDeclarationFromLocalControl(const json& params) {
+    const std::string what = std::string(kLocalControlCaptureMethod) + " params";
+    if (!params.is_object()) fail(what + " must be an object");
+    static const std::set<std::string> keys = {"declared_by", "dishes_empty", "note", "stimulus_display"};
+    for (auto it = params.begin(); it != params.end(); ++it)
+        if (!keys.count(it.key())) fail(what + " has an unknown field " + it.key());
+    for (const char* key : {"declared_by", "dishes_empty", "stimulus_display"})
+        if (!params.contains(key)) fail(what + " is missing " + key);
+    if (!params.at("declared_by").is_string() || !is_identity(params.at("declared_by").get<std::string>()))
+        fail(what + ".declared_by must be an identity matching ^[a-z][a-z0-9_-]{0,31}$");
+    if (params.at("dishes_empty") != true) fail(what + ".dishes_empty must be true: a background is of empty dishes");
+    const json& display = params.at("stimulus_display");
+    if (!display.is_object() || display.contains("source"))
+        fail(what + ".stimulus_display must be an object without source (Orange sets request_declared)");
+    json scene = {{"dishes_empty", true}, {"stimulus_display", display}};
+    if (params.contains("note")) scene["note"] = params.at("note");
+    scene["stimulus_display"]["source"] = "operator_declared";  // the version 1 view's constant
+    CaptureDeclaration out;
+    out.declared_by = params.at("declared_by").get<std::string>();
+    std::string error;
+    if (!gen::parse(scene, &out.scene_declaration, &error)) fail(what + ": " + error);
+    return out;
 }
 
 BindingResult WriteRecordingBinding(const std::string& recording_folder, const BindingSelection& selection,

@@ -538,6 +538,60 @@ recording, on every retry). Citrus resending the same request is the poll.
 - Citrus's done test: `status` `finalized` and `binding_status` `bound` and
   `context_count` equal to the number of receipts.
 
+### `capture_empty_background` and `start_recording` `params.empty_background`
+
+An empty-dish background for an unattended session: capture it with empty
+dishes, load the fish, then start a recording that names it
+(`docs/empty_background_capture_design.md`; agent-contracts
+`orange-palette/empty_background_v2`). Both need the GUI's start permission
+(`allow_gui_start_recording_commands`), and both refuse a request whose socket
+peer (SO_PEERCRED) the kernel does not report (`error.code` `peer_unknown`).
+Until Orange writes empty-background version 2
+(`empty_background::kWriteSchemaVersion`), the GUI refuses both, because
+their requester needs version 2.
+
+`capture_empty_background` (mutating, needs `operation_id`). Params, exactly
+these keys:
+
+```json
+{"declared_by": "<identity>", "dishes_empty": true, "note": "optional",
+ "stimulus_display": {"state": "off|on|unknown|not_displayed", "shown": {"kind": "solid_color|canvas|other", ...}}}
+```
+
+- `declared_by` is the identity that declares the dishes empty and the display
+  state (`^[a-z][a-z0-9_-]{0,31}$`). It is a claim; the descriptor's
+  `requester` records the socket peer.
+- `stimulus_display` is the descriptor's display declaration without `source`;
+  Orange writes `source` `request_declared`.
+- The response is `accepted` and `queued_for_gui_thread` at once. The capture
+  (a 17-frame burst on every streaming camera, then the PNGs and
+  `background.json`) takes a few seconds. Its result is
+  `status.local_control.empty_background_capture`, keyed by `request_id`:
+  `state` `bursting`, `writing`, `captured`, `failed` or `refused`,
+  `capture_id`, `descriptor_path` and `descriptor_sha256` (once `captured`),
+  `error`, and per camera `capture_status`, `failure_reason`, `burst_ms`,
+  `median_ms`, `min_free_entries`, `min_free_events`, `max_queue_depth`.
+- Refused while a recording is armed, recording or finalizing, while another
+  capture runs, while an image-levels check measures a camera, and when no
+  camera is streaming. A camera that cannot burst is written as `failed`; the
+  others keep their images.
+
+`start_recording` may carry `params.empty_background`, only together with
+`params.declaration`:
+
+```json
+{"capture_id": "<capture_id>", "descriptor_sha256": "sha256:<64 hex>", "scene_unchanged_confirmed": true}
+```
+
+- Exactly these keys. The capture is `<Orange data root>/backgrounds/<capture_id>/background.json`.
+- Orange checks the descriptor's sha256 when the command is drained, and again
+  when it copies the capture into the recording. A missing capture, a
+  different sha256 or `scene_unchanged_confirmed` other than `true` refuses
+  the start. Orange never falls back to the newest capture or any other one.
+- The start snapshot's `session.empty_background` then has `selection_source`
+  `local_control`, the start request's `requester`, and the requested
+  descriptor's sha256.
+
 ## Citrus GUI Control Slice
 
 Citrus now has its first opt-in real-GUI automation and local-control status

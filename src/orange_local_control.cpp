@@ -91,6 +91,7 @@ bool json_string_field(const nlohmann::json& object,
 bool is_mutating_method(const std::string& method)
 {
     return method == "start_recording" ||
+           method == "capture_empty_background" ||
            method == "stop_recording" ||
            method == "citrus_completion" ||
            method == "finalize_recording_observation_bindings" ||
@@ -703,6 +704,7 @@ nlohmann::json LocalControlStatusSnapshotToJson(
                   snapshot.local_control_recording_stop,
                   snapshot.local_control_recording_stop.citrus_completion_enabled)},
              {"recording_manifest", snapshot.recording_manifest},
+             {"empty_background_capture", snapshot.empty_background_capture},
          }},
     };
 }
@@ -739,6 +741,7 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
 
     if (parsed.method != "status" &&
         parsed.method != "start_recording" &&
+        parsed.method != "capture_empty_background" &&
         parsed.method != "stop_recording" &&
         parsed.method != "citrus_completion" &&
         parsed.method != "finalize_recording_observation_bindings" &&
@@ -792,6 +795,20 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
             set_error(error_out, std::string("start_recording params.declaration: ") + ex.what());
             return false;
         }
+    }
+    if (parsed.method == "start_recording" && parsed.params.contains("empty_background")) {
+        // A start that names an empty-dish background must declare itself too:
+        // the selection is part of a remote start, never of a panel-confirmed one.
+        // The GUI checks the capture itself (it owns the store).
+        if (!parsed.params.at("empty_background").is_object() || !parsed.params.contains("declaration")) {
+            set_error(error_out,
+                      "start_recording params.empty_background must be an object and needs params.declaration");
+            return false;
+        }
+    }
+    if (parsed.method == "capture_empty_background" && !parsed.params.is_object()) {
+        set_error(error_out, "capture_empty_background params must be an object");
+        return false;
     }
     if (parsed.method == "finalize_recording_observation_bindings") {
         const auto experiment_it = parsed.params.find("experiment_id");
@@ -1217,6 +1234,17 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request,
         status_snapshot = status_;
     }
 
+    // Who asked is recorded from the kernel, never from the request: a capture,
+    // or a start that names a capture, from a peer the kernel does not report is refused.
+    if ((parsed.method == "capture_empty_background" ||
+         (parsed.method == "start_recording" && parsed.params.contains("empty_background"))) &&
+        !peer.is_object()) {
+        nlohmann::json response =
+            BuildLocalControlErrorResponse(request, "peer_unknown", "the socket peer (SO_PEERCRED) is unknown");
+        LogEvent({{"received_at_utc", utc_now()}, {"request", request}, {"response", response}});
+        return response;
+    }
+
     if (parsed.method == "status") {
         nlohmann::json response = {
             {"schema_id", kLocalControlResponseSchemaId},
@@ -1299,6 +1327,9 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request,
         const bool supports_gui_thread_queue =
             parsed.method == "citrus_completion" ||
             (parsed.method == "start_recording" &&
+             start_recording_allowed) ||
+            // A setup step before a recording, under the same permission as a start.
+            (parsed.method == "capture_empty_background" &&
              start_recording_allowed) ||
             (parsed.method == "stop_recording" &&
              stop_recording_allowed);
@@ -1480,6 +1511,39 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request,
         };
         AppendEpochTelemetry(&response, parsed);
         LogEvent({{"received_at_utc", received_at_utc},
+                  {"request", request},
+                  {"response", response}});
+        return response;
+    }
+
+    if (parsed.method == "capture_empty_background" &&
+        start_recording_allowed) {
+        // The burst, the PNGs and background.json take a few seconds on the GUI
+        // side; the capture_id and descriptor sha256 appear in
+        // status.local_control.empty_background_capture under this request_id.
+        nlohmann::json response = {
+            {"schema_id", kLocalControlResponseSchemaId},
+            {"schema_version", kLocalControlSchemaVersion},
+            {"ok", true},
+            {"accepted", true},
+            {"duplicate", duplicate},
+            {"diagnostic_only", false},
+            {"queued_for_gui_thread", queued_for_gui_thread},
+            {"request_id", parsed.request_id},
+            {"operation_id", parsed.operation_id},
+            {"method", parsed.method},
+            {"responded_at_utc", utc_now()},
+            {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
+            {"effect",
+             {
+                 {"gui_lifecycle_command_deferred", queued_for_gui_thread},
+                 {"empty_background_capture_requested", queued_for_gui_thread},
+                 {"result_in_status", "local_control.empty_background_capture"},
+             }},
+        };
+        AppendEpochTelemetry(&response, parsed);
+        LogEvent({{"received_at_utc", received_at_utc},
+                  {"peer", peer},
                   {"request", request},
                   {"response", response}});
         return response;

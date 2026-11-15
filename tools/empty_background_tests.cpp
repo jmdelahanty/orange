@@ -8,7 +8,9 @@
 // With a sample dir, a capture descriptor and start snapshots of every block shape are left
 // there for tools/empty_background_schema_tests.py (jsonschema via validate_output_schemas.py).
 #include "empty_background.h"
+#include "orange_outputs/orange_empty_background_capture_v2.h"
 #include "orange_outputs/orange_recording_empty_background_v1.h"
+#include "orange_outputs/orange_recording_empty_background_v2.h"
 #include "outputs/common/digest.h"
 
 #include <algorithm>
@@ -576,6 +578,193 @@ void test_binding(const fs::path& samples) {
     }
     fs::remove_all(store);
 }
+
+// ---- version 2 (agent-contracts orange-palette/empty_background_v2) -------------------------
+
+const json kGuiRequester = {{"transport", "gui_panel"}, {"user", "jeremy"}};
+const json kLocalRequester = {{"transport", "local_control_socket"},
+                              {"peer", {{"uid", 1000}, {"gid", 1000}, {"pid", 4242}, {"user", "jeremy"}}},
+                              {"request_id", "req-1"}, {"operation_id", "op-1"}, {"command_source", "specsail"},
+                              {"received_at_utc", "2026-11-15T18:02:11.204Z"}};
+
+eb::CaptureReceipt make_capture_v2(const fs::path& store, const std::string& id, const json& requester) {
+    std::vector<eb::CameraBurst> bursts;
+    eb::CameraBurst b;
+    b.camera_serial = "2010093";
+    b.configuration = config(kW, kH);
+    b.source_frames = identities(1000, 65530);
+    b.frames = noisy_frames(kW, kH, 3);
+    bursts.push_back(std::move(b));
+    eb::CapturePlan plan;
+    plan.schema_version = 2;
+    plan.store_root = store;
+    plan.capture_id = id;
+    plan.captured_at_utc = "2026-11-15T18:00:00.000Z";
+    plan.scene_declaration = scene();
+    plan.requester = requester;
+    plan.declared_by = "jeremy";
+    return eb::WriteCapture(plan, &bursts);
+}
+
+bool block2_valid(const json& block, std::string* error) {
+    orange::outputs::gen::recording_empty_background_v2::OrangeRecordingEmptyBackgroundV2 parsed;
+    return orange::outputs::gen::recording_empty_background_v2::parse(block, &parsed, error);
+}
+
+void test_version2() {
+    const fs::path store = temp_dir("v2_store");
+    const fs::path recordings = temp_dir("v2_recordings");
+    std::string error;
+
+    const auto gui = make_capture_v2(store, "gui", kGuiRequester);
+    const json gui_doc = json::parse(slurp(gui.descriptor_path));
+    orange::outputs::gen::empty_background_capture_v2::OrangeEmptyBackgroundCaptureV2 parsed_v2;
+    check(gui.schema_version == 2 && gui_doc.at("schema_version") == 2 &&
+              orange::outputs::gen::empty_background_capture_v2::parse(gui_doc, &parsed_v2, &error),
+          "v2 capture (gui_panel) is written and parses under v2 " + error);
+    check(gui_doc.at("requester") == kGuiRequester && gui_doc.at("scene_declaration").at("declared_by") == "jeremy" &&
+              gui_doc.at("scene_declaration").at("stimulus_display").at("source") == "operator_declared",
+          "v2 gui_panel capture: requester, declared_by, operator_declared");
+    const auto local = make_capture_v2(store, "local", kLocalRequester);
+    const json local_doc = json::parse(slurp(local.descriptor_path));
+    check(local_doc.at("scene_declaration").at("stimulus_display").at("source") == "request_declared" &&
+              local_doc.at("requester").at("peer").at("uid") == 1000,
+          "v2 local_control_socket capture: request_declared and the SO_PEERCRED peer");
+    const eb::StoredCapture stored = eb::ReadCapture(local.descriptor_path);
+    check(stored.schema_version == 2 && stored.requester == kLocalRequester && stored.declared_by == "jeremy" &&
+              stored.descriptor.capture_id == "local" && stored.descriptor.cameras.size() == 1,
+          "ReadCapture reads a v2 descriptor (version, requester, declared_by, shared fields)");
+    check(throws([&] { make_capture_v2(store, "spec", {{"transport", "run_spec"}, {"spec_path", "/x.json"},
+                                                       {"spec_sha256", std::string(64, 'a')}, {"user", nullptr}}); })
+                  .find("gui_panel or local_control_socket") != std::string::npos &&
+              !fs::exists(store / "spec"),
+          "a run_spec capture requester is refused before any write");
+    check(!throws([&] { make_capture_v2(store, "nopeer", json{{"transport", "local_control_socket"}, {"peer", nullptr}}); })
+               .empty() && !fs::exists(store / "nopeer"),
+          "a local requester without a peer is refused before any write");
+    {
+        std::vector<eb::CameraBurst> bursts(1);
+        bursts[0].camera_serial = "2010093";
+        bursts[0].configuration = config(kW, kH);
+        bursts[0].source_frames = identities(1, 1);
+        bursts[0].frames = noisy_frames(kW, kH, 4);
+        eb::CapturePlan plan;
+        plan.schema_version = 2;
+        plan.store_root = store;
+        plan.capture_id = "baddecl";
+        plan.captured_at_utc = "2026-11-15T18:00:00.000Z";
+        plan.scene_declaration = scene();
+        plan.requester = kGuiRequester;
+        plan.declared_by = "Jeremy D";
+        check(throws([&] { eb::WriteCapture(plan, &bursts); }).find("declared_by") != std::string::npos,
+              "a declared_by that is not an identity is refused");
+        plan.schema_version = 1;
+        plan.declared_by = "jeremy";
+        plan.capture_id = "v1requester";
+        check(!throws([&] { eb::WriteCapture(plan, &bursts); }).empty(), "a v1 capture with a requester is refused");
+    }
+
+    // The block: v2 no_capture, v1 block refuses a v2 descriptor, v2 block attaches v1 and v2.
+    const auto cams = recording_cameras({"2010093"});
+    eb::BindingSelection none;
+    none.block_version = 2;
+    const auto empty = eb::BindToRecording(recordings / "r0", none, cams);
+    check(empty.block.at("schema_version") == 2 && empty.block.at("capture_selected") == false &&
+              block2_valid(empty.block, &error),
+          "v2 no_capture carries schema_version 2 " + error);
+    fs::create_directories(recordings / "r1");
+    eb::BindingSelection v1_with_v2 = selected(gui);
+    v1_with_v2.block_version = 1;
+    check(throws([&] { eb::BindToRecording(recordings / "r1", v1_with_v2, cams); }).find("version 1 block cannot attach") !=
+                  std::string::npos && !fs::exists(recordings / "r1" / "empty_background"),
+          "a v1 block never attaches a v2 descriptor (nothing written)");
+    const auto v1_capture = make_capture(store, "old", "2026-11-02T23:04:11.123Z");
+    fs::create_directories(recordings / "r2");
+    eb::BindingSelection gui_v2 = selected(v1_capture);
+    gui_v2.block_version = 2;
+    gui_v2.requester = kGuiRequester;
+    const auto attached_v1 = eb::BindToRecording(recordings / "r2", gui_v2, cams);
+    check(attached_v1.block.at("schema_version") == 2 && attached_v1.block.at("requester") == kGuiRequester &&
+              block2_valid(attached_v1.block, &error),
+          "a v2 block attaches a v1 descriptor (gui_operator, gui_panel) " + error);
+    fs::create_directories(recordings / "r3");
+    eb::BindingSelection mismatch = gui_v2;
+    mismatch.requester = kLocalRequester;
+    check(throws([&] { eb::BindToRecording(recordings / "r3", mismatch, cams); }).find("does not match") != std::string::npos,
+          "gui_operator with a local_control_socket requester is refused");
+
+    // Local control: the request names the capture by id and sha256.
+    const json good = {{"capture_id", "local"}, {"descriptor_sha256", local.descriptor_sha256},
+                       {"scene_unchanged_confirmed", true}};
+    const eb::BindingSelection remote = eb::SelectionFromLocalControl(good, kLocalRequester, store, 2);
+    check(remote.selection_source == "local_control" && remote.descriptor_path == store / "local" / "background.json",
+          "SelectionFromLocalControl resolves the named capture in the store");
+    fs::create_directories(recordings / "r4");
+    const auto bound = eb::BindToRecording(recordings / "r4", remote, cams);
+    check(bound.block.at("selection_source") == "local_control" && bound.block.at("requester") == kLocalRequester &&
+              bound.block.at("descriptor").at("sha256") == local.descriptor_sha256 &&
+              bound.block.at("cameras").at("2010093").at("status") == "attached" && block2_valid(bound.block, &error),
+          "a local_control start attaches exactly the requested capture " + error);
+    check(slurp(recordings / "r4" / "empty_background" / "background.json") == slurp(local.descriptor_path),
+          "the recording copy of the v2 descriptor is byte-exact");
+    auto refused = [&](json params, const std::string& expect, const std::string& what, int version = 2,
+                       json requester = kLocalRequester) {
+        const std::string why = throws([&] { eb::SelectionFromLocalControl(params, requester, store, version); });
+        check(why.find(expect) != std::string::npos, what + " (" + why + ")");
+    };
+    json p = good;
+    p["descriptor_sha256"] = "sha256:" + std::string(64, '0');
+    refused(p, "not the requested", "a different descriptor sha256 refuses the start");
+    p = good;
+    p["capture_id"] = "gui_missing";
+    refused(p, "", "an unknown capture_id refuses the start");
+    p = good;
+    p["scene_unchanged_confirmed"] = false;
+    refused(p, "scene_unchanged_confirmed must be true", "an unconfirmed scene refuses the start");
+    p = good;
+    p["newest"] = true;
+    refused(p, "unknown field", "an unknown field refuses the start");
+    p = good;
+    p["capture_id"] = "../gui";
+    refused(p, "capture_id must match", "a capture_id that is a path refuses the start");
+    refused(good, "needs start-snapshot block version 2", "local control selection needs block version 2", 1);
+    refused(good, "local_control_socket requester", "local control selection needs a socket requester", 2, kGuiRequester);
+    fs::create_directories(recordings / "r5");
+    eb::BindingSelection tampered = remote;
+    tampered.expected_descriptor_sha256 = "sha256:" + std::string(64, 'f');
+    check(throws([&] { eb::BindToRecording(recordings / "r5", tampered, cams); }).find("not the requested") !=
+                  std::string::npos && !fs::exists(recordings / "r5" / "empty_background"),
+          "the binding re-checks the requested sha256 at the copy (nothing written)");
+
+    // capture_empty_background params.
+    const json capture_params = {{"declared_by", "jeremy"}, {"dishes_empty", true}, {"note", "water, no fish"},
+                                 {"stimulus_display", {{"state", "on"}, {"shown", {{"kind", "canvas"},
+                                                                                   {"canvas_name", "static_dots"}}}}}};
+    const auto decl = eb::CaptureDeclarationFromLocalControl(capture_params);
+    check(decl.declared_by == "jeremy" && decl.scene_declaration.stimulus_display.state == "on" &&
+              decl.scene_declaration.stimulus_display.shown && decl.scene_declaration.note,
+          "capture_empty_background params parse");
+    auto bad_params = [&](json params, const std::string& what) {
+        check(!throws([&] { eb::CaptureDeclarationFromLocalControl(params); }).empty(), what);
+    };
+    json q = capture_params;
+    q["dishes_empty"] = false;
+    bad_params(q, "dishes_empty false is refused");
+    q = capture_params;
+    q["stimulus_display"]["source"] = "operator_declared";
+    bad_params(q, "a source in the request is refused (Orange sets request_declared)");
+    q = capture_params;
+    q.erase("declared_by");
+    bad_params(q, "a missing declared_by is refused");
+    q = capture_params;
+    q["stimulus_display"] = {{"state", "off"}, {"shown", {{"kind", "other"}, {"note", "x"}}}};
+    bad_params(q, "shown with state off is refused");
+    q = capture_params;
+    q["capture_id"] = "mine";
+    bad_params(q, "an unknown field is refused");
+    fs::remove_all(store);
+    fs::remove_all(recordings);
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -586,6 +775,7 @@ int main(int argc, char** argv) {
     test_png();
     test_capture(samples);
     test_binding(samples);
+    test_version2();
     std::cout << (failures == 0 ? "empty_background_tests: PASS\n" : "empty_background_tests: FAIL\n");
     return failures == 0 ? 0 : 1;
 }
