@@ -1992,6 +1992,51 @@ def citrus_ready_to_start(status: dict[str, Any]) -> bool:
     return json_bool(json_path(status, ["readiness", "ready_to_start"], False))
 
 
+def citrus_start_blockers(status: dict[str, Any], expected_arena_count: int | None) -> list[str]:
+    """What keeps a bound Orange+Citrus start from going ahead, from one Citrus
+    status reply (citrus-agent, 2026-11-15, citrus main be2cd47). Empty = go."""
+    blockers: list[str] = []
+
+    def need(path: list[str], expected: Any, label: str) -> None:
+        value = json_path(status, path, None)
+        if value != expected:
+            blockers.append(f"{label}={value!r} (need {expected!r})")
+
+    need(["readiness", "ready_to_start"], True, "readiness.ready_to_start")
+    need(["readiness", "start_blocked_reason"], None, "readiness.start_blocked_reason")
+    if expected_arena_count is not None:
+        need(["readiness", "selected_arena_count"], expected_arena_count, "readiness.selected_arena_count")
+        need(["readiness", "selected_protocol_loaded_count"], expected_arena_count,
+             "readiness.selected_protocol_loaded_count")
+    need(["runtime_rig_canvas_commissioning_compatibility", "compatible"], True, "commissioning.compatible")
+    need(["runtime_rig_canvas_commissioning_compatibility", "all_selected_runtime_safe"], True,
+         "commissioning.all_selected_runtime_safe")
+    need(["runtime_homography_compatibility", "all_selected_compatible"], True, "homography.all_selected_compatible")
+    scale = ["runtime_projected_surface_scale_compatibility"]
+    need(scale + ["all_selected_compatible"], True, "scale.all_selected_compatible")
+    need(scale + ["all_selected_runtime_safe"], True, "scale.all_selected_runtime_safe")
+    need(scale + ["selected_invalid_pointer_count"], 0, "scale.selected_invalid_pointer_count")
+    need(scale + ["selected_missing_pointer_count"], 0, "scale.selected_missing_pointer_count")
+    need(["daily_registration", "runtime", "all_selected_runtime_safe"], True,
+         "daily_registration.runtime.all_selected_runtime_safe")
+    need(["experiment", "terminal_state"], "not_started", "experiment.terminal_state")
+    return blockers
+
+
+CITRUS_FINALIZATION_DELIVERED = "delivered"
+
+
+def citrus_finalization_state(status: dict[str, Any]) -> str:
+    value = json_path(status, ["recording_observation_finalization", "state"], "")
+    return value if isinstance(value, str) else ""
+
+
+def citrus_finalization_settled(status: dict[str, Any]) -> bool:
+    """Delivered, or a state Citrus will not leave: anything but idle/pending work."""
+    state = citrus_finalization_state(status)
+    return state == CITRUS_FINALIZATION_DELIVERED or state in {"failed", "refused", "unconfirmed"}
+
+
 def citrus_ready_for_runtime_selection(status: dict[str, Any]) -> bool:
     return (
         json_bool(json_path(status, ["experiment", "loaded"], False))
@@ -2586,6 +2631,11 @@ class Orchestrator:
         self.processes[label] = process
         step.finish(ok=True, pid=process.pid, command=argv, env_overlay=env_overlay)
 
+    def bound_run(self) -> bool:
+        """A start declared as a stimulus experiment binds Citrus."""
+        declaration = getattr(self.args, "declaration", None)
+        return bool(declaration) and declaration.get("recording_intent") == "stimulus_experiment"
+
     def run(self) -> dict[str, Any]:
         if self.args.orange_mode == "headless":
             return self.run_headless()
@@ -2671,6 +2721,12 @@ class Orchestrator:
             raise OrchestratorError(
                 "Citrus status does not report output.perf_jsonl_enabled=true"
             )
+        if self.bound_run():
+            step = self.step("citrus_start_checks")
+            blockers = citrus_start_blockers(final_citrus_status, self.args.expected_citrus_arenas)
+            step.finish(ok=not blockers, blockers=blockers)
+            if blockers:
+                raise OrchestratorError("Citrus is not ready for a bound start: " + "; ".join(blockers))
 
         step = self.step("orange_start_recording")
         orange_start_response = self.send(
@@ -2743,6 +2799,21 @@ class Orchestrator:
         elif self.args.stop_policy != "none":
             final_orange_status = self.request_orange_stop(final_citrus_status)
             self.orange_recording_started = False
+
+        if self.bound_run():
+            # Citrus reads Orange's final recording_session.json, seals its
+            # H5s and delivers the receipts; Orange's GUI stays up for them.
+            final_citrus_status = self.wait_for_status(
+                "citrus",
+                CITRUS_REQUEST_SCHEMA_ID,
+                self.args.citrus_socket,
+                citrus_finalization_settled,
+                self.args.citrus_receipt_timeout_seconds,
+                "receipts_delivered",
+            )
+            state = citrus_finalization_state(final_citrus_status)
+            if state != CITRUS_FINALIZATION_DELIVERED:
+                raise OrchestratorError(f"Citrus receipts not delivered: recording_observation_finalization.state={state!r}")
 
         self.require_orange_local_control_event_log(final_orange_status)
         self.validation_results = self.run_validations(
@@ -3555,6 +3626,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                       help="File holding the whole orange.recording_start_declaration.")
     declaration_subjects.add_argument("--declaration-from-spec", type=Path,
                                       help="Experiment spec whose fixed.declaration declares the recording.")
+    parser.add_argument("--expected-citrus-arenas", type=int, default=None,
+                        help="Selected arenas Citrus must report before a bound start (e.g. 4).")
+    parser.add_argument("--citrus-receipt-timeout-seconds", type=positive_float, default=900.0,
+                        help="Bound runs: how long to wait for Citrus to report its receipts delivered.")
     parser.add_argument(
         "--orange-mode",
         choices=("gui", "headless"),

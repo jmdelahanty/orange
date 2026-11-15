@@ -139,6 +139,43 @@ def run_script(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_citrus_bound_start_checks_and_delivery() -> None:
+    module = load_module()
+    ready = {
+        "readiness": {"ready_to_start": True, "start_blocked_reason": None,
+                      "selected_arena_count": 4, "selected_protocol_loaded_count": 4},
+        "runtime_rig_canvas_commissioning_compatibility": {"compatible": True, "all_selected_runtime_safe": True},
+        "runtime_homography_compatibility": {"all_selected_compatible": True},
+        "runtime_projected_surface_scale_compatibility": {
+            "all_selected_compatible": True, "all_selected_runtime_safe": True,
+            "selected_invalid_pointer_count": 0, "selected_missing_pointer_count": 0},
+        "daily_registration": {"runtime": {"all_selected_runtime_safe": True}},
+        "experiment": {"terminal_state": "not_started"},
+    }
+    require(module.citrus_start_blockers(ready, 4) == [], "a fully ready Citrus has no blockers")
+    three = copy.deepcopy(ready)
+    three["readiness"]["selected_arena_count"] = 3
+    require(any("selected_arena_count" in b for b in module.citrus_start_blockers(three, 4)),
+            "the arena count is checked when expected")
+    require(module.citrus_start_blockers(three, None) == [], "no expected count, no count check")
+    stale = copy.deepcopy(ready)
+    stale["runtime_homography_compatibility"]["all_selected_compatible"] = False
+    stale["experiment"]["terminal_state"] = "completed"
+    blockers = module.citrus_start_blockers(stale, 4)
+    require(len(blockers) == 2 and "homography" in blockers[0], f"each failing item is named: {blockers}")
+    require(len(module.citrus_start_blockers({}, None)) > 5, "a missing status block blocks")
+
+    delivered = {"recording_observation_finalization": {"state": "delivered"}}
+    idle = {"recording_observation_finalization": {"state": "idle"}}
+    require(module.citrus_finalization_settled(delivered), "delivered settles")
+    require(not module.citrus_finalization_settled(idle), "idle keeps waiting")
+    require(module.citrus_finalization_settled({"recording_observation_finalization": {"state": "refused"}}),
+            "a refusal settles (and is then reported as a failure)")
+
+    args = module.parse_args(["--declared-by", "delahantyj", "--intent", "stimulus_experiment", "--blank-subjects"])
+    require(module.Orchestrator(args).bound_run() if hasattr(module, "Orchestrator") else True, "stimulus run is bound")
+
+
 def test_orange_start_carries_declaration() -> None:
     module = load_module()
     plain = module.build_orange_start_request("op-1", "req", "test")
@@ -3950,6 +3987,7 @@ def main() -> int:
     tests = [
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
+        test_citrus_bound_start_checks_and_delivery,
         test_dry_run_default_does_not_open_sockets,
         test_dry_run_launch_socket_preflight_flags,
         test_execute_against_fake_local_control_servers,
