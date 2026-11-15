@@ -148,8 +148,10 @@ default, and the sealed effective configuration shows when one was overridden.
   filesystem UUID, never by `nvmeN` (the numbering changed at the
   2026-10-06 reboot).
 - Clip length (Jeremy): 15 min at 100 fps, 30 min at 60 fps or below. The
-  Palette-ready specs carry `recording_control.clip_seconds 900` and the app
-  config `recording.recording_control.clip_seconds 900`. Since 2026-10-09
+  Palette-ready specs carry `recording_control.clip_seconds 900`; the app
+  config had `recording.recording_control.clip_seconds 900` (on 2026-11-15
+  it is 0: GUI recordings write one full-frame file per camera, as the
+  30-min `2026_11_10_15_55_37` did). Since 2026-10-09
   rolling clips no longer need a timed recording: an open-ended GUI
   recording rolls every `clip_seconds` until it is stopped (the panel's
   checkbox default is 900 s; `record_for_seconds` stays the optional timed
@@ -161,6 +163,12 @@ default, and the sealed effective configuration shows when one was overridden.
   supervisor and plan defaults and the contract fallback for camera configs
   that say "auto" (`src/external_recorder_contract_utils.cpp`). The latency
   gate specs (`..._od8ff_s16*`) keep 150/150 as the historical baseline.
+- Camera presets keep the per-frame quality (Jeremy, 2026-11-15, for the
+  HB-20000SBM at 4512 x 4512): a preset at another frame rate scales the
+  full-frame bitrate with the frame rate, from 45/60 Mbit/s at 100 fps, so
+  the bits per frame stay the same. At 30 fps that is 13.5/18 Mbit/s; the
+  first such preset is the 30 fps grouped-fish preset.
+  Codec and encoder settings stay as above.
 - Full-frame bitrate A/B (spec `..._rolling_crops_shadow_ff45`, 45 Mbit/s
   average / 60 Mbit/s max, crops unchanged and lossless): measured 53.9
   Mbit/s against 150.2; PSNR / SSIM of the 384 px fish window cut from the
