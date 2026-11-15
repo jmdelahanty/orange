@@ -726,8 +726,21 @@ std::map<std::string, SubjectDeclaration> DeclaredSubjectsFromEmitted(const json
     return out;
 }
 
+json ReadDeclaredRunPlan(const std::string& recording_folder)
+{
+    const auto path = std::filesystem::path(recording_folder) / "subject_confirmation.json";
+    if (!std::filesystem::exists(path)) return nullptr;
+    const json confirmation = read_json_file(path);
+    require(confirmation.is_object(), "subject_confirmation.json must be an object");
+    if (!confirmation.contains("declaration") || !confirmation.at("declaration").is_object()) return nullptr;
+    const json& declaration = confirmation.at("declaration");
+    if (!declaration.contains("source") || !declaration.at("source").is_object()) return nullptr;
+    const json& source = declaration.at("source");
+    return source.value("kind", "") == "orchard_run_plan" ? source : json(nullptr);
+}
+
 json BuildSubjectCrossCheck(const json& frozen_block, const std::map<std::string, json>& citrus_by_camera,
-                            const std::string& checked_at_utc)
+                            const json& orange_run_plan, const std::string& checked_at_utc)
 {
     const auto declared = DeclaredSubjectsFromEmitted(frozen_block);
     std::set<std::string> serials;
@@ -738,10 +751,16 @@ json BuildSubjectCrossCheck(const json& frozen_block, const std::map<std::string
     for (const std::string& serial : serials) {
         const auto op = declared.find(serial);
         const SubjectDeclaration operator_entry = op == declared.end() ? SubjectDeclaration{} : op->second;
+        json not_collected_reason = nullptr;
+        if (frozen_block.is_object() && frozen_block.contains(serial) && frozen_block.at(serial).is_object() &&
+            frozen_block.at(serial).value("status", "") == "not_collected") {
+            not_collected_reason = frozen_block.at(serial).value("reason", json(nullptr));
+        }
         json camera = {
             {"operator", {{"dish_id", operator_entry.dish_id ? json(*operator_entry.dish_id) : json(nullptr)},
                           {"subject_count", operator_entry.subject_count ? json(*operator_entry.subject_count)
                                                                          : json(nullptr)},
+                          {"not_collected_reason", not_collected_reason},
                           {"in_start_snapshot", op != declared.end()}}},
             {"citrus_subject_declaration", nullptr},
             {"differences", json::array()},
@@ -755,6 +774,16 @@ json BuildSubjectCrossCheck(const json& frozen_block, const std::map<std::string
             const json citrus_count = c->second.value("subject_count", json(nullptr));
             if (citrus_dish != camera["operator"]["dish_id"]) camera["differences"].push_back("dish_id");
             if (citrus_count != camera["operator"]["subject_count"]) camera["differences"].push_back("subject_count");
+            // v1 is always the panel; v2 names its source.
+            const bool v2 = c->second.value("schema_version", 0) == 2;
+            const std::string citrus_source = v2 ? c->second.value("source", "") : "citrus_operator_declaration";
+            const json citrus_run_plan = v2 ? c->second.value("run_plan", json(nullptr)) : json(nullptr);
+            if (citrus_dish.is_null() && camera["operator"]["dish_id"].is_null() && op != declared.end()) {
+                const bool stated_blank = not_collected_reason == "declared_blank";
+                const std::string pairs_with = stated_blank ? "orchard_run_plan" : "citrus_operator_declaration";
+                if (citrus_source != pairs_with) camera["differences"].push_back("blank_pairing");
+            }
+            if (citrus_run_plan != orange_run_plan) camera["differences"].push_back("run_plan");
             camera["status"] = camera["differences"].empty() ? "match" : "mismatch";
             if (!camera["differences"].empty()) ++mismatches;
         }
@@ -765,6 +794,7 @@ json BuildSubjectCrossCheck(const json& frozen_block, const std::map<std::string
             {"checked_at_utc", checked_at_utc},
             {"policy", kSubjectCrossCheckPolicy},
             {"policy_ends_when", kSubjectCrossCheckPolicyEndsWhen},
+            {"orange_run_plan", orange_run_plan},
             {"arm_refused", mismatches > 0},
             {"mismatch_count", mismatches},
             {"cameras", std::move(cameras)}};
@@ -781,7 +811,9 @@ std::vector<std::string> SubjectCrossCheckMismatchLines(const json& cross_check)
         const json& citrus = camera.at("citrus_subject_declaration");
         lines.push_back("camera " + serial + ": Orange dish " + text(op.at("dish_id")) + " count " +
                         text(op.at("subject_count")) + ", Citrus dish " + text(citrus.value("dish_id", json())) +
-                        " count " + text(citrus.value("subject_count", json())));
+                        " count " + text(citrus.value("subject_count", json())) + " (differs: " +
+                        [&] { std::string out; for (const auto& d : camera.at("differences"))
+                                  out += (out.empty() ? "" : ", ") + d.get<std::string>(); return out; }() + ")");
     }
     return lines;
 }

@@ -343,7 +343,7 @@ void test_cross_check()
     const json check = BuildSubjectCrossCheck(frozen,
         {{"2010093", citrus("19234_3", 1)}, {"2010094", citrus("19234_1", 2)},
          {"2010095", citrus(nullptr, nullptr)}, {"2010096", citrus("19234_2", 1)}},
-        "2026-10-11T20:00:00Z");
+        nullptr, "2026-10-11T20:00:00Z");
     const json& c = check.at("cameras");
     EXPECT(c.at("2010093").at("status") == "match");
     EXPECT(c.at("2010094").at("status") == "mismatch" && c.at("2010094").at("differences") == json::array({"subject_count"}));
@@ -352,9 +352,103 @@ void test_cross_check()
            c.at("2010096").at("operator").at("in_start_snapshot") == false &&
            c.at("2010096").at("differences") == json::array({"dish_id", "subject_count"}));
     EXPECT(check.at("mismatch_count") == 2);
-    const json unbound = BuildSubjectCrossCheck(frozen, {}, "2026-10-11T20:00:00Z");
+    const json unbound = BuildSubjectCrossCheck(frozen, {}, nullptr, "2026-10-11T20:00:00Z");
     EXPECT(unbound.at("cameras").at("2010093").at("status") == "no_citrus_declaration" &&
            unbound.at("mismatch_count") == 0);
+}
+
+// Cross-check v2 (acceptance v4): blank pairing and run_plan == Orange's source.
+void test_cross_check_v2()
+{
+    SubjectDeclaration blank; blank.blank = true;
+    SubjectDeclaration none;
+    SubjectDeclaration dish; dish.dish_id = "19234_3"; dish.subject_count = 1;
+    const json frozen = {
+        {"2010093", BuildSubjectReference(blank, ZebrobotLookupConfig{}, kNow)},
+        {"2010094", BuildSubjectReference(none, ZebrobotLookupConfig{}, kNow)},
+        {"2010095", {{"status", "collected"}, {"dish", {{"dish_id", "19234_3"}}}, {"subject_count", 1}}},
+    };
+    EXPECT(frozen.at("2010093").at("reason") == "declared_blank");
+    EXPECT(frozen.at("2010094").at("reason") == "no_dish_declared");
+    const json plan = {{"kind", "orchard_run_plan"}, {"plan_id", "p"}, {"plan_revision", 2},
+                       {"plan_sha256", std::string(64, 'b')}};
+    const auto v2 = [](const json& d, const json& n, const char* source, const json& run_plan) {
+        return json{{"schema_id", "citrus.subject_declaration"}, {"schema_version", 2}, {"dish_id", d},
+                    {"subject_count", n}, {"source", source}, {"run_plan", run_plan}};
+    };
+    const json v1_null = {{"schema_id", "citrus.subject_declaration"}, {"schema_version", 1},
+                          {"dish_id", nullptr}, {"subject_count", nullptr}, {"source", "citrus_operator_declaration"}};
+    const auto differences = [](const json& check, const char* serial) {
+        return check.at("cameras").at(serial).at("differences");
+    };
+    // Plan-declared on both sides, blanks paired the right way: all match.
+    {
+        const json check = BuildSubjectCrossCheck(frozen,
+            {{"2010093", v2(nullptr, nullptr, "orchard_run_plan", plan)},
+             {"2010095", v2("19234_3", 1, "orchard_run_plan", plan)}}, plan, kNow);
+        EXPECT(check.at("schema_version") == 2 && check.at("orange_run_plan") == plan);
+        EXPECT(check.at("mismatch_count") == 0 && check.at("arm_refused") == false);
+        EXPECT(check.at("cameras").at("2010093").at("operator").at("not_collected_reason") == "declared_blank");
+    }
+    // A stated blank against a Citrus panel blank, and an undeclared camera
+    // against a Citrus plan blank: both refuse (blank_pairing).
+    {
+        const json check = BuildSubjectCrossCheck(frozen,
+            {{"2010093", v1_null}, {"2010094", v2(nullptr, nullptr, "orchard_run_plan", plan)}}, plan, kNow);
+        EXPECT(differences(check, "2010093") == json::array({"blank_pairing", "run_plan"}));
+        EXPECT(differences(check, "2010094") == json::array({"blank_pairing"}));
+        EXPECT(check.at("arm_refused") == true);
+        const auto lines = SubjectCrossCheckMismatchLines(check);
+        EXPECT(lines.size() == 2 && lines[0].find("differs: blank_pairing, run_plan") != std::string::npos);
+    }
+    // Undeclared camera against a panel blank (v1 or v2 panel): match.
+    {
+        const json check = BuildSubjectCrossCheck(frozen,
+            {{"2010094", v1_null}}, nullptr, kNow);
+        EXPECT(check.at("mismatch_count") == 0);
+        const json check2 = BuildSubjectCrossCheck(frozen,
+            {{"2010094", v2(nullptr, nullptr, "citrus_operator_declaration", nullptr)}}, nullptr, kNow);
+        EXPECT(check2.at("mismatch_count") == 0);
+    }
+    // A stated blank against a Citrus dish refuses on the dish.
+    {
+        const json check = BuildSubjectCrossCheck(frozen,
+            {{"2010093", v2("19234_3", 1, "orchard_run_plan", plan)}}, plan, kNow);
+        EXPECT(differences(check, "2010093") == json::array({"dish_id", "subject_count"}));
+    }
+    // run_plan compared as a whole object: any field, a panel override at
+    // Citrus of a plan-declared recording, or a plan Orange never declared.
+    {
+        json other = plan; other["plan_revision"] = 3;
+        const json changed = BuildSubjectCrossCheck(frozen,
+            {{"2010095", v2("19234_3", 1, "orchard_run_plan", other)}}, plan, kNow);
+        EXPECT(differences(changed, "2010095") == json::array({"run_plan"}));
+        const json overridden = BuildSubjectCrossCheck(frozen,
+            {{"2010095", v2("19234_3", 1, "citrus_operator_declaration", nullptr)}}, plan, kNow);
+        EXPECT(differences(overridden, "2010095") == json::array({"run_plan"}));
+        const json undeclared = BuildSubjectCrossCheck(frozen,
+            {{"2010095", v2("19234_3", 1, "orchard_run_plan", plan)}}, nullptr, kNow);
+        EXPECT(differences(undeclared, "2010095") == json::array({"run_plan"}));
+    }
+}
+
+// ReadDeclaredRunPlan: the source of an orchard_run_plan declaration only.
+void test_read_declared_run_plan()
+{
+    const auto dir = std::filesystem::temp_directory_path() / ("orange_run_plan_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    const auto write = [&](const json& j) { std::ofstream(dir / "subject_confirmation.json") << j.dump(); };
+    EXPECT(ReadDeclaredRunPlan(dir.string()).is_null());  // no file
+    write({{"declaration", {{"schema_version", 1}}}});
+    EXPECT(ReadDeclaredRunPlan(dir.string()).is_null());
+    write({{"declaration", {{"source", {{"kind", "orange_run_spec"}}}}}});
+    EXPECT(ReadDeclaredRunPlan(dir.string()).is_null());
+    const json source = {{"kind", "orchard_run_plan"}, {"plan_id", "p"}};
+    write({{"declaration", {{"source", source}}}});
+    EXPECT(ReadDeclaredRunPlan(dir.string()) == source);
+    std::ofstream(dir / "subject_confirmation.json") << "{not json";
+    EXPECT(throws([&] { ReadDeclaredRunPlan(dir.string()); }));
+    std::filesystem::remove_all(dir);
 }
 
 int main(int argc, char** argv)
@@ -363,6 +457,8 @@ int main(int argc, char** argv)
     test_builder_outcomes();
     test_block_rules_and_gate();
     test_cross_check();
+    test_cross_check_v2();
+    test_read_declared_run_plan();
     if (argc > 1) test_real_http(argv[1]);
     if (g_failures) { std::fprintf(stderr, "%d failure(s)\n", g_failures); return 1; }
     std::puts(argc > 1 ? "recording_subject_reference_tests: all passed (incl. real HTTP)" : "recording_subject_reference_tests: all passed");

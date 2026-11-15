@@ -309,6 +309,108 @@ bool validate_subject_declaration(const json& s, std::string* error_out)
     return true;
 }
 
+// citrus.subject_declaration v2 (acceptance v4 contract.subject): exactly
+// the subjectDeclarationV2 definition inlined in
+// citrus_recording_observation_binding_acceptance_v4.schema.json, plus the
+// contract test's D1-D3 (members sorted; a non-empty list names exactly
+// subject_count fish; a plan-sourced group names its members).
+bool v2_lower_hex(const json& v, std::size_t n)
+{
+    return v.is_string() && lower_hex(v.get<std::string>(), n);
+}
+bool v2_whole_second_utc(const json& v)
+{
+    static const std::regex kUtc(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$)");
+    return v.is_string() && std::regex_match(v.get<std::string>(), kUtc);
+}
+bool v2_relative_path(const json& v)
+{
+    return v.is_string() && !v.get<std::string>().empty() && v.get<std::string>()[0] != '/';
+}
+bool v2_nonempty_string(const json& v)
+{
+    return v.is_string() && !v.get<std::string>().empty();
+}
+bool v2_run_plan_reference(const json& r)
+{
+    if (!exact_keys(r, {"kind", "repo", "commit", "path", "file_sha256", "tree_dirty", "plan_id",
+                        "plan_revision", "plan_session_id", "plan_sha256", "plan_hash_rule", "sign_off",
+                        "generator", "plan_copy_relative_path", "plan_json_copy_relative_path",
+                        "sign_off_copy_relative_path"})) return false;
+    const json& so = r.at("sign_off");
+    const json& gen = r.at("generator");
+    return r.at("kind") == "orchard_run_plan" && v2_nonempty_string(r.at("repo")) &&
+        v2_lower_hex(r.at("commit"), 40) && v2_relative_path(r.at("path")) &&
+        v2_lower_hex(r.at("file_sha256"), 64) && r.at("tree_dirty").is_boolean() && r.at("tree_dirty") == false &&
+        v2_nonempty_string(r.at("plan_id")) && r.at("plan_revision").is_number_integer() &&
+        r.at("plan_revision").get<long long>() >= 1 && v2_nonempty_string(r.at("plan_session_id")) &&
+        v2_lower_hex(r.at("plan_sha256"), 64) && r.at("plan_hash_rule") == "orchard_run_plan_v1_plan_sha256" &&
+        exact_keys(so, {"entry_id", "entry_sha256", "by", "at_utc", "record_path", "record_commit"}) &&
+        v2_nonempty_string(so.at("entry_id")) && v2_lower_hex(so.at("entry_sha256"), 64) &&
+        v2_nonempty_string(so.at("by")) && v2_whole_second_utc(so.at("at_utc")) &&
+        v2_relative_path(so.at("record_path")) && v2_lower_hex(so.at("record_commit"), 40) &&
+        exact_keys(gen, {"repo", "commit", "tool"}) && v2_nonempty_string(gen.at("repo")) &&
+        v2_lower_hex(gen.at("commit"), 40) && v2_nonempty_string(gen.at("tool")) &&
+        v2_relative_path(r.at("plan_copy_relative_path")) && v2_relative_path(r.at("plan_json_copy_relative_path")) &&
+        v2_relative_path(r.at("sign_off_copy_relative_path"));
+}
+bool validate_subject_declaration_v2(const json& s, std::string* error_out)
+{
+    static const std::regex kClearedBy(R"(^[a-z][a-z0-9_-]{0,31}$)");
+    if (!exact_keys(s, {"schema_id", "schema_version", "dish_id", "fish_id", "subject_count", "subject_type",
+                        "member_fish_ids", "unit_id", "declared_at_utc", "source", "run_plan",
+                        "overridden_run_plan"}) ||
+        s.value("schema_id", "") != kCitrusSubjectDeclarationSchemaId || !schema_version_is(s, 2) ||
+        !null_or_string(s.at("dish_id"), 1, 128) ||
+        !(s.at("fish_id").is_null() || valid_uuid(s.at("fish_id"))) ||
+        !null_or_int(s.at("subject_count"), 1) || !valid_subject_type(s.at("subject_type")) ||
+        !s.at("member_fish_ids").is_array() || !null_or_string(s.at("unit_id"), 1, 128) ||
+        !v2_whole_second_utc(s.at("declared_at_utc")) ||
+        !(s.at("source") == "orchard_run_plan" || s.at("source") == "citrus_operator_declaration")) {
+        return fail(error_out, "acceptance subject declaration v2 is invalid");
+    }
+    const json& members = s.at("member_fish_ids");
+    std::set<std::string> unique;
+    for (const auto& m : members) {
+        if (!valid_uuid(m) || !unique.insert(m.get<std::string>()).second) {
+            return fail(error_out, "acceptance subject declaration v2 member_fish_ids are invalid");
+        }
+    }
+    const json& override_ = s.at("overridden_run_plan");
+    if (!override_.is_null() &&
+        !(exact_keys(override_, {"run_plan", "cleared_at_utc", "cleared_by"}) &&
+          v2_run_plan_reference(override_.at("run_plan")) && v2_whole_second_utc(override_.at("cleared_at_utc")) &&
+          override_.at("cleared_by").is_string() &&
+          std::regex_match(override_.at("cleared_by").get<std::string>(), kClearedBy))) {
+        return fail(error_out, "acceptance subject declaration v2 overridden_run_plan is invalid");
+    }
+    const bool from_plan = s.at("source") == "orchard_run_plan";
+    if (from_plan ? !(v2_run_plan_reference(s.at("run_plan")) && override_.is_null())
+                  : !s.at("run_plan").is_null()) {
+        return fail(error_out, "acceptance subject declaration v2 run_plan does not fit its source");
+    }
+    const json& type = s.at("subject_type");
+    bool ok = true;
+    if (s.at("dish_id").is_null()) {
+        ok = s.at("fish_id").is_null() && s.at("subject_count").is_null() && type.is_null() && members.empty() &&
+            s.at("unit_id").is_null();
+    } else {
+        ok = s.at("subject_count").is_number_integer() && type.is_string();
+    }
+    if (ok && type == "individual") {
+        ok = s.at("subject_count") == 1 && valid_uuid(s.at("fish_id")) && members.empty();
+    }
+    if (ok && type == "dish_group") {
+        ok = s.at("subject_count").get<long long>() >= 2 && s.at("fish_id").is_null() && s.at("unit_id").is_null();
+        // D1 sorted, D2 empty or exactly subject_count, D3 a plan group names its members.
+        ok = ok && std::is_sorted(members.begin(), members.end()) &&
+            (members.empty() || static_cast<long long>(members.size()) == s.at("subject_count").get<long long>()) &&
+            !(from_plan && members.empty());
+    }
+    if (!ok) return fail(error_out, "acceptance subject declaration v2 nullability or subject rules are invalid");
+    return true;
+}
+
 // citrus.subject_reference v1 (receipt v3 contract.subject_reference):
 // exactly citrus_subject_reference_v1.schema.json, including its
 // null-iff rules. v2 (receipt v4, citrus_subject_reference_v2.schema.json):
@@ -400,7 +502,9 @@ bool validate_acceptance_contract(const json& contract,
                                   std::string* error_out)
 {
     const int version = binding_record_schema_version(contract);
-    const bool v3 = version == kObservationBindingAcceptanceSchemaVersionV3;
+    const bool v4 = version == kObservationBindingAcceptanceSchemaVersionV4;
+    // v3 and v4 share one shape; v4's subject may also be declaration v2.
+    const bool v3 = version == kObservationBindingAcceptanceSchemaVersionV3 || v4;
     if (!contract.is_object()) {
         return fail(error_out, "binding acceptance contract must be an object");
     }
@@ -416,8 +520,13 @@ bool validate_acceptance_contract(const json& contract,
         if (!exact_keys(contract, keys)) {
             return fail(error_out, "accepted binding fields are invalid");
         }
-        if (v3 && !validate_subject_declaration(contract.at("subject"), error_out)) {
-            return false;
+        if (v3) {
+            const json& subject = contract.at("subject");
+            const bool subject_v2 = v4 && subject.is_object() && schema_version_is(subject, 2);
+            if (!(subject_v2 ? validate_subject_declaration_v2(subject, error_out)
+                             : validate_subject_declaration(subject, error_out))) {
+                return false;
+            }
         }
         if (!valid_identifier(contract.value("citrus_experiment_id", "")) ||
             !valid_identifier(contract.value("citrus_session_uuid", "")) ||
@@ -662,7 +771,7 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
 }
 
 // The envelope carries the same schema_version as the contract it seals
-// (request 1-2, acceptance 1-3, receipt 1-4). Citrus rejects mixed outer/inner versions and so does
+// (request 1-2, acceptance 1-4, receipt 1-4). Citrus rejects mixed outer/inner versions and so does
 // Orange (validate_envelope).
 bool seal(const char* schema_id,
           const char* id_prefix,
@@ -674,12 +783,11 @@ bool seal(const char* schema_id,
         return fail(error_out, "binding record output is null");
     }
     const int version = binding_record_schema_version(contract);
-    // Requests stay 1 or 2; acceptances and receipts may be 3; receipts 4.
+    // Requests stay 1 or 2; acceptances and receipts may be 3 or 4.
     const bool request = std::string(id_prefix) == "obsbindreq_";
-    const bool receipt = std::string(id_prefix) == "obsbindfin_";
     if (!accepted_observation_binding_schema_version(version) &&
-        !(!request && version == kObservationBindingAcceptanceSchemaVersionV3) &&
-        !(receipt && version == kObservationBindingFinalizedReceiptSchemaVersionV4)) {
+        !(!request && (version == kObservationBindingAcceptanceSchemaVersionV3 ||
+                       version == kObservationBindingAcceptanceSchemaVersionV4))) {
         return fail(error_out, "binding contract schema_version is invalid");
     }
     const std::string digest = canonical_sha256(contract);
@@ -787,18 +895,20 @@ bool validate_recording_observation_binding_acceptance(
     if (!validate_recording_observation_binding_request(request, error_out) ||
         !validate_envelope(
             acceptance, kObservationBindingAcceptanceSchemaId, "acceptance_id",
-            "obsbindacc_", /*max_version=*/kObservationBindingAcceptanceSchemaVersionV3, error_out) ||
+            "obsbindacc_", /*max_version=*/kObservationBindingAcceptanceSchemaVersionV4, error_out) ||
         !validate_acceptance_contract(acceptance.at("contract"), error_out)) {
         return false;
     }
     const json& request_contract = request.at("contract");
     const json& acceptance_contract = acceptance.at("contract");
-    // A v2 request is answered by acceptance v2 or v3 (v3 adds the subject).
+    // A v2 request is answered by acceptance v2, v3 (v3 adds the subject) or
+    // v4 (the subject may be declaration v2).
     const int acceptance_version = binding_record_schema_version(acceptance);
     const int request_version = binding_record_schema_version(request);
     if (acceptance_version != request_version &&
         !(request_version == kObservationBindingRequestSchemaVersionV2 &&
-          acceptance_version == kObservationBindingAcceptanceSchemaVersionV3)) {
+          (acceptance_version == kObservationBindingAcceptanceSchemaVersionV3 ||
+           acceptance_version == kObservationBindingAcceptanceSchemaVersionV4))) {
         return fail(error_out,
                     "binding acceptance schema_version does not match the request schema_version");
     }
@@ -842,8 +952,10 @@ bool validate_citrus_subject_reference(const nlohmann::json& reference, int vers
 std::string subject_declaration_receipt_disagreement(const nlohmann::json& acceptance,
                                                      const nlohmann::json& receipt)
 {
+    const int acceptance_version = binding_record_schema_version(acceptance);
     if (binding_record_schema_version(receipt) != kObservationBindingFinalizedReceiptSchemaVersionV4 ||
-        binding_record_schema_version(acceptance) != kObservationBindingAcceptanceSchemaVersionV3) {
+        (acceptance_version != kObservationBindingAcceptanceSchemaVersionV3 &&
+         acceptance_version != kObservationBindingAcceptanceSchemaVersionV4)) {
         return {};
     }
     const json& declaration = acceptance.at("contract").at("subject");
@@ -879,10 +991,18 @@ bool validate_recording_observation_finalized_receipt(
     if (!validate_recording_observation_finalized_receipt_envelope(receipt, error_out)) {
         return false;
     }
-    // Receipt v4 (subject reference v2) always answers an acceptance v3.
-    if (binding_record_schema_version(receipt) == kObservationBindingFinalizedReceiptSchemaVersionV4 &&
-        binding_record_schema_version(acceptance) != kObservationBindingAcceptanceSchemaVersionV3) {
-        return fail(error_out, "receipt v4 must answer an acceptance v3");
+    // Receipt v4 (subject reference v2) answers an acceptance v3 or v4; an
+    // acceptance v4 is answered only by a receipt v4.
+    const int receipt_version = binding_record_schema_version(receipt);
+    const int acceptance_version = binding_record_schema_version(acceptance);
+    if (receipt_version == kObservationBindingFinalizedReceiptSchemaVersionV4 &&
+        acceptance_version != kObservationBindingAcceptanceSchemaVersionV3 &&
+        acceptance_version != kObservationBindingAcceptanceSchemaVersionV4) {
+        return fail(error_out, "receipt v4 must answer an acceptance v3 or v4");
+    }
+    if (acceptance_version == kObservationBindingAcceptanceSchemaVersionV4 &&
+        receipt_version != kObservationBindingFinalizedReceiptSchemaVersionV4) {
+        return fail(error_out, "an acceptance v4 must be answered by a receipt v4");
     }
 
     const json& request_contract = request.at("contract");

@@ -39,9 +39,17 @@ inline constexpr int kObservationBindingFinalizedReceiptSchemaVersionV3 = 3;
 // Subject identity v4 (agent-contracts citrus-palette/subject_identity_v4_2026-10-14,
 // #105): receipt v4 = receipt v3 with contract.subject_reference as
 // citrus.subject_reference v2 (subject_id the MetaZebrobot fish UUID, null for
-// a dish_group), always answering an acceptance v3. Receipt v3 keeps reference
+// a dish_group), answering an acceptance v3 or v4. Receipt v3 keeps reference
 // v1; one finalized collection, revisions included, never mixes v3 and v4.
 inline constexpr int kObservationBindingFinalizedReceiptSchemaVersionV4 = 4;
+// Subject declaration v2 (agent-contracts citrus-orange/subject_declaration_v2_2026-11-15,
+// #126 + erratum #127): acceptance v4 = acceptance v3 with contract.subject
+// citrus.subject_declaration v1 (the panel) or v2 (generated from a signed
+// orchard run plan, or a panel override of one), still answering a v2
+// request; outer and inner schema_version both 4. Pinned:
+// contracts/citrus_recording_observation_binding_acceptance_v4.schema.json
+// (sha256 f0a4da8a...). Receipt v4 answers acceptance v3 or v4.
+inline constexpr int kObservationBindingAcceptanceSchemaVersionV4 = 4;
 inline constexpr const char* kCitrusSubjectDeclarationSchemaId = "citrus.subject_declaration";
 inline constexpr const char* kCitrusSubjectReferenceSchemaId = "citrus.subject_reference";
 inline constexpr const char* kCitrusArtifactRoleStimulusVideo = "stimulus_video";

@@ -6099,7 +6099,9 @@
    "kind",
    "message",
    "mismatch_count",
+   "not_collected_reason",
    "operator",
+   "orange_run_plan",
    "policy",
    "policy_ends_when",
    "queried_at_utc",
@@ -6117,7 +6119,7 @@
   "schemas": [
    [
     "orange.recording_subject_cross_check",
-    "1"
+    "2"
    ],
    [
     "orange.recording_subject_reference",
@@ -6403,13 +6405,17 @@
    "contract",
    "contract_sha256",
    "dish_id",
+   "entry_id",
    "fish_id",
    "identity_mismatch",
+   "kind",
    "recording_context_missing",
    "recording_id",
    "relative_path",
+   "repo",
    "rig_id",
    "role",
+   "run_plan",
    "schema_id",
    "schema_version",
    "status"
@@ -6531,6 +6537,7 @@
    "observation_context_id",
    "operation_id",
    "operator_entries_error",
+   "orange_declaration_error",
    "params",
    "reason",
    "recording_id",

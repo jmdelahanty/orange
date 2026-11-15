@@ -164,7 +164,7 @@ void ApplySubjectReferencesGate(const std::string& recording_folder, nlohmann::j
 std::map<std::string, SubjectDeclaration> DeclaredSubjectsFromEmitted(const nlohmann::json& block);
 
 inline constexpr const char* kSubjectCrossCheckSchemaId = "orange.recording_subject_cross_check";
-inline constexpr int kSubjectCrossCheckSchemaVersion = 1;
+inline constexpr int kSubjectCrossCheckSchemaVersion = 2;
 // Interim policy (Jeremy 2026-10-11, agent-contracts citrus-orange
 // subject_declaration_v1 pre-arm amendment): any camera whose Citrus
 // declaration differs from the operator's entry refuses the arm, in every
@@ -180,11 +180,32 @@ inline constexpr const char* kSubjectCrossCheckPolicyEndsWhen =
 // operator's entry frozen in the start snapshot. Recorded under
 // kSubjectCrossCheckPolicy (arm_refused = any mismatch); the start snapshot
 // never changes. Per camera: status match | mismatch |
-// no_citrus_declaration, differences (dish_id, subject_count), the operator's
-// declared values and the Citrus declaration verbatim.
+// no_citrus_declaration, differences, the operator's declared values and the
+// Citrus declaration verbatim.
+//
+// v2 (acceptance v4, agent-contracts citrus-orange/subject_declaration_v2
+// section 6a; Jeremy, 2026-11-15): the Citrus declaration may be
+// citrus.subject_declaration v1 (the panel) or v2 (an orchard run plan, or a
+// panel override of one). The differences a camera can record:
+//   dish_id, subject_count  as in v1;
+//   blank_pairing           both sides declare no dish, but not the same kind
+//                           of absence: Orange's stated blank (declared_blank)
+//                           pairs only with a Citrus plan arena
+//                           (source orchard_run_plan), and Orange's other
+//                           absences (no_dish_declared, ...) only with a
+//                           Citrus panel arena (citrus_operator_declaration);
+//   run_plan                Citrus's run_plan (null for the panel and for v1)
+//                           is not Orange's declaration v2 source, compared as
+//                           a whole object (orange_run_plan: the source of an
+//                           orchard_run_plan declaration, else null).
 nlohmann::json BuildSubjectCrossCheck(const nlohmann::json& frozen_block,
                                       const std::map<std::string, nlohmann::json>& citrus_by_camera,
+                                      const nlohmann::json& orange_run_plan,
                                       const std::string& checked_at_utc);
+// The run plan a recording was declared from: subject_confirmation.json's
+// declaration.source when it is an orchard_run_plan, else null (no file, a
+// v1 declaration, or another source kind). Throws on an unreadable file.
+nlohmann::json ReadDeclaredRunPlan(const std::string& recording_folder);
 // One operator-facing line per mismatching camera of a cross-check.
 std::vector<std::string> SubjectCrossCheckMismatchLines(const nlohmann::json& cross_check);
 

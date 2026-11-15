@@ -1,0 +1,716 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "citrus.recording_observation_binding_acceptance.v4",
+  "title": "Citrus Recording Observation Binding Acceptance v4 (v2 plus the per-arena subject declaration)",
+  "description": "Acceptance v4 is acceptance v3 with contract.subject either citrus.subject_declaration v1 (panel, source citrus_operator_declaration) or v2 (agent-contracts citrus-orange/subject_declaration_v2_2026-11-15, from a signed orchard run plan or a panel override of one). Everything else, including the cross-document digest, identity, containment and all-or-none batch checks, is unchanged from v3. As in every earlier version, the outer schema_version and the inner contract.schema_version are equal (both 4). The finalized receipt v4 is unchanged; its acceptance_contract_sha256 binds whichever acceptance version was issued.",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "canonicalization",
+    "acceptance_id",
+    "contract_sha256",
+    "contract"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "citrus.recording_observation_binding_acceptance"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 4
+    },
+    "canonicalization": {
+      "const": "canonical_json_utf8_sort_keys_compact_v1"
+    },
+    "acceptance_id": {
+      "type": "string",
+      "pattern": "^obsbindacc_[0-9a-f]{64}$"
+    },
+    "contract_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "contract": {
+      "$ref": "#/$defs/contract"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:^|/)\\.(?:/|$)).+$"
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "rig_id",
+        "canvas_name",
+        "arena_id",
+        "camera_id",
+        "source_camera_stream_id"
+      ],
+      "properties": {
+        "rig_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "canvas_name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "arena_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "camera_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source_camera_stream_id": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "additionalProperties": false
+    },
+    "accepted": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "status",
+        "request_id",
+        "request_contract_sha256",
+        "observation_context_id",
+        "decided_at_utc",
+        "citrus_experiment_id",
+        "citrus_session_uuid",
+        "target",
+        "planned_h5_relative_path",
+        "subject"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "citrus.recording_observation_binding_acceptance"
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 4
+        },
+        "status": {
+          "const": "accepted"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^obsbindreq_[0-9a-f]{64}$"
+        },
+        "request_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "observation_context_id": {
+          "type": "string",
+          "pattern": "^obsctx_[0-9a-f]{64}$"
+        },
+        "decided_at_utc": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "citrus_experiment_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "citrus_session_uuid": {
+          "$ref": "#/$defs/identifier"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "planned_h5_relative_path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "subject": {
+          "$ref": "#/$defs/subjectDeclaration"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rejected": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "status",
+        "request_id",
+        "request_contract_sha256",
+        "observation_context_id",
+        "decided_at_utc",
+        "reason"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "citrus.recording_observation_binding_acceptance"
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 4
+        },
+        "status": {
+          "const": "rejected"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^obsbindreq_[0-9a-f]{64}$"
+        },
+        "request_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "observation_context_id": {
+          "type": "string",
+          "pattern": "^obsctx_[0-9a-f]{64}$"
+        },
+        "decided_at_utc": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "identity_mismatch",
+            "recording_pointer_mismatch",
+            "recording_snapshot_mismatch",
+            "target_mismatch",
+            "geometry_mismatch",
+            "output_path_mismatch",
+            "runtime_authority_unavailable",
+            "internal_error",
+            "recording_context_missing",
+            "recording_context_invalid",
+            "recording_context_mismatch",
+            "recording_context_unavailable",
+            "batch_rejected"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "contract": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/accepted"
+        },
+        {
+          "$ref": "#/$defs/rejected"
+        }
+      ]
+    },
+    "subjectDeclarationV2_uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "subjectDeclarationV2_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "subjectDeclarationV2_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "subjectDeclarationV2_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "RFC 3339 UTC, whole seconds, Z."
+    },
+    "subjectDeclarationV2_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/]"
+    },
+    "subjectDeclarationV2_run_plan_reference": {
+      "type": "object",
+      "description": "The signed orchard run plan this declaration was generated from; the same object Orange's recording_start_declaration v2 carries as source. Citrus records it as given and does not read the plan.",
+      "required": [
+        "kind",
+        "repo",
+        "commit",
+        "path",
+        "file_sha256",
+        "tree_dirty",
+        "plan_id",
+        "plan_revision",
+        "plan_session_id",
+        "plan_sha256",
+        "plan_hash_rule",
+        "sign_off",
+        "generator",
+        "plan_copy_relative_path",
+        "plan_json_copy_relative_path",
+        "sign_off_copy_relative_path"
+      ],
+      "properties": {
+        "kind": {
+          "const": "orchard_run_plan"
+        },
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "commit": {
+          "$ref": "#/$defs/subjectDeclarationV2_commit"
+        },
+        "path": {
+          "$ref": "#/$defs/subjectDeclarationV2_relative_path"
+        },
+        "file_sha256": {
+          "$ref": "#/$defs/subjectDeclarationV2_sha256"
+        },
+        "tree_dirty": {
+          "const": false
+        },
+        "plan_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "plan_session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/subjectDeclarationV2_sha256"
+        },
+        "plan_hash_rule": {
+          "const": "orchard_run_plan_v1_plan_sha256"
+        },
+        "sign_off": {
+          "type": "object",
+          "required": [
+            "entry_id",
+            "entry_sha256",
+            "by",
+            "at_utc",
+            "record_path",
+            "record_commit"
+          ],
+          "properties": {
+            "entry_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "entry_sha256": {
+              "$ref": "#/$defs/subjectDeclarationV2_sha256"
+            },
+            "by": {
+              "type": "string",
+              "minLength": 1
+            },
+            "at_utc": {
+              "$ref": "#/$defs/subjectDeclarationV2_utc"
+            },
+            "record_path": {
+              "$ref": "#/$defs/subjectDeclarationV2_relative_path"
+            },
+            "record_commit": {
+              "$ref": "#/$defs/subjectDeclarationV2_commit"
+            }
+          },
+          "additionalProperties": false
+        },
+        "generator": {
+          "type": "object",
+          "required": [
+            "repo",
+            "commit",
+            "tool"
+          ],
+          "properties": {
+            "repo": {
+              "type": "string",
+              "minLength": 1
+            },
+            "commit": {
+              "$ref": "#/$defs/subjectDeclarationV2_commit"
+            },
+            "tool": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "plan_copy_relative_path": {
+          "$ref": "#/$defs/subjectDeclarationV2_relative_path"
+        },
+        "plan_json_copy_relative_path": {
+          "$ref": "#/$defs/subjectDeclarationV2_relative_path"
+        },
+        "sign_off_copy_relative_path": {
+          "$ref": "#/$defs/subjectDeclarationV2_relative_path"
+        }
+      },
+      "additionalProperties": false
+    },
+    "subjectDeclarationV2_override": {
+      "type": "object",
+      "description": "The operator changed a run-plan arena in the panel before START: the plan declaration it replaced, and when and by whom. Re-picking the same fish still counts as an override (Palette, 2026-11-11).",
+      "required": [
+        "run_plan",
+        "cleared_at_utc",
+        "cleared_by"
+      ],
+      "properties": {
+        "run_plan": {
+          "$ref": "#/$defs/subjectDeclarationV2_run_plan_reference"
+        },
+        "cleared_at_utc": {
+          "$ref": "#/$defs/subjectDeclarationV2_utc"
+        },
+        "cleared_by": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+          "description": "The OS user running the Citrus GUI when the operator changed the arena (the panel has no login); same charset as Orange's declared_by."
+        }
+      },
+      "additionalProperties": false
+    },
+    "subjectDeclarationV1": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "dish_id",
+        "fish_id",
+        "subject_count",
+        "subject_type",
+        "declared_at_utc",
+        "source"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "citrus.subject_declaration"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "dish_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fish_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "subject_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "subject_type": {
+          "enum": [
+            "individual",
+            "dish_group",
+            null
+          ]
+        },
+        "declared_at_utc": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "source": {
+          "const": "citrus_operator_declaration"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "dish_id": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "fish_id": {
+                "type": "null"
+              },
+              "subject_count": {
+                "type": "null"
+              },
+              "subject_type": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "subject_count": {
+                "type": "integer"
+              },
+              "subject_type": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "subjectDeclarationV2": {
+      "title": "Citrus subject declaration v2",
+      "description": "One arena's subject for one recording, as Citrus will start it: from a signed orchard run plan (source orchard_run_plan, generated by orchard tools/declare.py and given to Citrus over declare_subjects) or from the arena panel (source citrus_operator_declaration). v2 adds member_fish_ids, unit_id and the run-plan reference to v1. See subject_declaration_v2_2026-11-15.md; cross-field rules a JSON Schema cannot express are checked by test_subject_declaration_v2.py.",
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "dish_id",
+        "fish_id",
+        "subject_count",
+        "subject_type",
+        "member_fish_ids",
+        "unit_id",
+        "declared_at_utc",
+        "source",
+        "run_plan",
+        "overridden_run_plan"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "citrus.subject_declaration"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "dish_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fish_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/subjectDeclarationV2_uuid"
+            }
+          ]
+        },
+        "subject_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "subject_type": {
+          "enum": [
+            "individual",
+            "dish_group",
+            null
+          ]
+        },
+        "member_fish_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/subjectDeclarationV2_uuid"
+          }
+        },
+        "unit_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "declared_at_utc": {
+          "$ref": "#/$defs/subjectDeclarationV2_utc"
+        },
+        "source": {
+          "enum": [
+            "orchard_run_plan",
+            "citrus_operator_declaration"
+          ]
+        },
+        "run_plan": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/subjectDeclarationV2_run_plan_reference"
+            }
+          ]
+        },
+        "overridden_run_plan": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/subjectDeclarationV2_override"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "dish_id": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "dish_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "fish_id": {
+                "type": "null"
+              },
+              "subject_count": {
+                "type": "null"
+              },
+              "subject_type": {
+                "type": "null"
+              },
+              "member_fish_ids": {
+                "maxItems": 0
+              },
+              "unit_id": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "subject_count": {
+                "type": "integer"
+              },
+              "subject_type": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "subject_type": {
+                "const": "individual"
+              }
+            },
+            "required": [
+              "subject_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "subject_count": {
+                "const": 1
+              },
+              "fish_id": {
+                "$ref": "#/$defs/subjectDeclarationV2_uuid"
+              },
+              "member_fish_ids": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "subject_type": {
+                "const": "dish_group"
+              }
+            },
+            "required": [
+              "subject_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "subject_count": {
+                "type": "integer",
+                "minimum": 2
+              },
+              "fish_id": {
+                "type": "null"
+              },
+              "unit_id": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "orchard_run_plan"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {
+            "properties": {
+              "run_plan": {
+                "$ref": "#/$defs/subjectDeclarationV2_run_plan_reference"
+              },
+              "overridden_run_plan": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "run_plan": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "subjectDeclaration": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/subjectDeclarationV1"
+        },
+        {
+          "$ref": "#/$defs/subjectDeclarationV2"
+        }
+      ]
+    }
+  }
+}

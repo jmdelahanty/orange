@@ -133,7 +133,7 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
             parent_context: dict[str, Any] = CONTEXT,
             subject_declaration: dict[str, Any] | None = None,
             subject_reference: dict[str, Any] | None = None,
-            receipt_version: int = 3) -> None:
+            receipt_version: int = 3, acceptance_version: int = 3) -> None:
     """version 2 carries the frozen context in each request (and a start
     snapshot that freezes it); unified_h5 writes the Citrus 9aa6d57 layout
     (/evidence/recording_binding + /metadata/session) instead of the root one.
@@ -198,7 +198,7 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
         h5_relative = Path("citrus") / f"arena_{index}.h5"
         acceptance_contract = {
             "schema_id": "citrus.recording_observation_binding_acceptance",
-            "schema_version": 3 if subject_declaration is not None else version,
+            "schema_version": acceptance_version if subject_declaration is not None else version,
             "status": "accepted",
             "request_id": request["request_id"],
             "request_contract_sha256": request["contract_sha256"],
@@ -443,6 +443,72 @@ def subject_v4_tests(module: Any, expected: set[str]) -> None:
                 raise AssertionError(f"{message} passed validation")
 
 
+DECLARATION_V2 = REPO_ROOT / "tools" / "fixtures" / "citrus_subject_declaration_v2"
+ACCEPTANCE_V4_PIN = ("citrus_recording_observation_binding_acceptance_v4.schema.json",
+                     "f0a4da8a6e54e9c98c564c934a2c51dab4e5e07ff4efaed2160c37b3dbaf62f3")  # #126 + #127
+
+
+def acceptance_v4_tests(module: Any, expected: set[str]) -> None:
+    """Acceptance v4: contract.subject v1 or v2 (agent-contracts #126, erratum #127)."""
+    import jsonschema
+
+    name, sha = ACCEPTANCE_V4_PIN
+    schema_path = REPO_ROOT / "contracts" / name
+    assert hashlib.sha256(schema_path.read_bytes()).hexdigest() == sha, f"pin changed: {name}"
+    validator = jsonschema.Draft202012Validator(json.loads(schema_path.read_text()))
+    for fixture_name in ("acceptance_v4_v1_subject.json", "acceptance_v4_v2_subject.json"):
+        document = json.loads((DECLARATION_V2 / fixture_name).read_text())
+        assert validator.is_valid(document), fixture_name
+        # Schema-shape fixtures: their contract_sha256 / acceptance_id are not the
+        # contract's digest (one value copied into both), so only the shape is checked.
+    mixed = json.loads((DECLARATION_V2 / "acceptance_v4_v2_subject.json").read_text())
+    mixed["contract"]["schema_version"] = 3
+    assert not validator.is_valid(mixed), "outer 4 / inner 3 must be refused by the pin"
+    # Every v2 declaration fixture: Orange's rules agree with the contract's verdict.
+    for verdict in ("accepted", "refused"):
+        for path in sorted((DECLARATION_V2 / verdict).glob("*.json")):
+            if path.name == "expected.json":
+                continue
+            document = json.loads(path.read_text())
+            try:
+                module.validate_subject_declaration_v2(document, path.stem)
+                ok = True
+            except module.ValidationError:
+                ok = False
+            assert ok == (verdict == "accepted"), f"Orange's declaration v2 rules disagree: {path.name}"
+
+    # Whole recordings: acceptance v4 with a v1 and with a v2 subject, receipt v4.
+    plan_subject = json.loads((DECLARATION_V2 / "accepted" / "individual_drawn_from_dish_from_plan.json").read_text())
+    for declaration in (dict(SUBJECT_DECLARATION, fish_id=FISH), dict(plan_subject, fish_id=FISH)):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture(root, version=2, unified_h5=True, subject_declaration=declaration,
+                    subject_reference=INDIVIDUAL_REFERENCE_V2, receipt_version=4, acceptance_version=4)
+            result = module.validate(root, expected, 4)
+            assert result["status"] == "pass" and result["subject_declaration_disagreements"] == []
+    refused = [
+        # An acceptance v4 answered by a receipt v3.
+        (dict(SUBJECT_DECLARATION), SUBJECT_REFERENCE, 3, 4, "answered by a receipt v4"),
+        # A v2 subject inside an acceptance v3.
+        (plan_subject, INDIVIDUAL_REFERENCE_V2, 4, 3, "subject declaration is invalid"),
+        # A dirty plan inside an acceptance v4.
+        (dict(plan_subject, run_plan=dict(plan_subject["run_plan"], tree_dirty=True)),
+         INDIVIDUAL_REFERENCE_V2, 4, 4, "run_plan does not fit"),
+    ]
+    for declaration, reference, receipt_version, acceptance_version, message in refused:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture(root, version=2, unified_h5=True, subject_declaration=declaration,
+                    subject_reference=reference, receipt_version=receipt_version,
+                    acceptance_version=acceptance_version)
+            try:
+                module.validate(root, expected, 4)
+            except module.ValidationError as error:
+                assert message in str(error), str(error)
+            else:
+                raise AssertionError(f"{message} passed validation")
+
+
 def main() -> int:
     ensure_h5py_interpreter()
     module = load_validator()
@@ -574,6 +640,7 @@ def main() -> int:
                 raise AssertionError(f"{message} passed validation")
 
     subject_v4_tests(module, expected)
+    acceptance_v4_tests(module, expected)
     print("validate_recording_observation_bindings_tests passed")
     return 0
 

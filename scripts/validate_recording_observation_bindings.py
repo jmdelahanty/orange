@@ -201,6 +201,94 @@ def validate_subject_declaration(subject: Any, context_id: str) -> None:
     require(nullability, f"acceptance subject declaration nullability is invalid: {context_id}")
 
 
+WHOLE_SECOND_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+LOWER_HEX_40 = re.compile(r"^[0-9a-f]{40}$")
+LOWER_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+CLEARED_BY = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def _run_plan_reference(value: Any) -> bool:
+    """subjectDeclarationV2_run_plan_reference of acceptance v4 (agent-contracts #126/#127)."""
+    def text(v: Any) -> bool:
+        return isinstance(v, str) and v != ""
+
+    def rel(v: Any) -> bool:
+        return isinstance(v, str) and v != "" and not v.startswith("/")
+
+    def hexn(v: Any, pattern: re.Pattern[str]) -> bool:
+        return isinstance(v, str) and pattern.match(v) is not None
+
+    if not isinstance(value, dict) or set(value) != {
+            "kind", "repo", "commit", "path", "file_sha256", "tree_dirty", "plan_id", "plan_revision",
+            "plan_session_id", "plan_sha256", "plan_hash_rule", "sign_off", "generator",
+            "plan_copy_relative_path", "plan_json_copy_relative_path", "sign_off_copy_relative_path"}:
+        return False
+    so, gen = value["sign_off"], value["generator"]
+    return (value["kind"] == "orchard_run_plan" and text(value["repo"]) and hexn(value["commit"], LOWER_HEX_40)
+            and rel(value["path"]) and hexn(value["file_sha256"], LOWER_HEX_64) and value["tree_dirty"] is False
+            and text(value["plan_id"]) and is_int(value["plan_revision"]) and value["plan_revision"] >= 1
+            and text(value["plan_session_id"]) and hexn(value["plan_sha256"], LOWER_HEX_64)
+            and value["plan_hash_rule"] == "orchard_run_plan_v1_plan_sha256"
+            and isinstance(so, dict)
+            and set(so) == {"entry_id", "entry_sha256", "by", "at_utc", "record_path", "record_commit"}
+            and text(so["entry_id"]) and hexn(so["entry_sha256"], LOWER_HEX_64) and text(so["by"])
+            and isinstance(so["at_utc"], str) and WHOLE_SECOND_UTC.match(so["at_utc"]) is not None
+            and rel(so["record_path"]) and hexn(so["record_commit"], LOWER_HEX_40)
+            and isinstance(gen, dict) and set(gen) == {"repo", "commit", "tool"} and text(gen["repo"])
+            and hexn(gen["commit"], LOWER_HEX_40) and text(gen["tool"])
+            and rel(value["plan_copy_relative_path"]) and rel(value["plan_json_copy_relative_path"])
+            and rel(value["sign_off_copy_relative_path"]))
+
+
+def validate_subject_declaration_v2(subject: Any, context_id: str) -> None:
+    """citrus.subject_declaration v2 (acceptance v4 contract.subject), plus the contract
+    test's D1-D3. Mirrors validate_subject_declaration_v2 in C++."""
+    keys = {"schema_id", "schema_version", "dish_id", "fish_id", "subject_count", "subject_type",
+            "member_fish_ids", "unit_id", "declared_at_utc", "source", "run_plan", "overridden_run_plan"}
+    require(
+        isinstance(subject, dict) and set(subject) == keys
+        and subject["schema_id"] == "citrus.subject_declaration"
+        and is_int(subject["schema_version"]) and subject["schema_version"] == 2
+        and null_or_string(subject["dish_id"], 1, 128)
+        and uuid_or_null(subject["fish_id"])
+        and null_or_int(subject["subject_count"], 1)
+        and subject["subject_type"] in (None, "individual", "dish_group")
+        and isinstance(subject["member_fish_ids"], list)
+        and all(isinstance(m, str) and UUID.match(m) for m in subject["member_fish_ids"])
+        and len(set(subject["member_fish_ids"])) == len(subject["member_fish_ids"])
+        and null_or_string(subject["unit_id"], 1, 128)
+        and isinstance(subject["declared_at_utc"], str)
+        and WHOLE_SECOND_UTC.match(subject["declared_at_utc"]) is not None
+        and subject["source"] in ("orchard_run_plan", "citrus_operator_declaration"),
+        f"acceptance subject declaration v2 is invalid: {context_id}",
+    )
+    override = subject["overridden_run_plan"]
+    require(override is None or (
+        isinstance(override, dict) and set(override) == {"run_plan", "cleared_at_utc", "cleared_by"}
+        and _run_plan_reference(override["run_plan"])
+        and isinstance(override["cleared_at_utc"], str) and WHOLE_SECOND_UTC.match(override["cleared_at_utc"])
+        and isinstance(override["cleared_by"], str) and CLEARED_BY.match(override["cleared_by"])),
+        f"acceptance subject declaration v2 overridden_run_plan is invalid: {context_id}")
+    if subject["source"] == "orchard_run_plan":
+        fits = _run_plan_reference(subject["run_plan"]) and override is None
+    else:
+        fits = subject["run_plan"] is None
+    require(fits, f"acceptance subject declaration v2 run_plan does not fit its source: {context_id}")
+    members, kind, count = subject["member_fish_ids"], subject["subject_type"], subject["subject_count"]
+    if subject["dish_id"] is None:
+        ok = (subject["fish_id"] is None and count is None and kind is None and not members
+              and subject["unit_id"] is None)
+    else:
+        ok = is_int(count) and isinstance(kind, str)
+    if ok and kind == "individual":
+        ok = count == 1 and subject["fish_id"] is not None and not members
+    if ok and kind == "dish_group":
+        ok = (count >= 2 and subject["fish_id"] is None and subject["unit_id"] is None
+              and members == sorted(members) and (not members or len(members) == count)
+              and not (subject["source"] == "orchard_run_plan" and not members))
+    require(ok, f"acceptance subject declaration v2 nullability or subject rules are invalid: {context_id}")
+
+
 def validate_subject_reference(reference: Any, context_id: str, reference_version: int = 1) -> None:
     """citrus.subject_reference v1 (receipt v3) or v2 (receipt v4, subject identity v4:
     subject_id null or a lowercase UUID; with a dish an individual has a UUID and count 1,
@@ -297,7 +385,7 @@ def validate_subject_reference(reference: Any, context_id: str, reference_versio
 def subject_declaration_disagreement(acceptance_contract: dict[str, Any],
                                      receipt_contract: dict[str, Any]) -> str | None:
     """Subject identity v4, one context: an individual's receipt subject_id equals the
-    acceptance v3 declaration's fish_id; a dish_group or no dish declares no fish. A
+    acceptance v3/v4 declaration's fish_id; a dish_group or no dish declares no fish. A
     disagreement is a Citrus bug; it is reported, never refused (the receipt is
     authoritative). Mirrors subject_declaration_receipt_disagreement in C++."""
     declared = acceptance_contract["subject"]["fish_id"]
@@ -443,8 +531,8 @@ def validate_sealed_record(
     """Check a sealed envelope and return its schema_version.
 
     Request and acceptance envelopes are v1 or v2 with their contracts (the
-    outer and inner schema_version must match); acceptances also v3, finalized
-    receipts v1 to v4.
+    outer and inner schema_version must match); acceptances also v3 and v4,
+    finalized receipts v1 to v4.
     """
     require(value.get("schema_id") == schema_id, f"wrong schema: {schema_id}")
     version = schema_version_int(value)
@@ -590,15 +678,21 @@ def validate(
         acceptance, raw = load_json(path)
         require(reference.get("sha256") == sha256_bytes(raw), f"acceptance file digest mismatch: {context_id}")
         require(reference.get("byte_size") == len(raw), f"acceptance byte size mismatch: {context_id}")
-        acceptance_version = validate_sealed_record(acceptance, ACCEPTANCE_SCHEMA, "acceptance_id", (1, 2, 3))
+        acceptance_version = validate_sealed_record(acceptance, ACCEPTANCE_SCHEMA, "acceptance_id", (1, 2, 3, 4))
         # Acceptance v3 (contract.subject) answers a v2 request.
         require(
             acceptance_version == request_versions[context_id]
-            or (acceptance_version == 3 and request_versions[context_id] == 2),
+            or (acceptance_version in (3, 4) and request_versions[context_id] == 2),
             f"acceptance version {acceptance_version} differs from request version {request_versions[context_id]}: {context_id}",
         )
         if acceptance_version == 3:
             validate_subject_declaration(acceptance["contract"].get("subject"), context_id)
+        elif acceptance_version == 4:
+            subject = acceptance["contract"].get("subject")
+            if isinstance(subject, dict) and subject.get("schema_version") == 2:
+                validate_subject_declaration_v2(subject, context_id)
+            else:
+                validate_subject_declaration(subject, context_id)
         else:
             require("subject" not in acceptance["contract"],
                     f"acceptance v{acceptance_version} carries subject: {context_id}")
@@ -819,10 +913,12 @@ def validate(
         if receipt_version in (3, 4):
             validate_subject_reference(receipt_contract.get("subject_reference"), context_id,
                                        2 if receipt_version == 4 else 1)
+        # Receipt v4 answers an acceptance v3 or v4; an acceptance v4 only a receipt v4.
+        require(schema_version_int(acceptance) != 4 or receipt_version == 4,
+                f"an acceptance v4 must be answered by a receipt v4: {context_id}")
         if receipt_version == 4:
-            # Receipt v4 always answers an acceptance v3.
-            require(schema_version_int(acceptance) == 3,
-                    f"receipt v4 must answer an acceptance v3: {context_id}")
+            require(schema_version_int(acceptance) in (3, 4),
+                    f"receipt v4 must answer an acceptance v3 or v4: {context_id}")
             disagreement = subject_declaration_disagreement(acceptance_contract, receipt_contract)
             if disagreement is not None:
                 subject_disagreements.append({"observation_context_id": context_id,

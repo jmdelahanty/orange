@@ -707,10 +707,22 @@ bool execute_recording_observation_pre_arm(
                 std::string frozen_error;
                 const auto frozen =
                     orange::recording::ReadFrozenSubjectReferences(folder.string(), &frozen_error);
+                // A plan-declared recording carries its source in
+                // subject_confirmation.json; Citrus's run_plan must equal it.
+                json orange_run_plan = nullptr;
+                std::string declaration_error;
+                try {
+                    orange_run_plan = orange::recording::ReadDeclaredRunPlan(folder.string());
+                } catch (const std::exception& ex) {
+                    declaration_error = std::string("subject_confirmation.json: ") + ex.what();
+                }
                 result_out->subject_cross_check = orange::recording::BuildSubjectCrossCheck(
-                    frozen.value_or(json::object()), citrus_subjects, decided_at_utc);
+                    frozen.value_or(json::object()), citrus_subjects, orange_run_plan, decided_at_utc);
                 if (!frozen_error.empty()) {
                     result_out->subject_cross_check["operator_entries_error"] = frozen_error;
+                }
+                if (!declaration_error.empty()) {
+                    result_out->subject_cross_check["orange_declaration_error"] = declaration_error;
                 }
                 result_out->subject_mismatches =
                     orange::recording::SubjectCrossCheckMismatchLines(result_out->subject_cross_check);
