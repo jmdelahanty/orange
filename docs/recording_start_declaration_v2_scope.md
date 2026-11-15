@@ -150,6 +150,28 @@ and keep meaning what they mean today.
 | `orchard_run_plan` | `run_spec` (merged run spec, orange_client) or `local_control` (orchestrator GUI start) |
 | `operator` | `gui_operator` or `local_control` |
 
+## Plan and sign-off copies (Jeremy via pancake-plate, 2026-11-15)
+
+Decided: for a plan-sourced declaration the plan and its sign-off travel as
+verbatim copies at the recording root, sealed like `run_spec/`:
+
+- `run_plan/<file_sha256>.yaml`: the plan file's exact bytes at commit:path
+  (the git blob); the extension follows the committed file's suffix.
+- `run_plan/sign_off/<entry_sha256>.json`: the signed run-record entry as
+  `canonical_json_utf8_sort_keys_compact_v1` bytes, so its sha256 equals
+  `entry_sha256`.
+- Named in the declaration as `source.plan_copy_relative_path` and
+  `source.sign_off_copy_relative_path`; written before the seal, only for
+  plan-sourced declarations, never under `recording_observation_bindings/`.
+  Palette can then verify `plan_sha256` and the entry against sealed bytes.
+
+How the bytes reach Orange (proposal): Orange never reads orchard. The
+generator writes both files beside its `orange_declaration.json` (`--out`
+DIR); the merge step names them in the merged run spec; orange_client reads
+each once, refuses unless its bytes hash to `source.file_sha256` /
+`source.sign_off.entry_sha256`, and writes those exact bytes. The hash check
+is local and proves the copy is the declared plan, without fetching git.
+
 ## Open questions
 
 1. Plan bytes in the recording: copy (e.g. `run_plan/<file_sha256>.yaml`) or
