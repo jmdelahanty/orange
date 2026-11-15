@@ -21,6 +21,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+# The one builder of orange.recording_start_declaration (shared with the client).
+from orange_local_control_client import build_declaration  # noqa: E402
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ORANGE_REQUEST_SCHEMA_ID = "orange.local_control.request"
@@ -131,14 +135,24 @@ def build_status_request(schema_id: str, request_id: str, source: str) -> dict[s
     return build_request(schema_id, "status", request_id, source=source)
 
 
-def build_orange_start_request(operation_id: str, request_id: str, source: str) -> dict[str, Any]:
+def build_orange_start_request(
+    operation_id: str,
+    request_id: str,
+    source: str,
+    declaration: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Orange's start. With a declaration the GUI needs no Subject panel Confirm
+    (src/session/recording_start_declaration.h); without one it does."""
+    params: dict[str, Any] = {"reason": "orchestrator_start"}
+    if declaration is not None:
+        params["declaration"] = declaration
     return build_request(
         ORANGE_REQUEST_SCHEMA_ID,
         "start_recording",
         request_id,
         operation_id=operation_id,
         source=source,
-        params={"reason": "orchestrator_start"},
+        params=params,
     )
 
 
@@ -2665,6 +2679,7 @@ class Orchestrator:
                 self.args.operation_id,
                 f"{self.args.operation_id}:orange:start_recording",
                 self.args.source,
+                self.args.declaration,
             ),
         )
         if not response_accepted(orange_start_response):
@@ -3525,6 +3540,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "lifecycle events for this operation."
         ),
     )
+    # The recording's declaration (GUI mode): who declares, the intent and the
+    # subjects, as orange_local_control_client.py start-recording takes them.
+    # Without it the Orange operator must Confirm the Subject panel first.
+    parser.add_argument("--declared-by", help="Identity of the person declaring the recording (e.g. delahantyj).")
+    parser.add_argument("--intent", choices=("stimulus_experiment", "recording_only"),
+                        help="Recording intent declared for this recording.")
+    declaration_subjects = parser.add_mutually_exclusive_group()
+    declaration_subjects.add_argument("--blank-subjects", action="store_true",
+                                      help="Declare every camera blank (no subject information).")
+    declaration_subjects.add_argument("--subjects-json", type=Path,
+                                      help="File holding the subject_references object (app config form).")
+    declaration_subjects.add_argument("--declaration-file", type=Path,
+                                      help="File holding the whole orange.recording_start_declaration.")
+    declaration_subjects.add_argument("--declaration-from-spec", type=Path,
+                                      help="Experiment spec whose fixed.declaration declares the recording.")
     parser.add_argument(
         "--orange-mode",
         choices=("gui", "headless"),
@@ -3570,7 +3600,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "citrus_completion itself."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    try:
+        args.declaration = build_declaration(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.declaration is not None and args.orange_mode == "headless":
+        parser.error("headless runs declare in the experiment spec (fixed.declaration), not on this command line")
+    return args
 
 
 def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
@@ -3594,6 +3631,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 args.operation_id,
                 f"{args.operation_id}:orange:start_recording",
                 args.source,
+                args.declaration,
             ),
             "stop_policy": args.stop_policy,
             "stop_grace_seconds": effective_orange_stop_grace_seconds(args),

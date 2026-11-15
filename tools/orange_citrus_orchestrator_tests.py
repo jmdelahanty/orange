@@ -139,6 +139,36 @@ def run_script(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_orange_start_carries_declaration() -> None:
+    module = load_module()
+    plain = module.build_orange_start_request("op-1", "req", "test")
+    require("declaration" not in plain["params"], "no declaration: the operator confirms in the GUI")
+    args = module.parse_args(
+        ["--declared-by", "delahantyj", "--intent", "stimulus_experiment", "--blank-subjects"]
+    )
+    require(
+        args.declaration
+        == {
+            "schema_id": "orange.recording_start_declaration",
+            "schema_version": 1,
+            "declared_by": "delahantyj",
+            "recording_intent": "stimulus_experiment",
+            "subject_references": {"schema_version": 1},
+        },
+        f"declaration from the flags: {args.declaration}",
+    )
+    declared = module.build_orange_start_request("op-1", "req", "test", args.declaration)
+    require(declared["params"]["declaration"] == args.declaration, "the start carries the declaration")
+    require(module.parse_args([]).declaration is None, "no flags, no declaration")
+    for bad in (
+        ["--intent", "stimulus_experiment"],
+        ["--orange-mode", "headless", "--declared-by", "delahantyj", "--intent", "recording_only",
+         "--blank-subjects"],
+    ):
+        result = subprocess.run([sys.executable, str(SCRIPT), *bad], capture_output=True, text=True, check=False)
+        require(result.returncode == 2, f"refused: {bad}: {result.stderr}")
+
+
 def test_request_builders_and_readiness_helpers() -> None:
     module = load_module()
     orange_start = module.build_orange_start_request("op-1", "req-start", "test")
@@ -3919,6 +3949,7 @@ def test_headless_mode_needs_orange_command_and_notify_policy() -> None:
 def main() -> int:
     tests = [
         test_request_builders_and_readiness_helpers,
+        test_orange_start_carries_declaration,
         test_dry_run_default_does_not_open_sockets,
         test_dry_run_launch_socket_preflight_flags,
         test_execute_against_fake_local_control_servers,
