@@ -6,6 +6,7 @@ PREVIEW_MODE="${ORANGE_GUI_FOURCAM_PREVIEW_MODE:-hidden}"
 DISPLAY_PROFILE="${ORANGE_GUI_FOURCAM_DISPLAY_PROFILE:-fast}"
 MANUAL_LOCAL_CONTROL_MODE="none"
 CROP_ONLY=0
+DECLARED_START=0
 
 usage() {
   cat <<'EOF'
@@ -47,6 +48,13 @@ Options:
   --manual-local-control      Disable autorun, keep the GUI operator-owned,
                               and enable generic stop_recording plus Citrus
                               completion-stop requests.
+  --declared-start            Stream and wait for a local-control start that carries
+                              its own declaration (who declares, intent, subjects):
+                              scripts/orange_local_control_client.py start-recording
+                              --declared-by <id> --intent <intent> --blank-subjects
+                              (or --subjects-json). Stop it with stop-recording; the
+                              GUI exits after that recording finalizes. No Subject
+                              panel Confirm is needed or used.
   --manual-citrus-completion-control
                              Disable autorun, keep the GUI operator-owned,
                              and enable only Citrus completion-stop requests.
@@ -191,6 +199,10 @@ while [[ $# -gt 0 ]]; do
       MANUAL_LOCAL_CONTROL_MODE="full"
       shift
       ;;
+    --declared-start)
+      DECLARED_START=1
+      shift
+      ;;
     --manual-citrus-completion-control)
       if [[ "${MANUAL_LOCAL_CONTROL_MODE}" != "none" ]]; then
         echo "--manual-citrus-completion-control conflicts with --manual-local-control" >&2
@@ -293,6 +305,21 @@ case "${MANUAL_LOCAL_CONTROL_MODE}" in
     export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0
     ;;
 esac
+
+if (( DECLARED_START )); then
+  if [[ "${MANUAL_LOCAL_CONTROL_MODE}" != "none" ]] || (( CROP_ONLY )); then
+    echo "--declared-start conflicts with --manual-local-control, --manual-citrus-completion-control and --crop-only" >&2
+    exit 2
+  fi
+  # Autorun streams with analytics and crops but never starts the recording;
+  # the declared local-control start does, and its stop ends the GUI.
+  export ORANGE_GUI_AUTORUN_START_RECORDING=0
+  export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0
+  export ORANGE_GUI_LOCAL_CONTROL_DISABLE=0
+  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1
+  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1
+  export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=1
+fi
 
 export ORANGE_GUI_CONFIG_DIR="${ORANGE_GUI_CONFIG_DIR:-/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam}"
 export ORANGE_GUI_EXPECT_CAMERAS="${ORANGE_GUI_EXPECT_CAMERAS:-2010093,2010094,2010095,2010096}"

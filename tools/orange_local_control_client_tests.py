@@ -195,6 +195,38 @@ def test_start_stop_dry_run_include_operation_ids() -> None:
     require(stop_payload["params"]["grace_seconds"] == 3.0, "stop grace seconds")
 
 
+def test_start_declaration_flags() -> None:
+    plain = parse_stdout_json(run_client(["--dry-run", "start-recording"]))
+    require("declaration" not in plain["params"], "no flags: the operator confirms in the GUI")
+    declared = parse_stdout_json(
+        run_client(
+            [
+                "--dry-run",
+                "start-recording",
+                "--declared-by",
+                "delahantyj",
+                "--intent",
+                "recording_only",
+                "--blank-subjects",
+            ]
+        )
+    )
+    require(
+        declared["params"]["declaration"]
+        == {
+            "schema_id": "orange.recording_start_declaration",
+            "schema_version": 1,
+            "declared_by": "delahantyj",
+            "recording_intent": "recording_only",
+            "subject_references": {"schema_version": 1},
+        },
+        f"blank declaration: {declared['params']}",
+    )
+    partial = run_client(["--dry-run", "start-recording", "--intent", "recording_only"])
+    require(partial.returncode == 2, "a partial declaration is refused, never completed with defaults")
+    require("--declared-by" in partial.stderr, "the refusal names what is missing")
+
+
 def test_citrus_completion_requires_experiment_id() -> None:
     result = run_client(["--dry-run", "citrus-completion"])
 
@@ -225,6 +257,7 @@ def main() -> int:
         test_citrus_completion_dry_run_defaults_grace_seconds,
         test_citrus_completion_source_can_be_overridden,
         test_start_stop_dry_run_include_operation_ids,
+        test_start_declaration_flags,
         test_citrus_completion_requires_experiment_id,
         test_missing_socket_fails_before_connect,
     ]

@@ -2744,26 +2744,16 @@
   "csv_headers": [],
   "json_keys": [
    "acquired",
-   "cameras",
-   "config",
-   "confirmed_at_utc",
-   "confirmed_by",
-   "dish_id",
    "enabled",
    "free",
    "master_frame_journal",
    "registered_scene_context",
-   "schema_id",
    "schema_version",
    "stimulus_experiment",
-   "subject_count"
+   "transport",
+   "user"
   ],
-  "schemas": [
-   [
-    "orange.recording_subject_confirmation",
-    "1"
-   ]
-  ]
+  "schemas": []
  },
  "src/gui/session_status.cpp": {
   "csv_headers": [],
@@ -4150,6 +4140,8 @@
    "copied_path",
    "copy_error",
    "crop_preview",
+   "declared_by",
+   "detail",
    "drain_completed",
    "drain_completed_at_utc",
    "drain_timed_out",
@@ -4216,6 +4208,7 @@
    "node",
    "operation_id",
    "outside_delta_qp",
+   "peer",
    "pending_request_id",
    "policy",
    "pose_overlay",
@@ -4242,6 +4235,7 @@
    "terminal_state",
    "timeout_seconds",
    "timing_windows",
+   "transport",
    "valid",
    "yolo_spatial_mask_runtime"
   ],
@@ -4714,6 +4708,7 @@
    "forced_finalize_stream_stop_requested",
    "full_frame",
    "full_frame_external_recorders_ready",
+   "gid",
    "grace_seconds",
    "gui_lifecycle_command_deferred",
    "health",
@@ -4729,8 +4724,10 @@
    "open_cameras_match_expected",
    "open_serials",
    "operation_id",
+   "peer",
    "pending",
    "phase",
+   "pid",
    "preflight_projected_center_verification",
    "process",
    "process_count",
@@ -4777,7 +4774,9 @@
    "streaming_active",
    "supervisors_ready",
    "terminal_state",
+   "uid",
    "updated_at_utc",
+   "user",
    "yolo_selected_serials",
    "yolo_selection_matches_expected"
   ],
@@ -6901,6 +6900,34 @@
    [
     "orange.recording_session.indexes",
     "1"
+   ]
+  ]
+ },
+ "src/session/recording_start_declaration.h": {
+  "csv_headers": [],
+  "json_keys": [
+   "cameras",
+   "config",
+   "confirmed_at_utc",
+   "confirmed_by",
+   "declaration",
+   "declared_by",
+   "dish_id",
+   "recording_intent",
+   "requester",
+   "schema_id",
+   "schema_version",
+   "subject_count",
+   "subject_references"
+  ],
+  "schemas": [
+   [
+    "orange.recording_start_declaration",
+    "1"
+   ],
+   [
+    "orange.recording_subject_confirmation",
+    "2"
    ]
   ]
  },

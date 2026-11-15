@@ -2,6 +2,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <map>
+#include <pwd.h>
+#include <unistd.h>
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include "imgui.h"
@@ -32,6 +35,14 @@ bool subject_cross_check_ran = false;
 void clear_subject_confirmation() {
     subject_confirmed = false;
     subject_confirmation = nullptr;
+}
+// Who pressed Confirm: the account that started Orange (SUDO_USER under the
+// sudo wrappers, else the real uid's name).
+json gui_panel_requester() {
+    std::string user;
+    if (const char* sudo_user = std::getenv("SUDO_USER"); sudo_user && *sudo_user) user = sudo_user;
+    else if (const passwd* pw = ::getpwuid(::getuid()); pw && pw->pw_name) user = pw->pw_name;
+    return {{"transport", "gui_panel"}, {"user", user.empty() ? json(nullptr) : json(user)}};
 }
 void save() {
     recording::SaveGuiRecordingEvidenceConfig(config_path,
@@ -82,7 +93,29 @@ void SetSubjectCrossCheckResult(const std::vector<std::string>& mismatches, bool
     subject_cross_check_mismatches = mismatches;
     subject_cross_check_ran = citrus_declared;
 }
-recording::SubjectReferencesConfig SubjectReferencesForRecordStart(json* confirmation_out) {
+recording::RecordingContextsConfig RecordingContextsForRecordStart(const RemoteRecordStart* remote) {
+    recording::RecordingContextsConfig contexts = RecordingContextsForStream();
+    if (!remote) return contexts;
+    if (!contexts.configured())
+        throw std::runtime_error("The remote start declares recording_intent " + remote->declaration.recording_intent +
+                                 " but the app config has no recording.contexts entry to apply it to");
+    if (contexts.default_context) contexts.default_context->recording_intent = remote->declaration.recording_intent;
+    for (auto& [serial, ctx] : contexts.cameras) ctx.recording_intent = remote->declaration.recording_intent;
+    return contexts;
+}
+recording::SubjectReferencesConfig SubjectReferencesForRecordStart(json* confirmation_out,
+                                                                   const std::vector<std::string>& camera_serials,
+                                                                   const RemoteRecordStart* remote) {
+    if (remote) {
+        // A remotely declared recording also uses up any panel confirmation,
+        // which was for "the next recording".
+        clear_subject_confirmation();
+        if (confirmation_out)
+            *confirmation_out = session::BuildSubjectConfirmation(
+                remote->declaration.subject_references, camera_serials, session::kConfirmedByLocalControl,
+                remote->declaration.ToJson(), remote->requester, orange::timing::utc_iso8601_now());
+        return remote->declaration.subject_references;
+    }
     if (!subject_error.empty()) throw std::runtime_error("GUI subject references: " + subject_error);
     if (!subject_confirmed || subject_confirmation.value("config", json()) != subject_references.ToJson())
         throw std::runtime_error("Confirm each camera's dish in the Subject panel before starting this recording "
@@ -248,18 +281,9 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
     {
         std::string err;
         if (ImGui::Button("Confirm dishes for the next recording") && apply_subject_fields_to_config(&err)) {
-            json cameras = json::object();
-            for (const auto& [serial, d] : subject_references.Resolve(camera_serials)) {
-                cameras[serial] = {{"dish_id", d.dish_id ? json(*d.dish_id) : json(nullptr)},
-                                   {"subject_count", d.subject_count ? json(*d.subject_count) : json(nullptr)}};
-            }
-            subject_confirmation = {
-                {"schema_id", "orange.recording_subject_confirmation"},
-                {"schema_version", 1},
-                {"confirmed_by", "gui_operator"},
-                {"confirmed_at_utc", orange::timing::utc_iso8601_now()},
-                {"cameras", cameras},
-                {"config", subject_references.ToJson()}};
+            subject_confirmation = session::BuildSubjectConfirmation(
+                subject_references, camera_serials, session::kConfirmedByGuiOperator, nullptr,
+                gui_panel_requester(), orange::timing::utc_iso8601_now());
             subject_confirmed = true;
         } else if (!err.empty()) {
             subject_status = "Not confirmed: " + err;

@@ -197,6 +197,9 @@ struct GuiLocalControlStartRequestState {
     std::string last_event_at_utc;
     uint64_t epoch = 0;  // 0 = command carried no epoch/seq (legacy)
     uint64_t seq = 0;
+    // Set when the request carried params.declaration: the recording is
+    // declared by the request, not by the Subject panel's Confirm.
+    std::optional<orange::gui::RemoteRecordStart> remote;
 };
 
 // Owns the single background thread that imports optional context evidence and
@@ -1367,6 +1370,40 @@ void gui_drain_local_control_commands(
                     });
                 continue;
             }
+            std::optional<orange::gui::RemoteRecordStart> remote;
+            if (command.params.contains("declaration")) {
+                // The server refused a malformed declaration already; parse it
+                // again here so the GUI thread never trusts an unchecked copy.
+                try {
+                    remote = orange::gui::RemoteRecordStart{
+                        orange::session::ParseRecordingStartDeclaration(command.params.at("declaration")),
+                        {{"transport", "local_control_socket"},
+                         {"peer", command.peer},
+                         {"request_id", command.request_id},
+                         {"operation_id", command.operation_id},
+                         {"command_source", command.source},
+                         {"received_at_utc", command.received_at_utc}}};
+                } catch (const std::exception& ex) {
+                    gui_note_local_control_start_event(start_request, "ignored_invalid_declaration");
+                    std::cout << "[GUI][local_control] recording start ignored"
+                              << " request_id=" << command.request_id
+                              << " reason=invalid_declaration: " << ex.what() << std::endl;
+                    gui_log_local_control_event(
+                        event_log_path,
+                        {
+                            {"event", "recording_start_ignored"},
+                            {"method", command.method},
+                            {"request_id", command.request_id},
+                            {"operation_id", command.operation_id},
+                            {"command_source", command.source},
+                            {"reason", "invalid_declaration"},
+                            {"detail", ex.what()},
+                            {"received_at_utc", command.received_at_utc},
+                        });
+                    continue;
+                }
+            }
+            start_request->remote = std::move(remote);
             start_request->pending = true;
             start_request->request_id = command.request_id;
             start_request->operation_id = command.operation_id;
@@ -1389,6 +1426,10 @@ void gui_drain_local_control_commands(
                 {
                     {"event", "recording_start_queued"},
                     {"method", "start_recording"},
+                    {"declared_by", start_request->remote
+                                        ? nlohmann::json(start_request->remote->declaration.declared_by)
+                                        : nlohmann::json(nullptr)},
+                    {"peer", command.peer},
                     {"request_id", start_request->request_id},
                     {"operation_id", start_request->operation_id},
                     {"command_source", start_request->source},
@@ -3976,7 +4017,8 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     CropAndEncodeWorker** crop_and_encode_workers,
     PoseWorker** pose_workers,
     std::vector<std::string>* recording_preflight_errors,
-    const std::string& context)
+    const std::string& context,
+    const orange::gui::RemoteRecordStart* remote_start = nullptr)
 {
     if (!recording_session || !camera_control || !recording_run || !timing) {
         if (recording_preflight_errors) {
@@ -4080,7 +4122,7 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     // listening again. Checked before the subject confirmation is consumed and
     // before any folder exists.
     try {
-        const auto contexts = orange::gui::RecordingContextsForStream();
+        const auto contexts = orange::gui::RecordingContextsForRecordStart(remote_start);
         bool stimulus = contexts.default_context &&
                         contexts.default_context->recording_intent == "stimulus_experiment";
         for (const auto& [serial, ctx] : contexts.cameras) {
@@ -4124,10 +4166,14 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     // The recording context is a per-session choice: take the panel's current
     // value at every record start (GUI button or local-control start).
     try {
-        recording_session->recording_contexts = orange::gui::RecordingContextsForStream();
+        recording_session->recording_contexts = orange::gui::RecordingContextsForRecordStart(remote_start);
         recording_session->zebrobot = orange::gui::ZebrobotLookupForStream();
-        recording_session->subject_references =
-            orange::gui::SubjectReferencesForRecordStart(&recording_session->subject_confirmation);
+        std::vector<std::string> camera_serials;
+        if (cameras_params != nullptr) {
+            for (int i = 0; i < num_cameras; ++i) camera_serials.push_back(cameras_params[i].camera_serial);
+        }
+        recording_session->subject_references = orange::gui::SubjectReferencesForRecordStart(
+            &recording_session->subject_confirmation, camera_serials, remote_start);
     } catch (const std::exception& ex) {
         const std::string error = ex.what();
         if (recording_preflight_errors) {
@@ -5083,7 +5129,9 @@ bool gui_poll_local_control_start_request(
             crop_and_encode_workers,
             pose_workers,
             recording_preflight_errors,
-            "local_control_start_recording");
+            "local_control_start_recording",
+            start_request->remote ? &*start_request->remote : nullptr);
+    start_request->remote.reset();
 
     if (dispatch == GuiRecordingStartDispatch::kPending) {
         // The start is running on the background thread. Defer the epoch

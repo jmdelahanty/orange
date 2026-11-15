@@ -2,8 +2,10 @@
 #include "timing/clock.h"
 #include "fsuid_guard.h"
 #include "projected_center_preflight.h"
+#include "session/recording_start_declaration.h"
 
 #include <fcntl.h>
+#include <pwd.h>
 #include <sys/file.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -779,6 +781,16 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
             return false;
         }
     }
+    if (parsed.method == "start_recording" && parsed.params.contains("declaration")) {
+        // A remote start's declaration is refused here, before it is queued,
+        // so the caller learns of a malformed one in the response.
+        try {
+            orange::session::ParseRecordingStartDeclaration(parsed.params.at("declaration"));
+        } catch (const std::exception& ex) {
+            set_error(error_out, std::string("start_recording params.declaration: ") + ex.what());
+            return false;
+        }
+    }
     if (parsed.method == "finalize_recording_observation_bindings") {
         const auto experiment_it = parsed.params.find("experiment_id");
         const auto recording_folder_it = parsed.params.find("recording_folder");
@@ -1139,10 +1151,24 @@ void LocalControlServer::HandleClient(const int client_fd)
         }
     }
 
+    nlohmann::json peer = nullptr;
+    {
+        ucred credentials{};
+        socklen_t length = sizeof(credentials);
+        if (getsockopt(client_fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length) == 0 &&
+            length == sizeof(credentials)) {
+            const passwd* pw = ::getpwuid(credentials.uid);
+            peer = {{"uid", credentials.uid},
+                    {"gid", credentials.gid},
+                    {"pid", credentials.pid},
+                    {"user", pw && pw->pw_name ? nlohmann::json(pw->pw_name) : nlohmann::json(nullptr)}};
+        }
+    }
+
     nlohmann::json response;
     try {
         nlohmann::json request = nlohmann::json::parse(request_text);
-        response = HandleRequest(request);
+        response = HandleRequest(request, peer);
     } catch (const std::exception& exc) {
         response = {
             {"schema_id", kLocalControlResponseSchemaId},
@@ -1174,7 +1200,8 @@ void LocalControlServer::HandleClient(const int client_fd)
     }
 }
 
-nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
+nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request,
+                                                 const nlohmann::json& peer)
 {
     ParsedLocalControlRequest parsed;
     std::string error;
@@ -1283,6 +1310,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             command.epoch = parsed.epoch;
             command.seq = parsed.seq;
             command.params = parsed.params;
+            command.peer = peer;
             deferred_queue.command = std::move(command);
             queued_for_gui_thread = true;
         }
@@ -1479,6 +1507,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
         };
         AppendEpochTelemetry(&response, parsed);
         LogEvent({{"received_at_utc", received_at_utc},
+                  {"peer", peer},
                   {"request", request},
                   {"response", response}});
         return response;

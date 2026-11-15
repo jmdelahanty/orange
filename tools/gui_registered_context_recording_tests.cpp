@@ -66,6 +66,45 @@ int main() {
         // A deliberate valid operator selection replaces the bad in-memory option.
         SelectDailyContextForGuiRecording(context);
         check(RegisteredContextRecordingConfigForArm().enabled, "operator cannot repair invalid selection");
+
+        // A remote start declares its own subjects and intent: the saved table
+        // and intent are not used, and no panel Confirm is needed.
+        {
+            std::ofstream out(path);
+            out << json{{"recording",
+                         {{"contexts", {{"schema_version", 1},
+                                        {"default", {{"behavior_mode", "free"}, {"data_origin", "acquired"},
+                                                     {"recording_intent", "stimulus_experiment"},
+                                                     {"recording_type", "behavior"}}}}},
+                          {"subject_references", {{"schema_version", 1},
+                                                  {"default", {{"dish_id", "saved-dish"}, {"subject_count", 1}}}}}}}};
+        }
+        LoadRegisteredContextRecordingSettings(path);
+        const std::vector<std::string> serials = {"2010093", "2010094"};
+        refuses([&] { SubjectReferencesForRecordStart(nullptr, serials); });  // no Confirm, no declaration
+        const RemoteRecordStart remote{
+            orange::session::ParseRecordingStartDeclaration(
+                {{"schema_id", "orange.recording_start_declaration"}, {"schema_version", 1},
+                 {"declared_by", "delahantyj"}, {"recording_intent", "recording_only"},
+                 {"subject_references", {{"schema_version", 1}}}}),
+            {{"transport", "local_control_socket"}, {"peer", {{"uid", 1000}, {"user", "jeremy"}}}}};
+        check(RecordingContextsForStream().default_context->recording_intent == "stimulus_experiment",
+              "the saved intent is unchanged");
+        check(RecordingContextsForRecordStart(&remote).default_context->recording_intent == "recording_only",
+              "a remote start uses its declared intent");
+        check(RecordingContextsForRecordStart(nullptr).default_context->recording_intent == "stimulus_experiment",
+              "a panel start keeps the saved intent");
+        json confirmation;
+        const auto declared = SubjectReferencesForRecordStart(&confirmation, serials, &remote);
+        check(!declared.configured(), "the blank declaration, not the saved dish, is used");
+        check(confirmation["schema_version"] == 2 && confirmation["confirmed_by"] == "local_control",
+              "a remote confirmation says it came over local control");
+        check(confirmation["cameras"]["2010093"]["dish_id"].is_null() &&
+                  confirmation["cameras"]["2010094"]["subject_count"].is_null(),
+              "every camera is declared blank");
+        check(confirmation["declaration"]["declared_by"] == "delahantyj" &&
+                  confirmation["requester"]["peer"]["user"] == "jeremy",
+              "the claimed declarer and the actual requester are both kept");
         std::cout << "GUI context selection, saved reload and per-arm confirmation tests passed\n";
     } catch (const std::exception& ex) { std::cerr << ex.what() << '\n'; result = 1; }
     std::error_code error; std::filesystem::remove_all(root, error);

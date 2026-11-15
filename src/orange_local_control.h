@@ -144,6 +144,9 @@ struct PendingLocalControlCommand {
     std::uint64_t epoch = 0;
     std::uint64_t seq = 0;
     nlohmann::json params = nlohmann::json::object();
+    // Who sent the request, as the kernel reports the socket peer
+    // (SO_PEERCRED): {"uid", "gid", "pid", "user"}; null when unknown.
+    nlohmann::json peer = nullptr;
 };
 
 nlohmann::json LocalControlStatusSnapshotToJson(
@@ -190,7 +193,8 @@ public:
 private:
     void ServeLoop();
     void HandleClient(int client_fd);
-    nlohmann::json HandleRequest(const nlohmann::json& request);
+    nlohmann::json HandleRequest(const nlohmann::json& request,
+                                 const nlohmann::json& peer = nullptr);
     void AppendEpochTelemetry(nlohmann::json* response,
                               const ParsedLocalControlRequest& parsed) const;
     void LogEvent(const nlohmann::json& event);

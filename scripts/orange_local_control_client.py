@@ -148,6 +148,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help_text="Operation id. Default: generated from request id.",
     )
     start.add_argument("--reason", default="orchestrator_start", help="Start reason.")
+    # The recording's declaration (src/session/recording_start_declaration.h).
+    # Without these the GUI needs the operator's Subject panel Confirm, as before.
+    start.add_argument(
+        "--declared-by",
+        help="Identity of the person declaring this recording (HHMI identity, e.g. delahantyj).",
+    )
+    start.add_argument(
+        "--intent",
+        choices=("stimulus_experiment", "recording_only"),
+        help="Recording intent for this recording (replaces the saved intent for it).",
+    )
+    subjects = start.add_mutually_exclusive_group()
+    subjects.add_argument(
+        "--blank-subjects",
+        action="store_true",
+        help="Declare every camera blank (no subject information), like the panel's Blank all.",
+    )
+    subjects.add_argument(
+        "--subjects-json",
+        type=Path,
+        help="File holding the subject_references object (app config form, schema_version 1).",
+    )
+    subjects.add_argument(
+        "--declaration-file",
+        type=Path,
+        help="File holding the whole orange.recording_start_declaration object.",
+    )
 
     stop = subparsers.add_parser(
         "stop-recording",
@@ -166,7 +193,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Requested stop grace period.",
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.command == "start-recording":
+        try:
+            args.declaration = build_declaration(args)
+        except ValueError as exc:
+            parser.error(str(exc))
+    return args
+
+
+DECLARATION_SCHEMA_ID = "orange.recording_start_declaration"
+
+
+def build_declaration(args: argparse.Namespace) -> dict[str, Any] | None:
+    """The start's declaration, or None for a start the operator confirms in the GUI."""
+    if args.declaration_file is not None:
+        if args.declared_by or args.intent:
+            raise ValueError("--declaration-file already holds declared_by and the intent")
+        return json.loads(args.declaration_file.read_text())
+    wanted = (args.declared_by, args.intent, args.blank_subjects or args.subjects_json)
+    if not any(wanted):
+        return None
+    if not all(wanted):
+        raise ValueError(
+            "a declared start needs --declared-by, --intent and one of --blank-subjects / --subjects-json"
+        )
+    references = (
+        {"schema_version": 1}
+        if args.blank_subjects
+        else json.loads(args.subjects_json.read_text())
+    )
+    return {
+        "schema_id": DECLARATION_SCHEMA_ID,
+        "schema_version": 1,
+        "declared_by": args.declared_by,
+        "recording_intent": args.intent,
+        "subject_references": references,
+    }
 
 
 def build_request(args: argparse.Namespace) -> dict[str, Any]:
@@ -214,6 +277,8 @@ def build_request(args: argparse.Namespace) -> dict[str, Any]:
         payload["params"] = {
             "reason": args.reason,
         }
+        if args.declaration is not None:
+            payload["params"]["declaration"] = args.declaration
     elif args.command == "stop-recording":
         payload["operation_id"] = args.operation_id or f"stop-recording-{request_id}"
         payload["params"] = {

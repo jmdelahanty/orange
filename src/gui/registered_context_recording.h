@@ -1,5 +1,6 @@
 #pragma once
 #include "gui_recording_evidence.h"
+#include "session/recording_start_declaration.h"
 
 #include <string>
 #include <vector>
@@ -16,14 +17,29 @@ void RenderRecordingMediaSelection(bool stream_locked);
 recording::RecordingMediaSelection RecordingMediaSelectionForStream();
 // Parent recording contexts from app config recording.contexts (throws on a parse error).
 recording::RecordingContextsConfig RecordingContextsForStream();
+// A start that carries its own declaration (local-control start_recording
+// with params.declaration) instead of the Subject panel's Confirm.
+// `requester` is who sent it as the transport saw it.
+struct RemoteRecordStart {
+    session::RecordingStartDeclaration declaration;
+    nlohmann::json requester;
+};
+// The contexts a record start uses: RecordingContextsForStream(), with every
+// entry's recording_intent replaced by a remote start's declared intent.
+// Throws when a remote start declares an intent but no context is configured.
+recording::RecordingContextsConfig RecordingContextsForRecordStart(const RemoteRecordStart* remote);
 // Subject references (MetaZebrobot dish per camera) and the lookup endpoint,
 // taken at every record start like the contexts.
 recording::SubjectReferencesConfig SubjectReferencesForStream();
-// Record start (GUI button or local-control start): the subject references the
-// operator confirmed for this recording; throws when not confirmed or edited
-// since. Fills `confirmation_out` (orange.recording_subject_confirmation v1) and
-// consumes the confirmation.
-recording::SubjectReferencesConfig SubjectReferencesForRecordStart(nlohmann::json* confirmation_out);
+// Record start: the subject references declared for this recording. Without
+// `remote`, the ones the operator confirmed in the Subject panel (throws when
+// not confirmed or edited since). With `remote`, its declaration, never the
+// panel or the saved table. Fills `confirmation_out`
+// (orange.recording_subject_confirmation v2, session::BuildSubjectConfirmation)
+// and consumes any panel confirmation either way.
+recording::SubjectReferencesConfig SubjectReferencesForRecordStart(nlohmann::json* confirmation_out,
+                                                                   const std::vector<std::string>& camera_serials,
+                                                                   const RemoteRecordStart* remote = nullptr);
 // After pre-arm: Citrus's per-camera dish declarations that differ from the
 // confirmed entries (one line each; empty = all matched or none declared).
 // Shown in the Subject panel until the next start.

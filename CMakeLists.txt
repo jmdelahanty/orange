@@ -1987,6 +1987,7 @@ if(BUILD_TESTING)
         "tools/orange_local_control_tests.cpp"
         "${SRC_DIR}/orange_local_control.cpp"
         "${SRC_DIR}/projected_center_preflight.cpp"
+        "${SRC_DIR}/recording_subject_reference.cpp"
     )
     target_include_directories(orange_local_control_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(orange_local_control_tests PRIVATE cxx_std_17)

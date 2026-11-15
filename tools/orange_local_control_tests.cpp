@@ -1347,6 +1347,63 @@ void test_start_recording_queues_when_start_mode_enabled()
             "pending start command should preserve params");
 }
 
+nlohmann::json blank_recording_only_declaration()
+{
+    return {{"schema_id", "orange.recording_start_declaration"},
+            {"schema_version", 1},
+            {"declared_by", "delahantyj"},
+            {"recording_intent", "recording_only"},
+            {"subject_references", {{"schema_version", 1}}}};
+}
+
+void test_start_recording_carries_declaration_and_peer()
+{
+    const auto socket_path = temp_path("start_declaration.sock");
+    std::filesystem::remove(socket_path);
+
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.allow_gui_start_recording_commands = true;
+    std::string error;
+    require(server.Start(options, &error), "server start should allow start_recording mode");
+    wait_until_running(&server);
+    LocalControlStatusSnapshot status = healthy_status();
+    status.recording_active = false;
+    status.active_recorders = 0;
+    status.local_control_recording_start.enabled = true;
+    server.UpdateStatus(status);
+
+    nlohmann::json bad = blank_recording_only_declaration();
+    bad["recording_intent"] = "whatever";
+    const nlohmann::json refused = send_request(
+        socket_path, request_json("start_recording", "decl-bad", "decl-op-bad", {{"declaration", bad}}));
+    nlohmann::json no_identity = blank_recording_only_declaration();
+    no_identity.erase("declared_by");
+    const nlohmann::json refused_identity = send_request(
+        socket_path,
+        request_json("start_recording", "decl-noid", "decl-op-noid", {{"declaration", no_identity}}));
+    const nlohmann::json accepted = send_request(
+        socket_path, request_json("start_recording", "decl-ok", "decl-op-ok",
+                                  {{"declaration", blank_recording_only_declaration()}}));
+    const std::vector<PendingLocalControlCommand> pending = server.DrainPendingCommands();
+    server.Stop();
+
+    require(!refused["ok"].get<bool>() && refused["error"]["code"] == "invalid_request",
+            "a declaration with an unknown intent is refused before it is queued");
+    require(refused["error"]["message"].get<std::string>().find("recording_intent") != std::string::npos,
+            "the refusal names the bad field");
+    require(!refused_identity["ok"].get<bool>(), "a declaration without declared_by is refused");
+    require(accepted["ok"].get<bool>() && accepted["queued_for_gui_thread"].get<bool>(),
+            "a well-formed declaration is queued");
+    require(pending.size() == 1, "only the well-formed start is queued");
+    require(pending[0].params["declaration"] == blank_recording_only_declaration(),
+            "the declaration reaches the GUI thread unchanged");
+    require(pending[0].peer.is_object() && pending[0].peer["uid"] == ::getuid() &&
+                pending[0].peer["pid"] == ::getpid(),
+            "the queued command names the socket peer from SO_PEERCRED: " + pending[0].peer.dump());
+}
+
 nlohmann::json fenced_request_json(const std::string& method,
                                    const std::string& request_id,
                                    const std::string& operation_id,
@@ -1909,6 +1966,8 @@ int main()
          test_stop_recording_queues_when_lifecycle_mode_enabled},
         {"start_recording_queues_when_start_mode_enabled",
          test_start_recording_queues_when_start_mode_enabled},
+        {"start_recording_carries_declaration_and_peer",
+         test_start_recording_carries_declaration_and_peer},
         {"start_stop_are_rejected_in_diagnostic_mode",
          test_start_stop_are_rejected_in_diagnostic_mode},
         {"parse_rejects_invalid_epoch_and_seq",
