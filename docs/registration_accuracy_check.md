@@ -75,33 +75,29 @@ outline circle is an algebraic fit. Reported:
 - `outline_vs_rim`: the projected outline against the rim, each in its own plane's mm (the
   outline is on the film, the rim about 9-11 mm higher).
 
-**Today's dish** (`dish.today`): on the `uniform_gray` frame the rim shows two edges, fitted
-separately. On 720 rays from a first-pass circle, each radial profile (stopping 8 px inside the
-frame, so the frame edge is never taken for a rim) is smoothed over 5 px and its bright-to-dark
-steps (>= max(1.5 DN/px, 30 % of the ray's strongest)) are found. The innermost is the floor-edge
-candidate, the outermost the wall-top (inner rim at the top) candidate; each set gets its own
-RANSAC circle (3 px tolerance, iterative refits). Per fit: inliers, median/max residual (px and
-mm), centre, radius, edge support (gate rule) and per-side inliers and median residual (right,
-bottom, left, top; a side with none says "NO EDGE POINTS"). `dish.today.parallax` compares the
-two centres and radii with the fish-plane model (both circles share one physical centre at
-different heights; principal point assumed at the image centre, not measured);
-`frame_border_clearance_px/mm` says how close the rim is to each frame edge.
-`crosshair.dish_placement` is the floor-edge centre against the observed cross (near the film,
-no homography), plus both centres corrected to the film plane with the model as a cross-check.
-`dish.registration_vs_today` compares the active registration with the wall-top fit.
+**Today's dish: the wall top is the reference** (Jeremy 2026-11-15: "the floor is harder to
+capture accurately, and in each of the fits so far the top is the only reliable one"). On the
+`uniform_gray` frame, 720 rays from a first-pass circle are sampled right up to the frame. Edges
+come from a derivative-of-Gaussian operator (sigma 2 px, half-width 6 px, sub-pixel parabola);
+a step must have 6 real samples on both sides, so an edge is measurable down to 6 px from the
+frame (the only border exclusion). The step threshold is relative to each ray's own floor-to-dark
+contrast (max(0.4 DN/px, 1.2 % of the contrast per px)), so a dim, vignetted side still counts.
 
-**Fixed-radius fits and uncertainty.** The dish is known: inner diameter 80.15 +/- 0.3 mm
-(calipered 2026-11-15). Per edge, a centre-only fit with the radius fixed at 40.075 mm x the
-fish-plane scale at that edge's plane (floor corner through water, or wall top): each ray
-contributes its edge step nearest the expected radius from the current centre (within 15 px),
-Gauss-Newton with 3 x MAD trimming. Every fit (free and fixed) reports arc coverage (degrees with
-points, counting gaps over 5 deg as uncovered, and the largest gap with its side) and a bootstrap
-1-sigma for the centre (and radius), in px and mm, so a partial-arc fit (a rim at the frame edge)
-shows how far to trust it. The fixed-vs-free centre disagreement is reported per edge.
+- THE measurement: a centre-only fit of the wall top with the radius fixed at the calipered
+  inner diameter (80.15 +/- 0.3 mm) x the fish-plane scale at the wall top; each ray contributes
+  its step nearest that radius (within 15 px); Gauss-Newton with 3 x MAD trimming; bootstrap
+  1-sigma centre. It reports arc coverage and, for every ray without a point, why: the rim is
+  outside the frame, within the 6 px operator half-width of the frame, no edge was found, or an
+  edge was found but not near the fit; and the median step strength and floor-to-dark contrast
+  per side (vignetting shows there).
+- Cross-check: the free wall-top circle (outermost step per ray, RANSAC), with its own arc
+  coverage and per-side inliers; the fixed-vs-free centre difference is reported.
+- `--floor-diagnostic` adds the lit floor's edge (free and fixed radius) and the floor/top
+  parallax check. Off by default; never in the placement, the tables or the pass/fail.
 
-**Dish placement** (`crosshair.dish_placement`): PRIMARY is the fixed-radius wall-top centre
-against the observed cross (mm at the wall-top scale, with a film-corrected value), with
-`cross_checks` from the free wall top, the free floor edge and the fixed-radius floor edge.
+**Dish placement** (`crosshair.dish_placement`): the fixed-radius wall-top centre against the
+observed cross, in mm at the wall-top scale with a film-corrected value and its 1-sigma; the free
+wall top is the cross-check. Both measured in the same camera image; no homography involved.
 
 **Compare mode** (staged results, before and after a daily registration):
 
@@ -159,41 +155,22 @@ lights on, 10 ms; black, uniform gray 64, centre and outline, static_dots
 | 2010095 | 9/9 | 0.17 / 0.25 | (0.07, 0.14), 0.045, 1.0031 | 0.18 | 1.51 | 40.11 mm |
 | 2010096 | 9/9 | 0.29 / 0.35 | (0.05, 0.27), -0.048, 1.0033 | 0.23 | 1.36 | 40.21 mm |
 
-Today's dish, two edges (output `20261115T1947Z_grid9_crosshair_v3`):
+Dish, wall top (output `20261115T1947Z_grid9_crosshair_v4`):
 
-| Camera | floor edge r (inliers, sides without points) | wall top r (inliers, sides without points) | centre diff top - floor, measured / predicted (px) | radius diff, measured / predicted (px) | floor centre vs cross | film-corrected: floor / top vs cross | frame clearance |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 2010093 | 2124.1 px, 39.81 mm (277/717) | 2144.7 px, 40.09 mm (396/717) | (6.8, -21.6) / (-0.2, 0.1) | 20.6 / 5.9 | 0.90 mm | 0.89 / 0.67 mm | left 55 px |
-| 2010094 | 2118.0 px, 39.69 mm (177/703; top 6) | 2144.4 px, 40.07 mm (408/703) | (2.0, -31.7) / (0.1, 0.4) | 26.3 / 5.8 | 2.87 mm | 2.88 / 2.31 mm | bottom 1 px |
-| 2010095 | 2102.7 px, 39.44 mm (181/720; top 4) | 2132.7 px, 39.89 mm (285/720; left 10, top 5) | (-9.6, -26.1) / (0.1, 0.4) | 30.0 / 5.7 | 2.44 mm | 2.44 / 1.92 mm | bottom 20 px |
-| 2010096 | 2131.3 px, 39.98 mm (184/557) | 2154.8 px, 40.31 mm (273/557; right none) | (-0.1, -16.5) / (0.1, 0.0) | 23.4 / 5.8 | 1.52 mm | 1.53 / 1.55 mm | right 47 px |
+| Camera | fixed-radius wall top: points, arc, resid median, centre 1-sigma | coverage lost (why) | weakest side (step, x median, contrast) | DISH vs cross | free wall top (cross-check), its arc |
+| --- | --- | --- | --- | --- | --- |
+| 2010093 | 718, 360 deg, 2.7 px, 0.30 px | 1 deg: 2 single rays not near the fit | left 2.3 DN/px (x0.65, 42 DN) | 0.73 +/- 0.01 mm | 0.74 mm, 251 deg |
+| 2010094 | 691, 346.5 deg, 3.1 px, 0.31 px | bottom 83.8-96.2 deg: 5 deg outside the frame, 5 deg within 6 px of it, 3 deg no edge; 1.5 deg single rays | left 2.5 DN/px (x0.55, 78 DN) | 2.36 +/- 0.01 mm | 2.43 mm, 253 deg |
+| 2010095 | 695, 360 deg, 5.2 px, 0.54 px | 12.5 deg not near the fit, mostly 144-162 deg | right 2.3 DN/px (x0.50, 78 DN) | 1.59 +/- 0.01 mm | 1.07 mm, 177 deg (no bottom points) |
+| 2010096 | 690, 360 deg, 2.3 px, 0.27 px | 15 deg single rays not near the fit, 213-280 deg | right 1.1 DN/px (x0.58, 38 DN) | 1.37 +/- 0.00 mm | 1.14 mm, 239 deg (no left points) |
 
-Fixed-radius fits (calipered 80.15 mm; output `20261115T1947Z_grid9_crosshair_v3`), the primary
-placement:
-
-| Camera | fixed wall top: points, arc, resid median, centre 1-sigma | fixed vs free wall-top centre | DISH vs cross (primary) | cross-checks: free wall top / free floor / fixed floor |
-| --- | --- | --- | --- | --- |
-| 2010093 | 701, 360 deg, 2.2 px, 0.30 px | 0.04 mm | 0.70 +/- 0.01 mm | 0.68 / 0.90 / 0.75 mm |
-| 2010094 | 680, 345.5 deg, 1.7 px, 0.21 px | 0.06 mm | 2.36 +/- 0.00 mm | 2.30 / 2.87 / 2.39 mm |
-| 2010095 | 689, 346.5 deg, 3.2 px, 0.39 px | 0.32 mm | 1.60 +/- 0.01 mm | 1.92 / 2.44 / 1.63 mm |
-| 2010096 | 529, 293.5 deg, 1.1 px, 0.17 px | 0.24 mm | 1.36 +/- 0.00 mm | 1.54 / 1.52 / 1.38 mm |
-
-The fixed fit covers 293-360 deg where the free fits cover 124-290 deg (2010094's rim is 1 px from
-the bottom of the frame and still fits). The statistical centre uncertainty is a few hundredths of
-a pixel to 0.4 px; the systematic term (fixed vs free, edge choice) is 0.04-0.32 mm. The
-fixed-radius floor fit is not an independent check: its expected radius (2137-2139 px at the floor
-corner) is within 6 px of the wall top, so it lands on the same edge; the lit floor's edge itself
-is 20-35 px smaller than the model's floor corner.
-
-Inlier residuals are 1.0-1.5 px median, 3 px max, for both edges on every camera. The edges do
-not behave like the floor/wall corner and the top of a 2.8 mm wall seen with parallax: the
-radius difference is 4-5x the model's, and the floor-edge centre sits 16-32 px toward -y of the
-wall-top centre on all four cameras (the model predicts under 0.5 px). A shift in the same
-direction in every arena points at the projector's light angle: the floor's lit edge looks like
-an illumination edge, not a geometric one. Where the dish is far off-axis (2010094 bottom, near
-the frame) the wall shows as a ~90 px dark band, also far wider than a 2.8 mm wall would give.
-Neither edge alone is a settled reference yet; the two give placements within 0.6 mm of each
-other, and 2010094 and 2010095 are over 2 mm from the projected centre by either.
+2010096's right side (dim floor, 43 DN, and a 90 px gradual ramp) was missing before the
+contrast-relative threshold; it now has points. 2010094's fitted wall-top circle runs about 2 px
+below the frame at the bottom, where only a bright line beyond the wall's dark band reaches the
+frame edge: that 13.5 deg is the one remaining gap with no fit points, and the crops show the
+fit following the same outer edge on the other three sides. The free wall top misses whole
+sides on 2010095 and 2010096, so it is a cross-check only; the fixed-radius fit is the
+measurement. The placements agree with v3 within 0.03 mm.
 
 The October homographies hold to 0.6 mm everywhere; the remaining error is mostly a +0.1 to
 +0.3 % scale (the expected refraction term with dishes and water in the light path), with

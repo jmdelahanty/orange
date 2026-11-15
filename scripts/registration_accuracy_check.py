@@ -495,8 +495,35 @@ def bootstrap_circle(xs: np.ndarray, ys: np.ndarray, resamples: int = 300, seed:
             "centre_sigma_px": float(math.hypot(arr[:, 0].std(), arr[:, 1].std())), "resamples": resamples}
 
 
+EDGE_SIGMA_PX = 2.0
+EDGE_HALF_WIDTH_PX = int(3 * EDGE_SIGMA_PX)  # the derivative-of-Gaussian operator's half-width
+
+
+def edge_steps(row: np.ndarray, threshold: float) -> tuple[np.ndarray, np.ndarray]:
+    """Bright-to-dark steps along a 1 px-sampled profile: Gaussian-smoothed derivative (sigma
+    EDGE_SIGMA_PX), local minima at least `threshold` DN/px deep, refined to sub-pixel by a
+    parabola. Only positions with EDGE_HALF_WIDTH_PX real samples on BOTH sides are used, so no
+    padding enters a step. Returns (positions in samples, step strengths)."""
+    k = np.arange(-EDGE_HALF_WIDTH_PX, EDGE_HALF_WIDTH_PX + 1, dtype=np.float64)
+    dg = -k * np.exp(-0.5 * (k / EDGE_SIGMA_PX) ** 2)
+    dg /= np.abs(dg * k).sum()  # unit response to a unit ramp
+    if row.size < 2 * EDGE_HALF_WIDTH_PX + 3:
+        return np.zeros(0), np.zeros(0)
+    # valid correlation: grad[j] is centred on sample j + EDGE_HALF_WIDTH_PX
+    grad = np.correlate(row, dg[::-1], mode="valid")
+    pos, strength = [], []
+    for j in range(1, grad.size - 1):
+        if grad[j] <= grad[j - 1] and grad[j] < grad[j + 1] and -grad[j] >= threshold:
+            a, b, c = grad[j - 1], grad[j], grad[j + 1]
+            den = a - 2 * b + c
+            off = 0.5 * (a - c) / den if den != 0 else 0.0
+            pos.append(j + EDGE_HALF_WIDTH_PX + max(-0.5, min(0.5, off)))
+            strength.append(-b)
+    return np.array(pos), np.array(strength)
+
+
 def fit_two_rims(gray: np.ndarray, init: tuple[float, float, float], inward_px: float = 80.0,
-                 outward_px: float = 110.0, border_margin_px: float = 8.0, angles: int = EDGE_SAMPLES) -> dict[str, Any]:
+                 outward_px: float = 110.0, border_margin_px: float = 0.0, angles: int = EDGE_SAMPLES) -> dict[str, Any]:
     """The lit floor's edge and the wall top (inner rim at the top), fitted separately.
 
     On each of `angles` rays from the initial centre the radial profile r0 - inward_px ..
@@ -514,33 +541,46 @@ def fit_two_rims(gray: np.ndarray, init: tuple[float, float, float], inward_px: 
     inside = (xs >= border_margin_px) & (ys >= border_margin_px) & (xs <= w - 1 - border_margin_px) & \
         (ys <= h - 1 - border_margin_px)
     prof = bilinear_many(gray, np.where(inside, xs, -1.0), np.where(inside, ys, -1.0))
-    kernel = np.ones(5) / 5.0
     floor_r, top_r = np.full(angles, np.nan), np.full(angles, np.nan)
     steps: list[np.ndarray] = [np.zeros(0)] * angles
+    step_strength: list[np.ndarray] = [np.zeros(0)] * angles
     truncated = np.zeros(angles, bool)
+    contrast = np.full(angles, np.nan)
     for i in range(angles):
         valid = ~np.isnan(prof[i])
+        # the window is clipped at the border exclusion (never discarded for crossing it); samples
+        # within border_margin_px of the frame are NaN, so an edge point is always >= that inside
         n_valid = int(np.argmin(valid)) if not valid.all() else len(valid)
         truncated[i] = n_valid < len(valid)
         if n_valid < 30:
             continue
         row = prof[i][:n_valid]
-        grad = np.diff(np.convolve(row, kernel, mode="same"))[3:-3]
-        if grad.size < 3:
+        # Threshold relative to this ray's own contrast (floor level minus the dark level), so a
+        # dim side with a gradual edge (2010096 right: 43 DN floor, 90 px ramp) is not lost.
+        level_in = float(np.median(row[:20]))
+        level_out = float(np.median(row[-15:])) if n_valid >= 60 else float(row.min())
+        contrast[i] = level_in - level_out
+        if contrast[i] < 8.0:
             continue
-        strongest = -grad.min()
-        if strongest < 1.5:
+        pos, strength = edge_steps(row, max(0.4, 0.012 * contrast[i]))
+        if pos.size == 0:
             continue
-        mid = radii[3:3 + grad.size] + 0.5
-        idx = [k for k in range(1, len(grad) - 1) if grad[k] <= grad[k - 1] and grad[k] <= grad[k + 1]
-               and -grad[k] >= max(1.5, 0.3 * strongest)]
-        if not idx:
-            continue
-        floor_r[i], top_r[i] = mid[min(idx)], mid[max(idx)]
-        steps[i] = mid[idx]
+        r_steps = radii[0] + pos
+        floor_r[i], top_r[i] = r_steps.min(), r_steps.max()
+        steps[i] = r_steps
+        step_strength[i] = strength
     out: dict[str, Any] = {"initial": {"x": cx0, "y": cy0, "radius": r0}, "rays": angles,
-                           "rays_truncated_by_frame": int(truncated.sum()),
-                           "_steps": (theta, steps, cx0, cy0)}
+                           "rays_window_clipped_at_border": int(truncated.sum()),
+                           "edge_rule": {"operator": f"derivative of Gaussian, sigma {EDGE_SIGMA_PX} px, half-width "
+                                                     f"{EDGE_HALF_WIDTH_PX} px, sub-pixel parabola",
+                                         "step_threshold": "max(0.4 DN/px, 1.2 % of the ray's floor-to-dark contrast per px)",
+                                         "min_contrast_dn": 8.0,
+                                         "border_exclusion_px": EDGE_HALF_WIDTH_PX,
+                                         "border_rule": "rays are sampled up to the frame; an edge needs the operator's "
+                                                        f"{EDGE_HALF_WIDTH_PX} px of real samples on both sides, so it is "
+                                                        f"measurable down to {EDGE_HALF_WIDTH_PX} px from the frame"},
+                           "_steps": (theta, steps, cx0, cy0), "_strength": step_strength, "_contrast": contrast,
+                           "_shape": (h, w), "_margin": float(EDGE_HALF_WIDTH_PX)}
     sides = side_of(theta)
     for name, rr in (("floor_edge", floor_r), ("wall_top", top_r)):
         ok = ~np.isnan(rr)
@@ -563,20 +603,66 @@ def fit_two_rims(gray: np.ndarray, init: tuple[float, float, float], inward_px: 
     return out
 
 
+def _intervals(deg: np.ndarray, step: float) -> list[list[float]]:
+    """Merge sorted ray angles (deg) into [start, end] intervals."""
+    if deg.size == 0:
+        return []
+    deg = np.sort(deg)
+    out = [[float(deg[0]), float(deg[0])]]
+    for d in deg[1:]:
+        if d - out[-1][1] <= step * 1.5:
+            out[-1][1] = float(d)
+        else:
+            out.append([float(d), float(d)])
+    if len(out) > 1 and out[0][0] <= step and out[-1][1] >= 360 - step * 1.5:  # wrap
+        out[0][0] = out[-1][0] - 360.0
+        out.pop()
+    return [[round(a, 1), round(b, 1)] for a, b in out]
+
+
+def coverage_loss(theta: np.ndarray, used_rays: set[int], steps: list[np.ndarray], cx: float, cy: float,
+                  radius: float, shape: tuple[int, int], margin: float) -> dict[str, Any]:
+    """Why each ray has no point on the fit: (a) the rim is outside the frame there, (b) it is
+    inside the frame but within the border exclusion, (c) no edge was found (lighting, glare),
+    or (d) an edge was found but not near the fit (rejected)."""
+    h, w = shape
+    step_deg = 360.0 / len(theta)
+    classes: dict[str, list[float]] = {"outside_frame": [], "border_exclusion": [], "no_edge_found": [],
+                                       "edge_not_near_fit": []}
+    for i, t in enumerate(theta):
+        if i in used_rays:
+            continue
+        x, y = cx + radius * math.cos(t), cy + radius * math.sin(t)
+        deg = math.degrees(t) % 360.0
+        if not (0 <= x <= w - 1 and 0 <= y <= h - 1):
+            classes["outside_frame"].append(deg)
+        elif not (margin <= x <= w - 1 - margin and margin <= y <= h - 1 - margin):
+            classes["border_exclusion"].append(deg)
+        elif steps[i].size == 0:
+            classes["no_edge_found"].append(deg)
+        else:
+            classes["edge_not_near_fit"].append(deg)
+    return {k: {"degrees": round(len(v) * step_deg, 1), "angles_deg": _intervals(np.array(v), step_deg)}
+            for k, v in classes.items()} | {"angle_convention": "image axes from the fit centre: 0 deg = +x (right), "
+                                                                 "90 deg = +y (down)"}
+
+
 def fixed_radius_fit(theta: np.ndarray, steps: list[np.ndarray], cx0: float, cy0: float, radius: float,
-                     tol_px: float = 15.0, iterations: int = 6) -> dict[str, Any]:
+                     tol_px: float = 15.0, iterations: int = 6,
+                     strengths: list[np.ndarray] | None = None) -> dict[str, Any]:
     """Centre-only circle fit with a known radius. Each ray contributes the edge step nearest the
     expected radius from the current centre (within tol_px); the centre solves
     min sum (|p - c| - radius)^2 by Gauss-Newton with 3 x MAD trimming; bootstrap uncertainty."""
-    cands_x, cands_y, ray = [], [], []
+    cands_x, cands_y, ray, cand_strength = [], [], [], []
     for i, rr in enumerate(steps):
-        for r in rr:
+        for k, r in enumerate(rr):
             cands_x.append(cx0 + r * math.cos(theta[i]))
             cands_y.append(cy0 + r * math.sin(theta[i]))
             ray.append(i)
+            cand_strength.append(float(strengths[i][k]) if strengths is not None and len(strengths[i]) > k else float("nan"))
     if not cands_x:
         return {"found": False, "reason": "no_edge_steps"}
-    px, py, ray = np.array(cands_x), np.array(cands_y), np.array(ray)
+    px, py, ray, cand_strength = np.array(cands_x), np.array(cands_y), np.array(ray), np.array(cand_strength)
     c = np.array([cx0, cy0])
 
     def select(c: np.ndarray) -> np.ndarray:
@@ -615,6 +701,7 @@ def fixed_radius_fit(theta: np.ndarray, steps: list[np.ndarray], cx0: float, cy0
             break
         keep = keep_new
     x, y = px[keep], py[keep]
+    used_rays = set(int(r) for r in ray[keep])
     c = solve(x, y, c)
     res = np.hypot(x - c[0], y - c[1]) - radius
     rng = np.random.default_rng(13)
@@ -624,7 +711,8 @@ def fixed_radius_fit(theta: np.ndarray, steps: list[np.ndarray], cx0: float, cy0
             "residual_px_median_signed": float(np.median(res)),
             "uncertainty": {"x_sigma_px": float(boots[:, 0].std()), "y_sigma_px": float(boots[:, 1].std()),
                             "centre_sigma_px": float(math.hypot(boots[:, 0].std(), boots[:, 1].std())), "resamples": 200},
-            "arc_coverage": arc_coverage(x, y, float(c[0]), float(c[1])), "_points": (x, y, np.ones(len(x), bool))}
+            "arc_coverage": arc_coverage(x, y, float(c[0]), float(c[1])), "_points": (x, y, np.ones(len(x), bool)),
+            "_used_rays": used_rays, "_kept_rays": ray[keep], "_kept_strength": cand_strength[keep]}
 
 
 def parallax_check(floor: dict[str, Any], top: dict[str, Any], model: dict[str, float] | None,
@@ -688,8 +776,10 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
         d.ellipse([x - r, y - r, x + r, y + r], outline=colour, width=width)
 
     legend = []
-    for fit, colour, label in ((floor, FLOOR, "floor edge fit (lit floor -> dark)"),
-                               (top, TOP, "wall top / inner rim fit (outermost step)")):
+    for fit, colour, label in ((floor, FLOOR, "floor edge fit (diagnostic)"),
+                               (top, TOP, "free wall top fit (cross-check)")):
+        if fit.get("reason") == "floor_diagnostic_off":
+            continue
         if fit.get("found"):
             circle(draw, fit, colour, f)
             px, py, inl = fit["_points"]
@@ -708,7 +798,7 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
         draw.ellipse([(fixed_top["x"] - 40) / f, (fixed_top["y"] - 40) / f, (fixed_top["x"] + 40) / f,
                       (fixed_top["y"] + 40) / f], outline=FIXED, width=2)
         legend.append((FIXED, f"wall top, radius fixed by the calipered 80.15 mm (r {fixed_top['radius_fixed_px']:.0f} px): "
-                              f"PRIMARY dish centre, {fixed_top['points']} pts, arc {fixed_top['arc_coverage']['degrees_covered']} deg"))
+                              f"THE dish centre, {fixed_top['points']} pts, arc {fixed_top['arc_coverage']['degrees_covered']} deg"))
     if registration:
         circle(draw, registration, REG, f, width=2)
         legend.append((REG, registration["label"]))
@@ -748,7 +838,7 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
     for name, angle in (("top", -90.0), ("right", 0.0), ("bottom", 90.0), ("left", 180.0)):
         a = math.radians(angle)
         # Centre the crop between the two edges on this side.
-        rmid = ref["radius"] - (0.5 * (top["radius"] - floor["radius"]) if (top.get("found") and floor.get("found")) else 0)
+        rmid = ref["radius"] - (0.5 * (top["radius"] - floor["radius"]) if (top.get("found") and floor.get("found")) else 10)
         px0, py0 = ref["x"] + rmid * math.cos(a), ref["y"] + rmid * math.sin(a)
         x0, y0c = int(round(px0)) - half, int(round(py0)) - half
         crop = np.zeros((2 * half, 2 * half), np.uint8)
@@ -762,7 +852,7 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
         notes = []
         fixed_circle = ({"x": fixed_top["x"], "y": fixed_top["y"], "radius": fixed_top["radius_fixed_px"], "found": True,
                          "_points": fixed_top["_points"]} if fixed_top.get("found") else None)
-        for fit, colour, label in ((registration, REG, None), (floor, FLOOR, "floor"), (top, TOP, "wall top"),
+        for fit, colour, label in ((registration, REG, None), (floor, FLOOR, "floor"), (top, TOP, "free wall top"),
                                    (fixed_circle, FIXED, "fixed-radius wall top")):
             if not fit or (label and not fit.get("found")):
                 continue
@@ -790,7 +880,9 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
     for k, tile in enumerate(tiles):
         sheet.paste(tile, ((k % 2) * 4 * half, (k // 2) * 4 * half))
     sd = ImageDraw.Draw(sheet)
-    key = [(FLOOR, "free floor edge"), (TOP, "free wall top"), (FIXED, "fixed-radius wall top (primary)")]
+    key = [(FIXED, "fixed-radius wall top (THE placement)"), (TOP, "free wall top (cross-check)")]
+    if floor.get("found"):
+        key.append((FLOOR, "floor edge (diagnostic)"))
     if registration:
         key.append((REG, registration["label"]))
     yk = 8 * half + 8
@@ -959,7 +1051,7 @@ def _session_view(report: dict[str, Any], serial: str) -> dict[str, Any]:
     return {"cross": x.get("centre_camera_px") if x.get("found") else None,
             "experimental_area_centre_canvas_px": (x.get("experimental_area") or {}).get("centre_canvas_px"),
             "crosshair_path": x.get("path"), "arena_id": c.get("arena_id"),
-            "floor": t.get("floor_edge") if (t.get("floor_edge") or {}).get("found") else None,
+            "floor": None,  # the floor edge is a diagnostic only (Jeremy 2026-11-15)
             "top": t.get("wall_top") if (t.get("wall_top") or {}).get("found") else None,
             "placement": x.get("dish_placement") or {}, "homography_at_centre": x.get("homography_at_centre") or {},
             "top_fixed": t.get("wall_top_fixed_radius") if (t.get("wall_top_fixed_radius") or {}).get("found") else None,
@@ -1168,8 +1260,8 @@ def draw_compare_figure(out: Path, serial: str, reports: dict[str, Any], before:
                  else "dish centre: not measured",
                  "inset below: 480 x 480 camera px around the cross, shown at 0.75x;",
                  "arrows and the 1 mm bar are to that same scale (no exaggeration)",
-                 "cyan: cross; white: fixed-radius wall top (primary);",
-                 "magenta: free wall top; green: free floor edge"]
+                 "cyan: cross; white: fixed-radius wall top (the measurement);",
+                 "magenta: free wall top (cross-check)"]
         inset_h = inset.height + 10 if inset is not None else 0
         figure = Image.new("RGB", (img.width, img.height + inset_h + 24 * len(lines) + 10), (0, 0, 0))
         figure.paste(img, (0, 0))
@@ -1214,6 +1306,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--emit-grid-scenes", type=Path, help="write the rig capture's dot-grid scenes and exit")
     parser.add_argument("--arenas", default="arena_1,arena_2,arena_3,arena_4")
+    parser.add_argument("--floor-diagnostic", action="store_true",
+                        help="also fit the lit floor's edge (free and fixed radius) and the floor/top parallax check; "
+                             "a diagnostic only, never in the placement or pass/fail (Jeremy 2026-11-15: the wall top is "
+                             "the reference)")
     parser.add_argument("--before", help="compare mode: the session with base geometry")
     parser.add_argument("--after", help="compare mode: the session after the daily registration was applied")
     parser.add_argument("--daily-registration", type=Path,
@@ -1580,8 +1676,12 @@ def main(argv: list[str] | None = None) -> int:
                     s0 = scale_at(model, 0.0)
                 report_rims: dict[str, Any] = {k: v for k, v in rims.items()
                                                if k not in ("floor_edge", "wall_top", "fixed") and not k.startswith("_")}
+                if not args.floor_diagnostic:
+                    rims["floor_edge"] = {"found": False, "reason": "floor_diagnostic_off"}
                 for name, scale in (("floor_edge", s_low), ("wall_top", s_high)):
                     fit = rims[name]
+                    if fit.get("reason") == "floor_diagnostic_off":
+                        continue
                     shown = {k: v for k, v in fit.items() if not k.startswith("_")}
                     if fit.get("found") and scale:
                         shown["radius_mm"] = fit["radius"] / scale
@@ -1600,9 +1700,28 @@ def main(argv: list[str] | None = None) -> int:
                 if model:
                     theta_r, steps_r, ix, iy = rims["_steps"]
                     r_mm = DISH_CALIPERED_DIAMETER_MM / 2.0
-                    for name, scale in (("floor_edge", s_low), ("wall_top", s_high)):
+                    edges = (("floor_edge", s_low), ("wall_top", s_high)) if args.floor_diagnostic else (("wall_top", s_high),)
+                    for name, scale in edges:
                         free = rims[name]
-                        fit = fixed_radius_fit(theta_r, steps_r, ix, iy, r_mm * scale)
+                        fit = fixed_radius_fit(theta_r, steps_r, ix, iy, r_mm * scale, strengths=rims["_strength"])
+                        if fit.get("found"):
+                            fit["coverage_loss"] = coverage_loss(theta_r, fit["_used_rays"], steps_r, ix, iy,
+                                                                 r_mm * scale, rims["_shape"], rims["_margin"])
+                            # Step strength and floor-to-dark contrast per side (vignetting near the frame)
+                            kept_sides = side_of(theta_r[fit["_kept_rays"]])
+                            all_sides = side_of(theta_r)
+                            overall = float(np.nanmedian(fit["_kept_strength"])) if fit["_kept_strength"].size else float("nan")
+                            per_side = {}
+                            for side, _, _ in SIDES:
+                                st = fit["_kept_strength"][kept_sides == side]
+                                ct = rims["_contrast"][all_sides == side]
+                                med = float(np.nanmedian(st)) if st.size else None
+                                per_side[side] = {"rays_with_point": int(st.size),
+                                                  "median_step_dn_per_px": round(med, 2) if med is not None else None,
+                                                  "relative_to_all_sides": round(med / overall, 2) if med and overall else None,
+                                                  "median_floor_to_dark_contrast_dn": round(float(np.nanmedian(ct)), 1)
+                                                  if np.isfinite(ct).any() else None}
+                            fit["step_strength_by_side"] = {"all_sides_median_dn_per_px": round(overall, 2), **per_side}
                         fixed[name] = fit
                         shown = {k: v for k, v in fit.items() if not k.startswith("_")}
                         if fit.get("found"):
@@ -1621,7 +1740,8 @@ def main(argv: list[str] | None = None) -> int:
                 rims["fixed"] = fixed
                 h_img, w_img = uniform_gray.shape
                 principal = ((w_img - 1) / 2.0, (h_img - 1) / 2.0)
-                report_rims["parallax"] = parallax_check(rims["floor_edge"], rims["wall_top"], model, principal)
+                if args.floor_diagnostic:
+                    report_rims["parallax"] = parallax_check(rims["floor_edge"], rims["wall_top"], model, principal)
                 outer = rims["wall_top"] if rims["wall_top"].get("found") else rims["floor_edge"]
                 if outer.get("found"):
                     gaps = {"left": outer["x"] - outer["radius"], "top": outer["y"] - outer["radius"],
@@ -1663,16 +1783,18 @@ def main(argv: list[str] | None = None) -> int:
                         placement.update({"basis": "fixed_radius_wall_top_centre_vs_observed_crosshair", **primary,
                                           "pass": bool(primary.get("distance_mm") is not None and
                                                        primary["distance_mm"] <= args.max_dish_offset_mm),
-                                          "note": "PRIMARY (Jeremy 2026-11-15): wall top / inner rim centre from a fit "
+                                          "note": "THE placement measurement (Jeremy 2026-11-15): wall top / inner rim centre from a fit "
                                                   "with the radius fixed by the calipered diameter, against the cross "
                                                   "Citrus drew; same camera image, no homography. mm at the wall-top "
                                                   "scale; film_corrected_distance_mm moves it to the film with the model"})
                     else:
                         placement["basis"] = "fixed_radius_wall_top_unavailable"
-                    placement["cross_checks"] = {
-                        "free_wall_top": offset(rims["wall_top"], s_high, s_high),
-                        "free_floor_edge": offset(floor, s_low, s_low),
-                        "fixed_radius_floor_edge": offset((rims.get("fixed") or {}).get("floor_edge"), s_low, s_low)}
+                    placement["cross_checks"] = {"free_wall_top": offset(rims["wall_top"], s_high, s_high)}
+                    if args.floor_diagnostic:
+                        placement["floor_diagnostic"] = {
+                            "free_floor_edge": offset(floor, s_low, s_low),
+                            "fixed_radius_floor_edge": offset((rims.get("fixed") or {}).get("floor_edge"), s_low, s_low),
+                            "note": "diagnostic only; not in the placement or pass/fail"}
                     crosshair["dish_placement"] = placement
                     crosshair.pop("outline_vs_rim", None)
                     entry["crosshair"] = crosshair
@@ -1789,7 +1911,14 @@ def main(argv: list[str] | None = None) -> int:
                          f"{fx['residual_px_median_abs']:.1f} px, arc {fx['arc_coverage']['degrees_covered']} deg, sigma centre "
                          f"{fx['uncertainty']['centre_sigma_px']:.2f} px; fixed vs free centre "
                          f"{fx.get('fixed_vs_free_disagreement_mm', float('nan')):.2f} mm, free r - fixed r "
-                         f"{fx.get('free_radius_minus_fixed_px', float('nan')):.1f} px")
+                         f"{fx.get('free_radius_minus_fixed_px', float('nan')):.1f} px"
+                         + "".join(f"\n      lost {k}: {v['degrees']} deg {v['angles_deg']}"
+                                   for k, v in (fx.get("coverage_loss") or {}).items()
+                                   if isinstance(v, dict) and v.get("degrees"))
+                         + ("\n      step by side: " + ", ".join(
+                             f"{k} {v['median_step_dn_per_px']} DN/px (x{v['relative_to_all_sides']}, contrast "
+                             f"{v['median_floor_to_dark_contrast_dn']})"
+                             for k, v in (fx.get("step_strength_by_side") or {}).items() if isinstance(v, dict))))
         par = t.get("parallax")
         if par:
             line += (f"\n    parallax: centre diff measured {np.round(par['centre_difference_measured_px'], 1).tolist()} px vs "
