@@ -243,6 +243,16 @@ def test_clean_orange_exit_during_receipt_wait_is_expected() -> None:
     require(raised, "a non-zero Orange exit still fails")
 
 
+def test_long_waits_poll_slowly() -> None:
+    module = load_module()
+    args = module.parse_args([])
+    require(module.poll_interval_for(args, "ready_to_start") == 0.25, "readiness keeps the short interval")
+    require(module.poll_interval_for(args, "terminal_state") == 1.5, "a protocol-long wait polls every 1.5 s")
+    require(module.poll_interval_for(args, "receipts_delivered") == 1.5, "the receipt wait polls slowly too")
+    fast = module.parse_args(["--long-wait-poll-interval-seconds", "0.5"])
+    require(module.poll_interval_for(fast, "terminal_state") == 0.5, "the long interval is configurable")
+
+
 def test_orange_start_carries_declaration() -> None:
     module = load_module()
     plain = module.build_orange_start_request("op-1", "req", "test")
@@ -4054,6 +4064,7 @@ def main() -> int:
     tests = [
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
+        test_long_waits_poll_slowly,
         test_clean_orange_exit_during_receipt_wait_is_expected,
         test_citrus_completion_under_its_own_experiment_id,
         test_citrus_bound_start_checks_and_delivery,

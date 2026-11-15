@@ -2030,6 +2030,26 @@ def citrus_start_blockers(status: dict[str, Any], expected_arena_count: int | No
 
 CITRUS_FINALIZATION_DELIVERED = "delivered"
 
+# Waits that span a protocol or a finalization (minutes): polled at
+# --long-wait-poll-interval-seconds. Every status reply is logged in full by
+# Citrus (~63 KB), so 4 polls/s added ~90 MB to its log in one evening
+# (mhs-helper, 2026-11-15). Readiness waits (about a second) keep the short
+# interval.
+LONG_WAIT_DESCRIPTIONS = {
+    "terminal_state",
+    "receipts_delivered",
+    "recording_finalized",
+    "recording_finalized_after_citrus_completion_notify",
+    "headless_recording_bound",
+    "perf_jsonl_path_known",
+}
+
+
+def poll_interval_for(args: argparse.Namespace, description: str) -> float:
+    if description in LONG_WAIT_DESCRIPTIONS:
+        return args.long_wait_poll_interval_seconds
+    return args.poll_interval_seconds
+
 
 def citrus_finalization_state(status: dict[str, Any]) -> str:
     value = json_path(status, ["recording_observation_finalization", "state"], "")
@@ -2360,7 +2380,8 @@ class Orchestrator:
         deadline = time.monotonic() + timeout_seconds
         last_error = ""
         last_status: dict[str, Any] = {}
-        while time.monotonic() <= deadline:
+        final_check = False
+        while True:
             if label == "orange":
                 inferred_status = self.infer_orange_finalized_after_clean_exit(
                     description=description,
@@ -2424,7 +2445,17 @@ class Orchestrator:
                         last_status=last_status,
                     )
                     raise OrchestratorError(failure)
-            time.sleep(self.args.poll_interval_seconds)
+            if final_check:
+                break
+            # Never sleep past the deadline, and check once more at it.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            interval = poll_interval_for(self.args, description)
+            if interval >= remaining:
+                interval = remaining
+                final_check = True
+            time.sleep(interval)
         step.finish(ok=False, last_error=last_error, last_status=last_status)
         raise OrchestratorError(f"timed out waiting for {label} {description}: {last_error}")
 
@@ -2499,7 +2530,7 @@ class Orchestrator:
                             status=last_status,
                         )
                         return last_status
-            time.sleep(self.args.poll_interval_seconds)
+            time.sleep(self.args.long_wait_poll_interval_seconds)
         step.finish(ok=False, last_error=last_error, last_status=last_status)
         raise OrchestratorError(
             "timed out waiting for Citrus terminal state or "
@@ -3706,7 +3737,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Do not copy orchestrator process logs and summary into the Orange recording folder.",
     )
     parser.set_defaults(copy_artifacts_to_recording=True)
-    parser.add_argument("--poll-interval-seconds", type=positive_float, default=0.25)
+    parser.add_argument("--poll-interval-seconds", type=positive_float, default=0.25,
+                        help="Status polling for the readiness waits (about a second).")
+    parser.add_argument("--long-wait-poll-interval-seconds", type=positive_float, default=1.5,
+                        help="Status polling for the waits that span a protocol or a finalization.")
     parser.add_argument("--socket-timeout-seconds", type=positive_float, default=2.0)
     parser.add_argument("--launch-socket-preflight-timeout-seconds", type=positive_float, default=0.2)
     parser.add_argument("--timeout-seconds", type=positive_float, default=120.0)
