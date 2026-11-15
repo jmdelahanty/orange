@@ -219,6 +219,116 @@ def build_citrus_start_request(operation_id: str, request_id: str, source: str) 
     )
 
 
+CITRUS_SUBJECT_DECLARATION_REQUEST_SCHEMA_ID = "citrus.subject_declaration_request"
+
+
+def build_citrus_declare_subjects_request(
+    operation_id: str, request_id: str, source: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    return build_request(
+        CITRUS_REQUEST_SCHEMA_ID,
+        "declare_subjects",
+        request_id,
+        operation_id=operation_id,
+        source=source,
+        params=params,
+    )
+
+
+def load_citrus_subject_declaration_request(path: Path) -> dict[str, Any]:
+    """A citrus.subject_declaration_request v1 (Citrus PR #120,
+    docs/subject_declaration_v2_implementation.md), sent to Citrus unchanged.
+    Citrus checks the whole of it; this only refuses what cannot be sent."""
+    try:
+        request = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"--citrus-subject-declaration-request {path}: {exc}") from exc
+    if not isinstance(request, dict) or request.get("schema_id") != CITRUS_SUBJECT_DECLARATION_REQUEST_SCHEMA_ID \
+            or request.get("schema_version") != 1:
+        raise ValueError(f"{path} is not a citrus.subject_declaration_request v1")
+    arenas = request.get("arenas")
+    if not isinstance(arenas, list) or not arenas:
+        raise ValueError(f"{path}: arenas must be a non-empty list")
+    ids = [a.get("arena_id") if isinstance(a, dict) else None for a in arenas]
+    if any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
+        raise ValueError(f"{path}: every arena needs a distinct arena_id")
+    for arena in arenas:
+        if not isinstance(arena.get("declaration"), dict) or not isinstance(arena.get("camera_serial"), str):
+            raise ValueError(f"{path}: {arena['arena_id']} needs camera_serial and a declaration object")
+    return request
+
+
+def canonical_json(value: Any) -> str:
+    """The bytes Orange's cross-check compares (nlohmann dump: sorted keys,
+    no spaces, UTF-8)."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def citrus_declaration_plan_mismatches(request: dict[str, Any], orange_declaration: dict[str, Any] | None) -> list[str]:
+    """What Orange's pre-arm cross-check v2 would refuse, found before anything
+    is sent: each arena's camera must be one Orange declares, and a plan-sourced
+    arena's run_plan must equal Orange's declaration v2 source. None (headless:
+    the spec declares) checks nothing here; pre-arm still does."""
+    if orange_declaration is None:
+        return []
+    problems: list[str] = []
+    source = orange_declaration.get("source") if orange_declaration.get("schema_version") == 2 else None
+    orange_plan = source if isinstance(source, dict) and source.get("kind") == "orchard_run_plan" else None
+    cameras = json_path(orange_declaration, ["subject_references", "cameras"], {})
+    cameras = cameras if isinstance(cameras, dict) else {}
+    for arena in request["arenas"]:
+        arena_id = arena["arena_id"]
+        if arena["camera_serial"] not in cameras:
+            problems.append(f"{arena_id}: camera {arena['camera_serial']} is not in Orange's declaration")
+        declaration = arena["declaration"]
+        if declaration.get("source") != "orchard_run_plan":
+            continue
+        if orange_plan is None:
+            problems.append(f"{arena_id}: plan-sourced, but Orange's declaration is not a v2 orchard_run_plan")
+        elif canonical_json(declaration.get("run_plan")) != canonical_json(orange_plan):
+            problems.append(f"{arena_id}: run_plan differs from Orange's declaration source")
+    return problems
+
+
+def accepted_citrus_subject_declarations(response: dict[str, Any]) -> dict[str, str]:
+    """{arena_id: declaration_sha256} from an accepted declare_subjects reply."""
+    result = json_path(response, ["effect", "subject_declarations"], {})
+    if not isinstance(result, dict) or result.get("status") != "accepted":
+        return {}
+    accepted: dict[str, str] = {}
+    for arena in result.get("arenas") or []:
+        if isinstance(arena, dict) and isinstance(arena.get("arena_id"), str) \
+                and isinstance(arena.get("declaration_sha256"), str):
+            accepted[arena["arena_id"]] = arena["declaration_sha256"]
+    return accepted
+
+
+def citrus_subject_declaration_problems(status: dict[str, Any], expected: dict[str, str]) -> list[str]:
+    """The executor rule (Citrus docs/subject_declaration_v2_implementation.md):
+    every plan arena shows plan_subject_declaration.state "declared" with the
+    sha the accepted reply gave. Citrus applies an accepted declaration on the
+    GUI thread and skips it silently if an experiment armed in between;
+    "overridden" means an operator changed the arena in the panel. Empty = go."""
+    arenas = {a.get("arena_id"): a for a in (status.get("arenas") or []) if isinstance(a, dict)}
+    problems: list[str] = []
+    for arena_id, sha in sorted(expected.items()):
+        arena = arenas.get(arena_id)
+        if arena is None:
+            problems.append(f"{arena_id}: not in Citrus status")
+            continue
+        plan = arena.get("plan_subject_declaration")
+        if not isinstance(plan, dict):
+            problems.append(f"{arena_id}: plan_subject_declaration is null (not applied, or cleared)")
+            continue
+        state = plan.get("state")
+        if state != "declared":
+            problems.append(f"{arena_id}: plan_subject_declaration.state={state!r} (need 'declared')")
+        elif plan.get("declaration_sha256") != sha:
+            problems.append(f"{arena_id}: declaration_sha256 {plan.get('declaration_sha256')!r} "
+                            f"is not the accepted {sha!r}")
+    return problems
+
+
 def build_citrus_daily_registration_mode_request(
     operation_id: str,
     request_id: str,
@@ -3032,6 +3142,71 @@ class Orchestrator:
         declaration = getattr(self.args, "declaration", None)
         return bool(declaration) and declaration.get("recording_intent") == "stimulus_experiment"
 
+    def declare_citrus_subjects(self) -> None:
+        """Bound runs with --citrus-subject-declaration-request: send Citrus's
+        declare_subjects before Orange binds (the acceptance carries the
+        subject), then wait until Citrus shows every arena declared."""
+        request = getattr(self.args, "citrus_subject_declaration_request", None)
+        if request is None:
+            return
+        step = self.step("citrus_declare_subjects")
+        mismatches = citrus_declaration_plan_mismatches(request, getattr(self.args, "declaration", None))
+        if mismatches:
+            step.finish(ok=False, problems=mismatches)
+            raise OrchestratorError("the Citrus subject declaration does not match Orange's: " + "; ".join(mismatches))
+        response = self.send(
+            self.args.citrus_socket,
+            build_citrus_declare_subjects_request(
+                self.args.operation_id,
+                f"{self.args.operation_id}:citrus:declare_subjects",
+                self.args.source,
+                request,
+            ),
+        )
+        result = json_path(response, ["effect", "subject_declarations"], None)
+        self.bound_record["citrus_subject_declarations"] = {"reply": result, "error": response.get("error")}
+        accepted = accepted_citrus_subject_declarations(response)
+        requested = {arena["arena_id"] for arena in request["arenas"]}
+        if not response_accepted(response) or set(accepted) != requested:
+            step.finish(ok=False, response=response)
+            detail = result.get("detail") if isinstance(result, dict) else None
+            raise OrchestratorError(
+                f"Citrus refused declare_subjects: {response.get('error')!r}"
+                + (f" ({detail})" if detail else "")
+                + ("" if set(accepted) == requested or not accepted
+                   else f"; accepted arenas {sorted(accepted)} are not the requested {sorted(requested)}")
+            )
+        self.citrus_declared_subjects = accepted
+        step.finish(ok=True, response=response)
+        self.check_citrus_subject_declarations("applied", wait=True)
+
+    def check_citrus_subject_declarations(self, when: str, *, wait: bool = False) -> dict[str, Any]:
+        """Refuses unless Citrus shows the accepted declarations (executor
+        rule). wait=True gives Citrus's GUI thread time to apply them."""
+        expected = getattr(self, "citrus_declared_subjects", None)
+        if not expected:
+            return {}
+        if wait:
+            try:
+                status = self.wait_for_status(
+                    "citrus",
+                    CITRUS_REQUEST_SCHEMA_ID,
+                    self.args.citrus_socket,
+                    lambda s: not citrus_subject_declaration_problems(s, expected),
+                    self.args.citrus_subject_declaration_apply_timeout_seconds,
+                    f"subjects_declared_{when}",
+                )
+            except OrchestratorError:
+                status, _ = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
+        else:
+            status, _ = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
+        problems = citrus_subject_declaration_problems(status, expected)
+        self.bound_record.setdefault("citrus_subject_declaration_checks", []).append(
+            {"when": when, "problems": problems})
+        if problems:
+            raise OrchestratorError(f"Citrus subject declarations not in force ({when}): " + "; ".join(problems))
+        return status
+
     def run(self) -> dict[str, Any]:
         if self.args.orange_mode == "headless":
             return self.run_headless()
@@ -3134,6 +3309,7 @@ class Orchestrator:
             step.finish(ok=not blockers, blockers=blockers)
             if blockers:
                 raise OrchestratorError("Citrus is not ready for a bound start: " + "; ".join(blockers))
+            self.declare_citrus_subjects()
 
         step = self.step("orange_start_recording")
         orange_start_response = self.send(
@@ -3160,6 +3336,7 @@ class Orchestrator:
             "ready_for_citrus_experiment",
         )
 
+        self.check_citrus_subject_declarations("before_start")
         step = self.step("citrus_start_experiment")
         citrus_start_response = self.send(
             self.args.citrus_socket,
@@ -3287,6 +3464,8 @@ class Orchestrator:
         )
         if self.args.require_citrus_perf_jsonl and not citrus_perf_jsonl_enabled(final_citrus_status):
             raise OrchestratorError("Citrus status does not report output.perf_jsonl_enabled=true")
+        # Before orange_client binds: Citrus's acceptance carries the subject.
+        self.declare_citrus_subjects()
 
         self.start_process(
             "orange",
@@ -3342,6 +3521,7 @@ class Orchestrator:
             self.args.socket_timeout_seconds,
             f"still_{self.args.citrus_start_gate}",
         )
+        self.check_citrus_subject_declarations("before_start")
         step = self.step("citrus_start_experiment")
         self.citrus_start_sent = True
         citrus_start_response = self.send(
@@ -4065,6 +4245,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                       help="File holding the whole orange.recording_start_declaration.")
     declaration_subjects.add_argument("--declaration-from-spec", type=Path,
                                       help="Experiment spec whose fixed.declaration declares the recording.")
+    parser.add_argument("--citrus-subject-declaration-request", type=Path, default=None,
+                        help="Bound runs: a citrus.subject_declaration_request v1 (an orchard plan's subjects) "
+                             "sent as Citrus declare_subjects before Orange binds; START is refused unless "
+                             "Citrus then shows every arena declared with the accepted sha. Needs Citrus "
+                             "acceptance v4.")
+    parser.add_argument("--citrus-subject-declaration-apply-timeout-seconds", type=positive_float, default=10.0,
+                        help="How long Citrus's GUI thread gets to apply an accepted declaration.")
     parser.add_argument("--expected-citrus-arenas", type=int, default=None,
                         help="Selected arenas Citrus must report before a bound start (e.g. 4).")
     parser.add_argument("--citrus-receipt-timeout-seconds", type=positive_float, default=None,
@@ -4125,6 +4312,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error(str(exc))
     if args.declaration is not None and args.orange_mode == "headless":
         parser.error("headless runs declare in the experiment spec (fixed.declaration), not on this command line")
+    path = args.citrus_subject_declaration_request
+    if path is not None:
+        try:
+            args.citrus_subject_declaration_request = load_citrus_subject_declaration_request(path)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.orange_mode == "gui" and (args.declaration or {}).get("recording_intent") != "stimulus_experiment":
+            parser.error("--citrus-subject-declaration-request needs a declared stimulus_experiment (a bound run)")
     return args
 
 
@@ -4179,6 +4374,15 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 if args.daily_registration_mode != "preserve"
                 else None
             ),
+            "declare_subjects_request": build_citrus_declare_subjects_request(
+                args.operation_id,
+                f"{args.operation_id}:citrus:declare_subjects",
+                args.source,
+                args.citrus_subject_declaration_request,
+            ) if args.citrus_subject_declaration_request is not None else None,
+            "declare_subjects_mismatches": citrus_declaration_plan_mismatches(
+                args.citrus_subject_declaration_request, args.declaration,
+            ) if args.citrus_subject_declaration_request is not None else [],
             "start_request": build_citrus_start_request(
                 args.operation_id,
                 f"{args.operation_id}:citrus:start_experiment",

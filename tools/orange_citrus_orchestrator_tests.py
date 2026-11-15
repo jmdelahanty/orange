@@ -4164,6 +4164,182 @@ def test_receipt_build_error_settles_and_is_reported() -> None:
             f"the summary records both fields: {receipts}")
 
 
+def test_citrus_declare_subjects_and_executor_rule() -> None:
+    module = load_module()
+    fixture = next((REPO_ROOT / "tools" / "fixtures" / "declaration_v2" / "orchard_v2").glob("*.orange_declaration.json"))
+    orange_declaration = json.loads(fixture.read_text())
+    plan = orange_declaration["source"]
+
+    def arena(arena_id: str, serial: str, **changes: Any) -> dict[str, Any]:
+        declaration = {"schema_id": "citrus.subject_declaration", "schema_version": 2,
+                       "source": "orchard_run_plan", "run_plan": copy.deepcopy(plan),
+                       "subject_type": "dish_group", "subject_count": 5}
+        declaration.update(changes)
+        return {"arena_id": arena_id, "camera_serial": serial, "declaration": declaration}
+
+    request = {"schema_id": "citrus.subject_declaration_request", "schema_version": 1, "rig_id": "omnifin0",
+               "canvas_name": "c", "protocol": {"path": "p.json", "protocol_semantic_hash": "0" * 64,
+                                                 "semantic_version": "4"},
+               "arenas": [arena("arena_1", "2010093"), arena("arena_2", "2010094")]}
+
+    # What Orange's pre-arm cross-check would refuse is refused before sending.
+    require(module.citrus_declaration_plan_mismatches(request, orange_declaration) == [], "a matching plan")
+    require(module.citrus_declaration_plan_mismatches(request, None) == [], "headless: the spec declares")
+    edited = copy.deepcopy(request)
+    edited["arenas"][1]["declaration"]["run_plan"]["plan_revision"] = 3
+    edited["arenas"][0]["camera_serial"] = "9999999"
+    problems = module.citrus_declaration_plan_mismatches(edited, orange_declaration)
+    require(len(problems) == 2 and "9999999" in problems[0] and "arena_2: run_plan" in problems[1], f"{problems}")
+    v1 = {k: v for k, v in orange_declaration.items() if k != "source"}
+    v1["schema_version"] = 1
+    require(any("not a v2 orchard_run_plan" in p for p in module.citrus_declaration_plan_mismatches(request, v1)),
+            "a plan-sourced Citrus arena against an Orange v1 declaration")
+    operator = copy.deepcopy(request)
+    for item in operator["arenas"]:
+        item["declaration"].update(source="citrus_operator_declaration", run_plan=None)
+    require(module.citrus_declaration_plan_mismatches(operator, v1) == [], "operator declarations carry no plan")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        request_path = base / "request.json"
+        request_path.write_text(json.dumps(request))
+        for name, bad in {"schema": {**request, "schema_version": 2},
+                          "duplicate": {**request, "arenas": [request["arenas"][0]] * 2},
+                          "empty": {**request, "arenas": []}}.items():
+            path = base / f"{name}.json"
+            path.write_text(json.dumps(bad))
+            refused = False
+            try:
+                module.load_citrus_subject_declaration_request(path)
+            except ValueError:
+                refused = True
+            require(refused, f"{name} request refused at load")
+
+        common = ["--declaration-file", str(fixture)]
+        args = module.parse_args(common + ["--citrus-subject-declaration-request", str(request_path)])
+        require(args.citrus_subject_declaration_request == request, "the request is loaded whole")
+        dry = module.dry_run_summary(args)["citrus"]
+        require(dry["declare_subjects_request"]["method"] == "declare_subjects"
+                and dry["declare_subjects_request"]["params"] == request and dry["declare_subjects_mismatches"] == [],
+                "the dry run shows the request")
+        recording_only = base / "recording_only.json"
+        recording_only.write_text(json.dumps({**orange_declaration, "recording_intent": "recording_only"}))
+        exited = False
+        try:
+            module.parse_args(["--declaration-file", str(recording_only),
+                               "--citrus-subject-declaration-request", str(request_path)])
+        except SystemExit:
+            exited = True
+        require(exited, "declare_subjects needs a bound run")
+
+        sha = {"arena_1": "sha256:" + "1" * 64, "arena_2": "sha256:" + "2" * 64}
+        accepted_reply = {"ok": True, "accepted": True, "effect": {"subject_declarations": {
+            "status": "accepted", "plan": {"plan_id": plan["plan_id"]},
+            "arenas": [{"arena_id": a, "subject_type": "dish_group", "subject_count": 5,
+                        "declaration_sha256": h} for a, h in sha.items()]}}}
+        require(module.accepted_citrus_subject_declarations(accepted_reply) == sha, "the reply's shas")
+
+        def status_with(**per_arena: Any) -> dict[str, Any]:
+            return {"arenas": [{"arena_id": a, "plan_subject_declaration": v} for a, v in per_arena.items()]}
+
+        declared = status_with(arena_1={"state": "declared", "declaration_sha256": sha["arena_1"]},
+                               arena_2={"state": "declared", "declaration_sha256": sha["arena_2"]})
+        require(module.citrus_subject_declaration_problems(declared, sha) == [], "declared with the accepted sha")
+        cases = {
+            "null": (status_with(arena_1=declared["arenas"][0]["plan_subject_declaration"], arena_2=None), "is null"),
+            "overridden": (status_with(arena_1=declared["arenas"][0]["plan_subject_declaration"],
+                                       arena_2={"state": "overridden", "declaration_sha256": sha["arena_2"]}),
+                           "'overridden'"),
+            "other_sha": (status_with(arena_1=declared["arenas"][0]["plan_subject_declaration"],
+                                      arena_2={"state": "declared", "declaration_sha256": "sha256:" + "3" * 64}),
+                          "is not the accepted"),
+            "missing": (status_with(arena_1=declared["arenas"][0]["plan_subject_declaration"]), "not in Citrus status"),
+        }
+        for name, (status, text) in cases.items():
+            problems = module.citrus_subject_declaration_problems(status, sha)
+            require(len(problems) == 1 and problems[0].startswith("arena_2") and text in problems[0],
+                    f"{name}: {problems}")
+
+        # The orchestrator: send, wait for the apply, check again before START.
+        orchestrator = module.Orchestrator(args)
+        sent: list[dict[str, Any]] = []
+        statuses = [status_with(arena_1=None, arena_2=None), declared]
+        orchestrator.send = lambda socket, req: (sent.append(req), accepted_reply)[1]
+
+        def fake_wait(label, schema_id, socket_path, predicate, timeout_seconds, description):
+            for status in statuses:
+                if predicate(status):
+                    return status
+            raise module.OrchestratorError("timed out")
+
+        current = {"status": declared}
+        orchestrator.wait_for_status = fake_wait
+        orchestrator.status = lambda label, schema_id, socket_path: (current["status"], {})
+        orchestrator.declare_citrus_subjects()
+        require(len(sent) == 1 and sent[0]["method"] == "declare_subjects" and sent[0]["params"] == request
+                and sent[0]["operation_id"] == args.operation_id, f"one declare_subjects: {sent}")
+        orchestrator.check_citrus_subject_declarations("before_start")
+        current["status"] = cases["overridden"][0]
+        message = ""
+        try:
+            orchestrator.check_citrus_subject_declarations("before_start")
+        except module.OrchestratorError as exc:
+            message = str(exc)
+        require("before_start" in message and "arena_2" in message and "overridden" in message,
+                f"a panel override after the declaration refuses START: {message!r}")
+        checks = orchestrator.bound_record["citrus_subject_declaration_checks"]
+        require([c["when"] for c in checks] == ["applied", "before_start", "before_start"]
+                and checks[-1]["problems"], f"each check is recorded: {checks}")
+
+        # An apply Citrus skipped (an experiment armed in between) never shows.
+        orchestrator = module.Orchestrator(args)
+        orchestrator.send = lambda socket, req: accepted_reply
+        statuses = [status_with(arena_1=None, arena_2=None)]
+        current["status"] = statuses[0]
+        orchestrator.wait_for_status = fake_wait
+        orchestrator.status = lambda label, schema_id, socket_path: (current["status"], {})
+        message = ""
+        try:
+            orchestrator.declare_citrus_subjects()
+        except module.OrchestratorError as exc:
+            message = str(exc)
+        require("(applied)" in message and "is null" in message, f"a skipped apply refuses: {message!r}")
+
+        # A refusal names Citrus's code and detail; nothing is checked after it.
+        orchestrator = module.Orchestrator(args)
+        orchestrator.send = lambda socket, req: {
+            "ok": True, "accepted": False, "error": "subject_declaration_protocol_mismatch",
+            "effect": {"subject_declarations": {"status": "refused", "detail": "arena_2 protocol", "arena_id": "arena_2"}}}
+        message = ""
+        try:
+            orchestrator.declare_citrus_subjects()
+        except module.OrchestratorError as exc:
+            message = str(exc)
+        require("subject_declaration_protocol_mismatch" in message and "arena_2 protocol" in message, message)
+        require(orchestrator.check_citrus_subject_declarations("before_start") == {},
+                "no accepted declaration, no executor check")
+
+        # A mismatch with Orange's declaration is refused before anything is sent.
+        edited_path = base / "edited.json"
+        edited_path.write_text(json.dumps(edited))
+        orchestrator = module.Orchestrator(module.parse_args(common + ["--citrus-subject-declaration-request",
+                                                                       str(edited_path)]))
+        sent.clear()
+        orchestrator.send = lambda socket, req: (sent.append(req), accepted_reply)[1]
+        message = ""
+        try:
+            orchestrator.declare_citrus_subjects()
+        except module.OrchestratorError as exc:
+            message = str(exc)
+        require(not sent and "does not match Orange's" in message, f"refused before sending: {message!r}")
+
+    plain = module.Orchestrator(module.parse_args(["--declared-by", "delahantyj", "--intent", "stimulus_experiment",
+                                                   "--blank-subjects"]))
+    plain.send = lambda socket, req: (_ for _ in ()).throw(AssertionError("nothing sent"))
+    plain.declare_citrus_subjects()
+    require(plain.check_citrus_subject_declarations("before_start") == {}, "without the option nothing changes")
+
+
 def test_long_wait_wakes_on_lifecycle_event() -> None:
     """wait_for_status on a long wait reads status again as soon as a row arrives,
     and confirms by status (a row alone never satisfies the predicate)."""
@@ -4209,6 +4385,7 @@ def main() -> int:
         test_lifecycle_waker,
         test_long_wait_wakes_on_lifecycle_event,
         test_receipt_build_error_settles_and_is_reported,
+        test_citrus_declare_subjects_and_executor_rule,
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
         test_long_waits_poll_slowly,
