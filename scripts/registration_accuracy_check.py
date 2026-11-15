@@ -79,6 +79,10 @@ EDGE_SEARCH_PX = 6.0
 EDGE_MIN_STEP_DN = 12.0
 EDGE_MIN_FRACTION = 0.40
 DISH_INNER_DIAMETER_MM = 80.0
+# Calipered 2026-11-15 (Jeremy; 80.4 / 79.84 / 80.2 mm, consistent across angles). Used for the
+# fixed-radius fits here; the gate's radius band keeps the design 80 mm (orange_dish_rim_auto_accept_v1).
+DISH_CALIPERED_DIAMETER_MM = 80.15
+DISH_CALIPERED_DIAMETER_SIGMA_MM = 0.3
 DISH_WALL_HEIGHT_MM = 2.8
 WATER_INDEX = 1.333
 RADIUS_TOLERANCE_FRACTION = 0.02
@@ -461,6 +465,36 @@ def ransac_circle(xs: np.ndarray, ys: np.ndarray, tol: float = 3.0, iterations: 
             "residual_px_median_abs_all": float(np.median(np.abs(resid))), "_inlier_mask": inl, "_resid": resid}
 
 
+def arc_coverage(xs: np.ndarray, ys: np.ndarray, cx: float, cy: float, min_gap_deg: float = 5.0) -> dict[str, Any]:
+    """Degrees of the circle with points: 360 minus every gap between neighbouring points wider
+    than min_gap_deg (the 720 rays are 0.5 deg apart), and the largest gap with its location."""
+    if len(xs) == 0:
+        return {"degrees_covered": 0.0, "largest_gap_deg": 360.0, "largest_gap_centre_deg": None, "largest_gap_side": None}
+    ang = np.sort(np.degrees(np.arctan2(ys - cy, xs - cx)) % 360.0)
+    gaps = np.diff(np.concatenate([ang, [ang[0] + 360.0]]))
+    k = int(np.argmax(gaps))
+    largest = float(gaps[k])
+    centre = (ang[k] + largest / 2.0) % 360.0
+    covered = 360.0 - float(gaps[gaps > min_gap_deg].sum())
+    return {"degrees_covered": round(covered, 1), "largest_gap_deg": round(largest, 1),
+            "largest_gap_centre_deg": round(centre, 1), "largest_gap_side": str(side_of(np.array([math.radians(centre)]))[0]),
+            "min_gap_counted_deg": min_gap_deg, "angle_convention": "image axes: 0 deg = +x (right), 90 deg = +y (down)"}
+
+
+def bootstrap_circle(xs: np.ndarray, ys: np.ndarray, resamples: int = 300, seed: int = 11) -> dict[str, float]:
+    """1-sigma centre and radius uncertainty of the circle fit by bootstrap over the inliers."""
+    rng = np.random.default_rng(seed)
+    n = len(xs)
+    fits = []
+    for _ in range(resamples):
+        i = rng.integers(0, n, n)
+        fits.append(fit_circle_weighted(xs[i], ys[i], np.ones(n)))
+    arr = np.array(fits)
+    return {"x_sigma_px": float(arr[:, 0].std()), "y_sigma_px": float(arr[:, 1].std()),
+            "radius_sigma_px": float(arr[:, 2].std()),
+            "centre_sigma_px": float(math.hypot(arr[:, 0].std(), arr[:, 1].std())), "resamples": resamples}
+
+
 def fit_two_rims(gray: np.ndarray, init: tuple[float, float, float], inward_px: float = 80.0,
                  outward_px: float = 110.0, border_margin_px: float = 8.0, angles: int = EDGE_SAMPLES) -> dict[str, Any]:
     """The lit floor's edge and the wall top (inner rim at the top), fitted separately.
@@ -482,6 +516,7 @@ def fit_two_rims(gray: np.ndarray, init: tuple[float, float, float], inward_px: 
     prof = bilinear_many(gray, np.where(inside, xs, -1.0), np.where(inside, ys, -1.0))
     kernel = np.ones(5) / 5.0
     floor_r, top_r = np.full(angles, np.nan), np.full(angles, np.nan)
+    steps: list[np.ndarray] = [np.zeros(0)] * angles
     truncated = np.zeros(angles, bool)
     for i in range(angles):
         valid = ~np.isnan(prof[i])
@@ -502,8 +537,10 @@ def fit_two_rims(gray: np.ndarray, init: tuple[float, float, float], inward_px: 
         if not idx:
             continue
         floor_r[i], top_r[i] = mid[min(idx)], mid[max(idx)]
+        steps[i] = mid[idx]
     out: dict[str, Any] = {"initial": {"x": cx0, "y": cy0, "radius": r0}, "rays": angles,
-                           "rays_truncated_by_frame": int(truncated.sum())}
+                           "rays_truncated_by_frame": int(truncated.sum()),
+                           "_steps": (theta, steps, cx0, cy0)}
     sides = side_of(theta)
     for name, rr in (("floor_edge", floor_r), ("wall_top", top_r)):
         ok = ~np.isnan(rr)
@@ -519,9 +556,75 @@ def fit_two_rims(gray: np.ndarray, init: tuple[float, float, float], inward_px: 
                                    "median_residual_px": float(np.median(resid[si])) if si.any() else None,
                                    "note": None if si.any() else "NO EDGE POINTS on this side (inliers)"})
             fit["per_side"] = per_side
+            fit["arc_coverage"] = arc_coverage(px[inl], py[inl], fit["x"], fit["y"])
+            fit["uncertainty"] = bootstrap_circle(px[inl], py[inl])
             fit["_points"] = (px, py, inl)
         out[name] = fit
     return out
+
+
+def fixed_radius_fit(theta: np.ndarray, steps: list[np.ndarray], cx0: float, cy0: float, radius: float,
+                     tol_px: float = 15.0, iterations: int = 6) -> dict[str, Any]:
+    """Centre-only circle fit with a known radius. Each ray contributes the edge step nearest the
+    expected radius from the current centre (within tol_px); the centre solves
+    min sum (|p - c| - radius)^2 by Gauss-Newton with 3 x MAD trimming; bootstrap uncertainty."""
+    cands_x, cands_y, ray = [], [], []
+    for i, rr in enumerate(steps):
+        for r in rr:
+            cands_x.append(cx0 + r * math.cos(theta[i]))
+            cands_y.append(cy0 + r * math.sin(theta[i]))
+            ray.append(i)
+    if not cands_x:
+        return {"found": False, "reason": "no_edge_steps"}
+    px, py, ray = np.array(cands_x), np.array(cands_y), np.array(ray)
+    c = np.array([cx0, cy0])
+
+    def select(c: np.ndarray) -> np.ndarray:
+        dist = np.abs(np.hypot(px - c[0], py - c[1]) - radius)
+        keep = np.zeros(len(px), bool)
+        for i in np.unique(ray):
+            k = np.where(ray == i)[0]
+            j = k[int(np.argmin(dist[k]))]
+            if dist[j] <= tol_px:
+                keep[j] = True
+        return keep
+
+    def solve(x: np.ndarray, y: np.ndarray, c: np.ndarray) -> np.ndarray:
+        for _ in range(20):
+            dx, dy = x - c[0], y - c[1]
+            d = np.hypot(dx, dy)
+            res = d - radius
+            jac = -np.column_stack([dx / d, dy / d])
+            step, *_ = np.linalg.lstsq(jac, -res, rcond=None)
+            c = c + step
+            if np.hypot(*step) < 1e-4:
+                break
+        return c
+
+    keep = select(c)
+    for _ in range(iterations):
+        if keep.sum() < 12:
+            return {"found": False, "reason": "too_few_points_near_expected_radius", "points": int(keep.sum())}
+        c = solve(px[keep], py[keep], c)
+        res = np.hypot(px[keep] - c[0], py[keep] - c[1]) - radius
+        mad = float(np.median(np.abs(res - np.median(res)))) or 0.5
+        keep_new = select(c)
+        res_all = np.hypot(px - c[0], py - c[1]) - radius
+        keep_new &= np.abs(res_all - np.median(res)) <= max(3 * 1.4826 * mad, 2.0)
+        if np.array_equal(keep_new, keep):
+            break
+        keep = keep_new
+    x, y = px[keep], py[keep]
+    c = solve(x, y, c)
+    res = np.hypot(x - c[0], y - c[1]) - radius
+    rng = np.random.default_rng(13)
+    boots = np.array([solve(x[i], y[i], c) for i in (rng.integers(0, len(x), len(x)) for _ in range(200))])
+    return {"found": True, "x": float(c[0]), "y": float(c[1]), "radius_fixed_px": radius, "points": int(len(x)),
+            "residual_px_median_abs": float(np.median(np.abs(res))), "residual_px_max_abs": float(np.max(np.abs(res))),
+            "residual_px_median_signed": float(np.median(res)),
+            "uncertainty": {"x_sigma_px": float(boots[:, 0].std()), "y_sigma_px": float(boots[:, 1].std()),
+                            "centre_sigma_px": float(math.hypot(boots[:, 0].std(), boots[:, 1].std())), "resamples": 200},
+            "arc_coverage": arc_coverage(x, y, float(c[0]), float(c[1])), "_points": (x, y, np.ones(len(x), bool))}
 
 
 def parallax_check(floor: dict[str, Any], top: dict[str, Any], model: dict[str, float] | None,
@@ -568,9 +671,10 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
     Cam<serial>_dish_rim_zoom.png (native-resolution crops at the top, right, bottom, left)."""
     from PIL import Image, ImageDraw
 
-    FLOOR, TOP, REG, CROSS = (0, 255, 0), (255, 0, 255), (255, 200, 0), (0, 230, 255)
+    FLOOR, TOP, REG, CROSS, FIXED = (0, 255, 0), (255, 0, 255), (255, 200, 0), (0, 230, 255), (255, 255, 255)
     floor = (rims or {}).get("floor_edge") or {}
     top = (rims or {}).get("wall_top") or {}
+    fixed_top = ((rims or {}).get("fixed") or {}).get("wall_top") or {}
     written = []
     factor = 4
     f = float(factor)
@@ -599,6 +703,12 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
                            + (f"; NO EDGE POINTS: {', '.join(missing)}" if missing else "")))
         else:
             legend.append((colour, label + ": NOT FOUND"))
+    if fixed_top.get("found"):
+        circle(draw, {"x": fixed_top["x"], "y": fixed_top["y"], "radius": fixed_top["radius_fixed_px"]}, FIXED, f, width=1)
+        draw.ellipse([(fixed_top["x"] - 40) / f, (fixed_top["y"] - 40) / f, (fixed_top["x"] + 40) / f,
+                      (fixed_top["y"] + 40) / f], outline=FIXED, width=2)
+        legend.append((FIXED, f"wall top, radius fixed by the calipered 80.15 mm (r {fixed_top['radius_fixed_px']:.0f} px): "
+                              f"PRIMARY dish centre, {fixed_top['points']} pts, arc {fixed_top['arc_coverage']['degrees_covered']} deg"))
     if registration:
         circle(draw, registration, REG, f, width=2)
         legend.append((REG, registration["label"]))
@@ -606,12 +716,13 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
         x, y = cross
         draw.ellipse([(x - 60) / f, (y - 60) / f, (x + 60) / f, (y + 60) / f], outline=CROSS, width=3)
         legend.append((CROSS, "observed projected crosshair centre"))
-        if floor.get("found"):
-            ex, ey = x + 10 * (floor["x"] - x), y + 10 * (floor["y"] - y)
+        if fixed_top.get("found"):
+            ex, ey = x + 10 * (fixed_top["x"] - x), y + 10 * (fixed_top["y"] - y)
             draw.line([(x / f, y / f), (ex / f, ey / f)], fill=CROSS, width=3)
             if placement and placement.get("distance_mm") is not None:
                 dx, dy = placement["offset_mm"]
-                label = f"floor-edge centre - cross: {placement['distance_mm']:.2f} mm ({dx:+.2f}, {dy:+.2f}) [arrow x10]"
+                label = (f"dish centre - cross: {placement['distance_mm']:.2f} +/- {placement.get('distance_sigma_mm', float('nan')):.2f}"
+                         f" mm ({dx:+.2f}, {dy:+.2f}) [arrow drawn x10]")
                 tx = min(max(4.0, ex / f + 8), small.width - 9.5 * len(label) - 4)
                 ty = min(max(4.0, ey / f + 4), small.height - 26)
                 draw.text((tx, ty), label, fill=CROSS, font=font)
@@ -649,7 +760,10 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
         tile = Image.fromarray(stretched).convert("RGB").resize((4 * half, 4 * half), Image.NEAREST)
         td = ImageDraw.Draw(tile)
         notes = []
-        for fit, colour, label in ((registration, REG, None), (floor, FLOOR, "floor"), (top, TOP, "wall top")):
+        fixed_circle = ({"x": fixed_top["x"], "y": fixed_top["y"], "radius": fixed_top["radius_fixed_px"], "found": True,
+                         "_points": fixed_top["_points"]} if fixed_top.get("found") else None)
+        for fit, colour, label in ((registration, REG, None), (floor, FLOOR, "floor"), (top, TOP, "wall top"),
+                                   (fixed_circle, FIXED, "fixed-radius wall top")):
             if not fit or (label and not fit.get("found")):
                 continue
             pts = [(((fit["x"] + fit["radius"] * math.cos(t)) - x0) * 2, ((fit["y"] + fit["radius"] * math.sin(t)) - y0c) * 2)
@@ -676,7 +790,7 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, 
     for k, tile in enumerate(tiles):
         sheet.paste(tile, ((k % 2) * 4 * half, (k // 2) * 4 * half))
     sd = ImageDraw.Draw(sheet)
-    key = [(FLOOR, "floor edge fit + its inlier points"), (TOP, "wall top fit + its inlier points")]
+    key = [(FLOOR, "free floor edge"), (TOP, "free wall top"), (FIXED, "fixed-radius wall top (primary)")]
     if registration:
         key.append((REG, registration["label"]))
     yk = 8 * half + 8
@@ -792,6 +906,294 @@ def emit_grid_scenes(path: Path, arenas: list[str]) -> None:
     print(f"wrote {path}: {len(scenes)} scenes, {sum(len(s['scene_options']['dots']) for s in scenes)} dots")
 
 
+# --------------------------------------------------------------------------
+# Compare mode: before (base geometry) and after (daily registration applied)
+
+
+def load_applied_translation(path: Path | None) -> dict[str, Any]:
+    """Per arena, the integer canvas translation a Citrus daily registration applies."""
+    if path is None:
+        return {"source": None, "note": "no --daily-registration given: the applied translation is not read, "
+                                        "only inferred from the scene status (below)"}
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    out: dict[str, Any] = {"source": str(path), "sha256": sha256_token(path), "schema_id": doc.get("schema_id")}
+    registration = doc
+    if doc.get("schema_id") == "citrus.calibration.daily_registration_runtime_selection":
+        out["mode"] = doc.get("mode")
+        out["selected_at_utc"] = doc.get("selected_at_utc")
+        ref = doc.get("registration")
+        if doc.get("mode") != "selected_daily_registration" or not ref:
+            out["arenas"] = {}
+            out["note"] = f"runtime selection mode {doc.get('mode')!r}: no daily translation selected"
+            return out
+        reg_path = Path(str((ref or {}).get("path") or (ref or {}).get("registration_path") or ""))
+        if not reg_path.is_file():
+            out["arenas"] = {}
+            out["note"] = f"the selection names a registration that was not found: {ref}"
+            return out
+        registration = json.loads(reg_path.read_text(encoding="utf-8"))
+        out["registration_path"] = str(reg_path)
+        out["registration_sha256"] = sha256_token(reg_path)
+    out["registration_id"] = registration.get("registration_id")
+    out["valid_until_utc"] = registration.get("valid_until_utc")
+    arenas = {}
+    for target in registration.get("targets") or []:
+        final = target.get("final_applied_translation_canvas_px") or {}
+        auto = target.get("automatic_translation_canvas_px") or {}
+        tx = final.get("x", final.get("applied_x", auto.get("applied_x")))
+        ty = final.get("y", final.get("applied_y", auto.get("applied_y")))
+        arenas[target.get("arena_id")] = {
+            "camera_id": target.get("camera_id"), "applied_canvas_px": [tx, ty],
+            "requested_canvas_px": [auto.get("requested_x"), auto.get("requested_y")],
+            "rounding_residual_canvas_px": [auto.get("rounding_residual_x"), auto.get("rounding_residual_y")],
+            "alignment_basis": target.get("alignment_basis")}
+    out["arenas"] = arenas
+    return out
+
+
+def _session_view(report: dict[str, Any], serial: str) -> dict[str, Any]:
+    c = report["cameras"].get(serial) or {}
+    x = c.get("crosshair") or {}
+    t = (c.get("dish") or {}).get("today") or {}
+    p = c.get("projection") or {}
+    return {"cross": x.get("centre_camera_px") if x.get("found") else None,
+            "experimental_area_centre_canvas_px": (x.get("experimental_area") or {}).get("centre_canvas_px"),
+            "crosshair_path": x.get("path"), "arena_id": c.get("arena_id"),
+            "floor": t.get("floor_edge") if (t.get("floor_edge") or {}).get("found") else None,
+            "top": t.get("wall_top") if (t.get("wall_top") or {}).get("found") else None,
+            "placement": x.get("dish_placement") or {}, "homography_at_centre": x.get("homography_at_centre") or {},
+            "top_fixed": t.get("wall_top_fixed_radius") if (t.get("wall_top_fixed_radius") or {}).get("found") else None,
+            "dots": {"found": p.get("found"), "drawn": p.get("drawn"), "median_mm": p.get("residual_mm_median"),
+                     "max_mm": p.get("residual_mm_max")},
+            "parallax": t.get("parallax") or {}}
+
+
+def _centre_sigma_px(fit: dict[str, Any] | None) -> float | None:
+    """1-sigma centre uncertainty of a circle fit: the bootstrap value (it grows on a partial arc)."""
+    if not fit:
+        return None
+    return (fit.get("uncertainty") or {}).get("centre_sigma_px")
+
+
+def _r(value: Any) -> Any:
+    return round(value, 2) if isinstance(value, float) else value
+
+
+def compare_sessions(args: argparse.Namespace) -> int:
+    now = utc_now()
+    out = args.out or (orange_data_root() / "registration_accuracy" / (now.strftime("%Y%m%dT%H%M%SZ") + "_compare"))
+    out.mkdir(parents=True, exist_ok=True)
+    common = ["--sessions-root", str(args.sessions_root), "--citrus-config", str(args.citrus_config),
+              "--fish-plane-scale", str(args.fish_plane_scale), "--active-pointer-dir", str(args.active_pointer_dir),
+              "--max-residual-mm", str(args.max_residual_mm), "--max-dish-offset-mm", str(args.max_dish_offset_mm),
+              "--search-mm", str(args.search_mm)]
+    for path in args.rim_observation:
+        common += ["--rim-observation", str(path)]
+    reports = {}
+    for stage, session in (("before", args.before), ("after", args.after)):
+        print(f"== {stage}: {session}")
+        main(["--session", session, "--out", str(out / stage)] + common)
+        reports[stage] = json.loads((out / stage / "registration_accuracy.json").read_text(encoding="utf-8"))
+    applied = load_applied_translation(args.daily_registration)
+    calibration_dir = args.citrus_config.parent / "calibration_artifacts"
+    canvas_sha = dc.sha256_file(args.citrus_config).split(":", 1)[1]
+    layout = bm.load_layout(args.citrus_config)
+    fish_plane = json.loads(args.fish_plane_scale.read_text(encoding="utf-8")) if args.fish_plane_scale.is_file() else {}
+    cameras: dict[str, Any] = {}
+    for serial in sorted(set(reports["before"]["cameras"]) | set(reports["after"]["cameras"])):
+        before, after = _session_view(reports["before"], serial), _session_view(reports["after"], serial)
+        arena_id = before["arena_id"] or after["arena_id"]
+        model = scale_model(fish_plane, serial) if fish_plane else None
+        s_low = scale_at(model, radius_band(model)["z_low_mm"]) if model else None
+        ppm = layout[arena_id].pixels_per_mm_projector if arena_id in layout else None
+        row: dict[str, Any] = {"arena_id": arena_id}
+        # (a) before
+        row["before"] = {"basis": before["placement"].get("basis"),
+                         "dish_vs_cross_mm": before["placement"].get("offset_mm"),
+                         "distance_mm": before["placement"].get("distance_mm"),
+                         "distance_sigma_mm": before["placement"].get("distance_sigma_mm"),
+                         "arc_coverage_deg": before["placement"].get("arc_coverage_deg"),
+                         "cross_checks_mm": {k: (v or {}).get("distance_mm") for k, v in
+                                             (before["placement"].get("cross_checks") or {}).items()},
+                         "homography_at_centre_mm": before["homography_at_centre"].get("residual_mm_norm"),
+                         "dots": before["dots"]}
+        # (b) applied translation: the registration file, and what the scene status shows
+        ec_b, ec_a = before["experimental_area_centre_canvas_px"], after["experimental_area_centre_canvas_px"]
+        if ec_b and ec_a:
+            moved = [ec_a[0] - ec_b[0], ec_a[1] - ec_b[1]]
+            status_note = ("the after-session's scene status shows the experimental-area centre moved by "
+                           f"({moved[0]:+.1f}, {moved[1]:+.1f}) canvas px" if any(abs(v) > 1e-6 for v in moved) else
+                           "the after-session's scene status shows the SAME experimental-area centre as before: no "
+                           "daily translation was active in it")
+        else:
+            moved = None
+            status_note = ("the scene status does not show the experimental-area centre for one of the sessions, so "
+                           "it does not say whether a daily translation was active")
+        reg = (applied.get("arenas") or {}).get(arena_id)
+        translation: dict[str, Any] = {"from_scene_status_canvas_px": moved, "scene_status_note": status_note,
+                                       "from_daily_registration": reg, "daily_registration_note": applied.get("note")}
+        t_canvas = (reg or {}).get("applied_canvas_px") if reg else moved
+        if t_canvas and None not in t_canvas and ppm:
+            translation["applied_mm"] = [t_canvas[0] / ppm, t_canvas[1] / ppm]
+            translation["applied_basis"] = "daily registration file" if reg else "scene status centre change"
+            if reg and moved is not None and (abs(moved[0] - t_canvas[0]) > 0.5 or abs(moved[1] - t_canvas[1]) > 0.5):
+                translation["disagreement"] = "the registration's translation and the scene status's centre change differ"
+            try:
+                homography = bm.load_homography(calibration_dir, arena_id, serial, canvas_sha)
+                inverse = np.linalg.inv(homography.matrix)
+                ec = ec_b or [layout[arena_id].center[0], layout[arena_id].center[1]]
+                xs, ys = bm.map_points(inverse, np.array([ec[0], ec[0] + t_canvas[0]]), np.array([ec[1], ec[1] + t_canvas[1]]))
+                translation["applied_camera_px"] = [float(xs[1] - xs[0]), float(ys[1] - ys[0])]
+            except bm.InputError as error:
+                translation["applied_camera_px_error"] = str(error)
+        row["applied_translation"] = translation
+        # predicted after = before offset minus the cross's move (camera px)
+        bp, ap = before["placement"], after["placement"]
+        s_top_pred = scale_at(model, radius_band(model)["z_high_mm"]) if model else None
+        if bp.get("offset_camera_px") and translation.get("applied_camera_px") and s_top_pred:
+            pred = [bp["offset_camera_px"][0] - translation["applied_camera_px"][0],
+                    bp["offset_camera_px"][1] - translation["applied_camera_px"][1]]
+            row["predicted_after_mm"] = [pred[0] / s_top_pred, pred[1] / s_top_pred]
+            row["predicted_after_distance_mm"] = math.hypot(*row["predicted_after_mm"])
+        # (c) after and (d) residual
+        row["after"] = {"basis": ap.get("basis"), "dish_vs_cross_mm": ap.get("offset_mm"), "distance_mm": ap.get("distance_mm"),
+                        "distance_sigma_mm": ap.get("distance_sigma_mm"), "arc_coverage_deg": ap.get("arc_coverage_deg"),
+                        "film_corrected_distance_mm": ap.get("film_corrected_distance_mm"),
+                        "cross_checks_mm": {k: (v or {}).get("distance_mm") for k, v in (ap.get("cross_checks") or {}).items()},
+                        "homography_at_centre_mm": after["homography_at_centre"].get("residual_mm_norm"),
+                        "dots": after["dots"]}
+        sig = [v for v in (_centre_sigma_px(after["top_fixed"]),) if v is not None]
+        s_top = scale_at(model, radius_band(model)["z_high_mm"]) if model else None
+        if s_top and sig:
+            quant_mm = (math.sqrt(2) * 0.5 / ppm) if ppm else 0.0
+            noise_mm = math.hypot(sig[0] / s_top, quant_mm)
+            row["residual_after"] = {
+                "distance_mm": ap.get("distance_mm"),
+                "noise_floor_mm": noise_mm,
+                "noise_floor_parts": {"fixed_wall_top_centre_1sigma_mm_bootstrap": sig[0] / s_top,
+                                      "integer_canvas_translation_rounding_mm": quant_mm},
+                "cross_check_spread_mm": (max(abs(ap["distance_mm"] - v) for v in
+                                              [(c or {}).get("distance_mm") for c in (ap.get("cross_checks") or {}).values()]
+                                              if v is not None)
+                                          if ap.get("distance_mm") is not None and any(
+                                              (c or {}).get("distance_mm") is not None for c in
+                                              (ap.get("cross_checks") or {}).values()) else None),
+                "limit_mm": args.max_after_mm,
+                "pass": bool(ap.get("distance_mm") is not None and ap["distance_mm"] <= args.max_after_mm),
+                "note": "noise floor: the fixed-radius wall-top fit's centre uncertainty (bootstrap) and the 0.5 canvas "
+                        "px rounding of an integer translation; the spread to the cross-checks (free fits, floor "
+                        "edge) is a separate, systematic term"}
+        cameras[serial] = row
+        draw_compare_figure(out, serial, reports, before, after, s_low, row)
+    report = {"schema_id": SCHEMA_ID + "_compare", "schema_version": 1,
+              "created_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "before": {"session": args.before, "report": str(out / "before" / "registration_accuracy.json")},
+              "after": {"session": args.after, "report": str(out / "after" / "registration_accuracy.json")},
+              "daily_registration": {k: v for k, v in applied.items() if k != "arenas"},
+              "limits": {"max_after_mm": args.max_after_mm,
+                         "why": "0.5 mm = about 2 canvas px: an integer-pixel translation can leave up to 0.12 mm, and "
+                                "the fits' centre noise is well under 0.1 mm"},
+              "cameras": cameras}
+    (out / "registration_compare.json").write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
+    print(f"wrote {out / 'registration_compare.json'}")
+    for serial, row in cameras.items():
+        b, a, t = row["before"], row["after"], row["applied_translation"]
+        r = row.get("residual_after") or {}
+        print(f"Cam{serial}: before {b.get('distance_mm', float('nan')):.2f} +/- {b.get('distance_sigma_mm') or float('nan'):.2f} mm | applied "
+              f"{t.get('applied_mm') and [round(v, 2) for v in t['applied_mm']]} mm ({t.get('applied_basis', 'none')}) | after "
+              f"{a.get('distance_mm', float('nan')):.2f} +/- {a.get('distance_sigma_mm') or float('nan'):.2f} mm (noise floor {r.get('noise_floor_mm', float('nan')):.2f}, "
+              f"limit {args.max_after_mm}) {'PASS' if r.get('pass') else 'FAIL'} | dots max {_r(b['dots']['max_mm'])} -> "
+              f"{_r(a['dots']['max_mm'])} mm | homography at centre {_r(b['homography_at_centre_mm'])} -> "
+              f"{_r(a['homography_at_centre_mm'])} mm")
+        print("    " + t["scene_status_note"] + (f"; {t['daily_registration_note']}" if t.get("daily_registration_note") else ""))
+    return 0
+
+
+def draw_compare_figure(out: Path, serial: str, reports: dict[str, Any], before: dict[str, Any],
+                        after: dict[str, Any], s_low: float | None, row: dict[str, Any]) -> None:
+    """Cam<serial>_compare.png: before | after, each the crosshair frame at 1/8 with the cross,
+    the floor-edge and wall-top centres, and an inset at native resolution (1 image px = 1 camera
+    px) around the cross with the offset arrow to scale and a 1 mm scale bar."""
+    from PIL import Image, ImageDraw
+
+    font = _font(16)
+    panels = []
+    for stage, view in (("BEFORE", before), ("AFTER", after)):
+        rep = reports[stage.lower()]
+        session_dir = Path(rep["inputs"]["session_dir"])
+        arena = view["arena_id"]
+        path = session_dir / "artifacts" / f"Cam{serial}_{arena}" / str(view["crosshair_path"] or "")
+        if not path.is_file():
+            panel = Image.new("RGB", (564, 640), (0, 0, 0))
+            ImageDraw.Draw(panel).text((10, 10), f"{stage}: no crosshair frame", fill=(255, 80, 80), font=font)
+            panels.append(panel)
+            continue
+        gray = bm.load_u8(path)
+        factor = 8
+        img = downsampled_rgb(gray, factor)
+        d = ImageDraw.Draw(img)
+        cross, floor, top = view["cross"], view["floor"], view["top"]
+        if cross:
+            d.ellipse([cross[0] / factor - 6, cross[1] / factor - 6, cross[0] / factor + 6, cross[1] / factor + 6],
+                      outline=(0, 230, 255), width=2)
+        # inset around the cross: 480 x 480 native camera px, shown at 0.75 (arrows and the scale bar
+        # use the same factor, so everything in it is to scale)
+        half, shown = 240, 0.75
+        inset = None
+        if cross:
+            cx, cy = int(round(cross[0])), int(round(cross[1]))
+            crop = np.zeros((2 * half, 2 * half), np.uint8)
+            x0, y0 = cx - half, cy - half
+            sx0, sy0, sx1, sy1 = max(0, x0), max(0, y0), min(gray.shape[1], x0 + 2 * half), min(gray.shape[0], y0 + 2 * half)
+            crop[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = gray[sy0:sy1, sx0:sx1]
+            size = int(2 * half * shown)
+            inset = Image.fromarray(crop).convert("RGB").resize((size, size), Image.BILINEAR)
+            idr = ImageDraw.Draw(inset)
+            c0 = half * shown
+            idr.ellipse([c0 - 6, c0 - 6, c0 + 6, c0 + 6], outline=(0, 230, 255), width=2)
+            for fit, colour in ((floor, (0, 255, 0)), (top, (255, 0, 255)), (view.get("top_fixed"), (255, 255, 255))):
+                if fit:
+                    fx, fy = (fit["x"] - x0) * shown, (fit["y"] - y0) * shown
+                    idr.line([(c0, c0), (fx, fy)], fill=colour, width=2)
+                    idr.line([(fx - 7, fy), (fx + 7, fy)], fill=colour, width=2)
+                    idr.line([(fx, fy - 7), (fx, fy + 7)], fill=colour, width=2)
+            if s_low:
+                idr.line([(10, size - 12), (10 + s_low * shown, size - 12)], fill=(255, 255, 255), width=3)
+                idr.text((12, size - 34), "1 mm", fill=(255, 255, 255), font=font)
+            idr.rectangle([0, 0, size - 1, size - 1], outline=(255, 255, 255))
+        dist = view["placement"].get("distance_mm")
+        lines = [f"{stage}: {rep['inputs']['session_dir'].split('/')[-1]}",
+                 (f"dish (fixed-radius wall top) - cross: {dist:.2f} +/- {view['placement'].get('distance_sigma_mm') or float('nan'):.2f} mm"
+                  f" (arc {view['placement'].get('arc_coverage_deg')} deg)") if dist is not None
+                 else "dish centre: not measured",
+                 "inset below: 480 x 480 camera px around the cross, shown at 0.75x;",
+                 "arrows and the 1 mm bar are to that same scale (no exaggeration)",
+                 "cyan: cross; white: fixed-radius wall top (primary);",
+                 "magenta: free wall top; green: free floor edge"]
+        inset_h = inset.height + 10 if inset is not None else 0
+        figure = Image.new("RGB", (img.width, img.height + inset_h + 24 * len(lines) + 10), (0, 0, 0))
+        figure.paste(img, (0, 0))
+        if inset is not None:
+            figure.paste(inset, ((img.width - inset.width) // 2, img.height + 5))
+        fd = ImageDraw.Draw(figure)
+        for k, text in enumerate(lines):
+            fd.text((8, img.height + inset_h + 6 + 24 * k), text, fill=(255, 255, 255), font=font)
+        panels.append(figure)
+    width = sum(p.width for p in panels) + 10
+    height = max(p.height for p in panels) + 34
+    sheet = Image.new("RGB", (width, height), (0, 0, 0))
+    x = 0
+    for p in panels:
+        sheet.paste(p, (x, 34))
+        x += p.width + 10
+    t = row["applied_translation"]
+    note = t.get("daily_registration_note") or ""
+    ImageDraw.Draw(sheet).text((8, 8), f"Cam{serial}: applied translation "
+                               f"{t.get('applied_mm') and [round(v, 2) for v in t['applied_mm']]} mm "
+                               f"({t.get('applied_basis', 'none read')}). {note}", fill=(255, 200, 0), font=font)
+    sheet.save(out / f"Cam{serial}_compare.png")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--session")
@@ -812,8 +1214,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--emit-grid-scenes", type=Path, help="write the rig capture's dot-grid scenes and exit")
     parser.add_argument("--arenas", default="arena_1,arena_2,arena_3,arena_4")
+    parser.add_argument("--before", help="compare mode: the session with base geometry")
+    parser.add_argument("--after", help="compare mode: the session after the daily registration was applied")
+    parser.add_argument("--daily-registration", type=Path,
+                        help="Citrus daily_registration_runtime_selection.json or a registration.json (the applied "
+                             "translation); without it the translation is only inferred from the scene status")
+    parser.add_argument("--max-after-mm", type=float, default=0.5,
+                        help="compare mode: limit on the dish-vs-centre residual after correction")
     args = parser.parse_args(argv)
 
+    if args.before or args.after:
+        if not (args.before and args.after):
+            parser.error("--before and --after go together")
+        return compare_sessions(args)
     if args.emit_grid_scenes:
         emit_grid_scenes(args.emit_grid_scenes, [a for a in args.arenas.split(",") if a])
         return 0
@@ -1165,7 +1578,8 @@ def main(argv: list[str] | None = None) -> int:
                     band = radius_band(model)
                     s_low, s_high = scale_at(model, band["z_low_mm"]), scale_at(model, band["z_high_mm"])
                     s0 = scale_at(model, 0.0)
-                report_rims: dict[str, Any] = {k: v for k, v in rims.items() if k not in ("floor_edge", "wall_top")}
+                report_rims: dict[str, Any] = {k: v for k, v in rims.items()
+                                               if k not in ("floor_edge", "wall_top", "fixed") and not k.startswith("_")}
                 for name, scale in (("floor_edge", s_low), ("wall_top", s_high)):
                     fit = rims[name]
                     shown = {k: v for k, v in fit.items() if not k.startswith("_")}
@@ -1174,9 +1588,37 @@ def main(argv: list[str] | None = None) -> int:
                         shown["residual_mm_median_abs_inliers"] = fit["residual_px_median_abs_inliers"] / scale
                         shown["residual_mm_max_abs_inliers"] = fit["residual_px_max_abs_inliers"] / scale
                         shown["px_per_mm_used"] = scale
+                        u = fit.get("uncertainty") or {}
+                        shown["uncertainty_mm"] = {"centre_sigma_mm": u.get("centre_sigma_px", float("nan")) / scale,
+                                                   "radius_sigma_mm": u.get("radius_sigma_px", float("nan")) / scale}
                         shown["edge_support_gate_rule"] = round(edge_support_fraction(
                             uniform_gray, fit["x"], fit["y"], fit["radius"]), 6)
                     report_rims[name] = shown
+                # Fixed-radius, centre-only fits: radius = calipered inner diameter / 2 x the scale at
+                # each edge's plane.
+                fixed: dict[str, Any] = {}
+                if model:
+                    theta_r, steps_r, ix, iy = rims["_steps"]
+                    r_mm = DISH_CALIPERED_DIAMETER_MM / 2.0
+                    for name, scale in (("floor_edge", s_low), ("wall_top", s_high)):
+                        free = rims[name]
+                        fit = fixed_radius_fit(theta_r, steps_r, ix, iy, r_mm * scale)
+                        fixed[name] = fit
+                        shown = {k: v for k, v in fit.items() if not k.startswith("_")}
+                        if fit.get("found"):
+                            shown["radius_basis"] = (f"calipered {DISH_CALIPERED_DIAMETER_MM} +/- "
+                                                     f"{DISH_CALIPERED_DIAMETER_SIGMA_MM} mm x {scale:.4f} px/mm "
+                                                     f"(fish-plane scale at the {'floor corner (through water)' if name == 'floor_edge' else 'wall top'})")
+                            shown["radius_sigma_from_diameter_px"] = DISH_CALIPERED_DIAMETER_SIGMA_MM / 2.0 * scale
+                            shown["uncertainty_mm"] = {"centre_sigma_mm": fit["uncertainty"]["centre_sigma_px"] / scale}
+                            shown["residual_mm_median_abs"] = fit["residual_px_median_abs"] / scale
+                            if free.get("found"):
+                                ddx, ddy = fit["x"] - free["x"], fit["y"] - free["y"]
+                                shown["fixed_minus_free_centre_px"] = [ddx, ddy]
+                                shown["fixed_vs_free_disagreement_mm"] = math.hypot(ddx, ddy) / scale
+                                shown["free_radius_minus_fixed_px"] = free["radius"] - fit["radius_fixed_px"]
+                        report_rims[f"{name}_fixed_radius"] = shown
+                rims["fixed"] = fixed
                 h_img, w_img = uniform_gray.shape
                 principal = ((w_img - 1) / 2.0, (h_img - 1) / 2.0)
                 report_rims["parallax"] = parallax_check(rims["floor_edge"], rims["wall_top"], model, principal)
@@ -1193,22 +1635,44 @@ def main(argv: list[str] | None = None) -> int:
                         warnings.append(f"Cam{serial}: the dish rim comes within 60 px of the frame on the {', '.join(tight)}")
                 dish["today"] = report_rims
                 floor = rims["floor_edge"]
-                if crosshair.get("found") and floor.get("found"):
+                if crosshair.get("found"):
                     ox, oy = crosshair["centre_camera_px"]
-                    dx, dy = floor["x"] - ox, floor["y"] - oy
-                    placement = {"basis": "floor_edge_centre_vs_observed_crosshair", "offset_camera_px": [dx, dy],
-                                 "distance_camera_px": math.hypot(dx, dy),
-                                 "note": "PRIMARY: the floor edge is near the film plane the crosshair is drawn on; "
-                                         "both measured in the same camera; no homography"}
-                    if s_low:
-                        placement.update({"offset_mm": [dx / s_low, dy / s_low], "distance_mm": math.hypot(dx, dy) / s_low,
-                                          "px_per_mm_used": s_low, "pass": bool(math.hypot(dx, dy) / s_low <= args.max_dish_offset_mm)})
                     par = report_rims.get("parallax")
-                    if par and s0:
-                        for key, label in (("floor_centre_at_film_px", "floor_edge"), ("top_centre_at_film_px", "wall_top")):
-                            fx_, fy_ = par[key]
-                            placement[f"{label}_centre_corrected_to_film_vs_cross_mm"] = [(fx_ - ox) / s0, (fy_ - oy) / s0]
-                            placement[f"{label}_centre_corrected_to_film_vs_cross_mm_norm"] = math.hypot(fx_ - ox, fy_ - oy) / s0
+
+                    def offset(fit: dict[str, Any] | None, scale: float | None, height_scale: float | None) -> dict[str, Any] | None:
+                        if not fit or not fit.get("found"):
+                            return None
+                        dx, dy = fit["x"] - ox, fit["y"] - oy
+                        o: dict[str, Any] = {"offset_camera_px": [dx, dy], "distance_camera_px": math.hypot(dx, dy),
+                                             "distance_sigma_camera_px": (fit.get("uncertainty") or {}).get("centre_sigma_px"),
+                                             "arc_coverage_deg": (fit.get("arc_coverage") or {}).get("degrees_covered")}
+                        if scale:
+                            o.update({"offset_mm": [dx / scale, dy / scale], "distance_mm": math.hypot(dx, dy) / scale,
+                                      "distance_sigma_mm": (o["distance_sigma_camera_px"] or float("nan")) / scale,
+                                      "px_per_mm_used": scale})
+                            if s0 and height_scale:
+                                # the same physical centre moved to the film plane with the fish-plane model
+                                p = np.array(principal)
+                                film = p + s0 * (np.array([fit["x"], fit["y"]]) - p) / height_scale
+                                o["film_corrected_distance_mm"] = math.hypot(film[0] - ox, film[1] - oy) / s0
+                        return o
+
+                    primary = offset((rims.get("fixed") or {}).get("wall_top"), s_high, s_high)
+                    placement: dict[str, Any] = {}
+                    if primary:
+                        placement.update({"basis": "fixed_radius_wall_top_centre_vs_observed_crosshair", **primary,
+                                          "pass": bool(primary.get("distance_mm") is not None and
+                                                       primary["distance_mm"] <= args.max_dish_offset_mm),
+                                          "note": "PRIMARY (Jeremy 2026-11-15): wall top / inner rim centre from a fit "
+                                                  "with the radius fixed by the calipered diameter, against the cross "
+                                                  "Citrus drew; same camera image, no homography. mm at the wall-top "
+                                                  "scale; film_corrected_distance_mm moves it to the film with the model"})
+                    else:
+                        placement["basis"] = "fixed_radius_wall_top_unavailable"
+                    placement["cross_checks"] = {
+                        "free_wall_top": offset(rims["wall_top"], s_high, s_high),
+                        "free_floor_edge": offset(floor, s_low, s_low),
+                        "fixed_radius_floor_edge": offset((rims.get("fixed") or {}).get("floor_edge"), s_low, s_low)}
                     crosshair["dish_placement"] = placement
                     crosshair.pop("outline_vs_rim", None)
                     entry["crosshair"] = crosshair
@@ -1296,9 +1760,11 @@ def main(argv: list[str] | None = None) -> int:
             hc = x.get("homography_at_centre") or {}
             dp = x.get("dish_placement") or {}
             line += (f" | cross: homography at centre {hc.get('residual_mm_norm', float('nan')):.2f} mm"
-                     f", floor-edge centre vs cross {dp.get('distance_mm', float('nan')):.2f} mm"
-                     f" (film-corrected floor {dp.get('floor_edge_centre_corrected_to_film_vs_cross_mm_norm', float('nan')):.2f},"
-                     f" top {dp.get('wall_top_centre_corrected_to_film_vs_cross_mm_norm', float('nan')):.2f})")
+                     f", DISH (fixed-radius wall top) vs cross {dp.get('distance_mm', float('nan')):.2f}"
+                     f" +/- {dp.get('distance_sigma_mm', float('nan')):.2f} mm (arc {dp.get('arc_coverage_deg')} deg,"
+                     f" film-corrected {dp.get('film_corrected_distance_mm', float('nan')):.2f})"
+                     + "".join(f"; {k} {v['distance_mm']:.2f}" for k, v in (dp.get("cross_checks") or {}).items()
+                               if v and v.get("distance_mm") is not None))
         t = (c.get("dish") or {}).get("today") or {}
         for name in ("floor_edge", "wall_top"):
             fit = t.get(name) or {}
@@ -1308,9 +1774,22 @@ def main(argv: list[str] | None = None) -> int:
                          f"{fit['inliers']}/{fit['points']} inliers, resid median {fit['residual_px_median_abs_inliers']:.1f} "
                          f"max {fit['residual_px_max_abs_inliers']:.1f} px; per side "
                          + ", ".join(f"{k} {v['inliers']}" for k, v in fit["per_side"].items())
-                         + (f"; NO POINTS {missing}" if missing else ""))
+                         + (f"; NO POINTS {missing}" if missing else "")
+                         + f"; arc {fit['arc_coverage']['degrees_covered']} deg, largest gap {fit['arc_coverage']['largest_gap_deg']} deg"
+                         f" at {fit['arc_coverage']['largest_gap_centre_deg']} ({fit['arc_coverage']['largest_gap_side']})"
+                         f"; sigma centre {fit['uncertainty']['centre_sigma_px']:.2f} px"
+                         f" ({fit.get('uncertainty_mm', {}).get('centre_sigma_mm', float('nan')):.3f} mm),"
+                         f" radius {fit['uncertainty']['radius_sigma_px']:.2f} px")
             elif name in t:
                 line += f"\n    {name}: not found ({fit.get('reason')})"
+        for name in ("floor_edge_fixed_radius", "wall_top_fixed_radius"):
+            fx = t.get(name) or {}
+            if fx.get("found"):
+                line += (f"\n    {name}: r fixed {fx['radius_fixed_px']:.1f} px, {fx['points']} pts, resid median "
+                         f"{fx['residual_px_median_abs']:.1f} px, arc {fx['arc_coverage']['degrees_covered']} deg, sigma centre "
+                         f"{fx['uncertainty']['centre_sigma_px']:.2f} px; fixed vs free centre "
+                         f"{fx.get('fixed_vs_free_disagreement_mm', float('nan')):.2f} mm, free r - fixed r "
+                         f"{fx.get('free_radius_minus_fixed_px', float('nan')):.1f} px")
         par = t.get("parallax")
         if par:
             line += (f"\n    parallax: centre diff measured {np.round(par['centre_difference_measured_px'], 1).tolist()} px vs "

@@ -126,6 +126,25 @@ def test_two_rims_separates_floor_and_wall_top() -> None:
     require(all(v["inliers"] > 0 for v in top["per_side"].values()), "every side has wall-top points")
 
 
+def test_arc_coverage_and_bootstrap_on_a_partial_arc() -> None:
+    rng = np.random.default_rng(5)
+    full = rng.uniform(0, 2 * math.pi, 400)
+    part = rng.uniform(math.radians(-150), math.radians(60), 400)  # 210 deg arc, gap centred at 135 deg
+    sig = {}
+    for name, t in (("full", full), ("part", part)):
+        xs = 2000 + 1500 * np.cos(t) + rng.normal(0, 1.0, t.size)
+        ys = 2000 + 1500 * np.sin(t) + rng.normal(0, 1.0, t.size)
+        cov = rac.arc_coverage(xs, ys, 2000, 2000)
+        sig[name] = rac.bootstrap_circle(xs, ys)["centre_sigma_px"]
+        if name == "part":
+            require(200 <= cov["degrees_covered"] <= 215, f"partial arc coverage {cov['degrees_covered']}")
+            require(140 <= cov["largest_gap_deg"] <= 160 and cov["largest_gap_side"] in ("bottom", "left"),
+                    f"gap {cov['largest_gap_deg']} at {cov['largest_gap_centre_deg']} ({cov['largest_gap_side']})")
+        else:
+            require(cov["degrees_covered"] >= 330, "full arc coverage")
+    require(sig["part"] > sig["full"], f"a partial arc has the larger centre uncertainty {sig}")
+
+
 def test_grid_scenes(tmp: Path) -> None:
     path = tmp / "scenes.json"
     rac.emit_grid_scenes(path, ["arena_1", "arena_2"])
@@ -150,6 +169,7 @@ def main() -> int:
     test_crosshair_detection()
     test_ransac_circle_rejects_outliers()
     test_two_rims_separates_floor_and_wall_top()
+    test_arc_coverage_and_bootstrap_on_a_partial_arc()
     with tempfile.TemporaryDirectory() as tmp:
         test_grid_scenes(Path(tmp))
     if failures:

@@ -90,6 +90,39 @@ different heights; principal point assumed at the image centre, not measured);
 no homography), plus both centres corrected to the film plane with the model as a cross-check.
 `dish.registration_vs_today` compares the active registration with the wall-top fit.
 
+**Fixed-radius fits and uncertainty.** The dish is known: inner diameter 80.15 +/- 0.3 mm
+(calipered 2026-11-15). Per edge, a centre-only fit with the radius fixed at 40.075 mm x the
+fish-plane scale at that edge's plane (floor corner through water, or wall top): each ray
+contributes its edge step nearest the expected radius from the current centre (within 15 px),
+Gauss-Newton with 3 x MAD trimming. Every fit (free and fixed) reports arc coverage (degrees with
+points, counting gaps over 5 deg as uncovered, and the largest gap with its side) and a bootstrap
+1-sigma for the centre (and radius), in px and mm, so a partial-arc fit (a rim at the frame edge)
+shows how far to trust it. The fixed-vs-free centre disagreement is reported per edge.
+
+**Dish placement** (`crosshair.dish_placement`): PRIMARY is the fixed-radius wall-top centre
+against the observed cross (mm at the wall-top scale, with a film-corrected value), with
+`cross_checks` from the free wall top, the free floor edge and the fixed-radius floor edge.
+
+**Compare mode** (staged results, before and after a daily registration):
+
+```bash
+~/miniforge3/envs/juicebox/bin/python scripts/registration_accuracy_check.py \
+  --before <calsess, base geometry> --after <calsess, daily registration selected> \
+  [--daily-registration <citrus .../daily_registration_runtime_selection.json or registration.json>]
+```
+
+Runs the check on both sessions (`before/`, `after/`) and writes `registration_compare.json` and
+`Cam<serial>_compare.png`. Per camera: (a) BEFORE dish vs cross with its uncertainty; (b) the
+APPLIED translation from the registration file (canvas px, mm, and the cross's move in camera
+px) and, separately, what the after-session's scene status shows (the experimental-area centre
+change; if the status lacks it, the report says so and assumes nothing); the predicted AFTER
+offset; (c) AFTER dish vs cross; (d) the residual against `--max-after-mm` (default 0.5 mm: about
+2 canvas px) and its noise floor (the fixed wall-top fit's bootstrap centre sigma and the 0.5
+canvas px rounding of an integer translation), plus the spread to the cross-checks as the
+systematic term; the dot and centre-homography residuals before and after. The figure shows
+before | after: the crosshair frame at 1/8 and, below each, a 480 x 480 camera-px inset around
+the cross shown at 0.75x with the arrows and a 1 mm bar to that same scale (no exaggeration).
+
 Figures:
 - `Cam<serial>_dish_rim.png` (every camera with a uniform-gray frame, 1/4 size, legend below):
   the floor-edge fit (green) and the wall-top fit (magenta) with their centres and inlier points,
@@ -134,6 +167,23 @@ Today's dish, two edges (output `20261115T1947Z_grid9_crosshair_v3`):
 | 2010094 | 2118.0 px, 39.69 mm (177/703; top 6) | 2144.4 px, 40.07 mm (408/703) | (2.0, -31.7) / (0.1, 0.4) | 26.3 / 5.8 | 2.87 mm | 2.88 / 2.31 mm | bottom 1 px |
 | 2010095 | 2102.7 px, 39.44 mm (181/720; top 4) | 2132.7 px, 39.89 mm (285/720; left 10, top 5) | (-9.6, -26.1) / (0.1, 0.4) | 30.0 / 5.7 | 2.44 mm | 2.44 / 1.92 mm | bottom 20 px |
 | 2010096 | 2131.3 px, 39.98 mm (184/557) | 2154.8 px, 40.31 mm (273/557; right none) | (-0.1, -16.5) / (0.1, 0.0) | 23.4 / 5.8 | 1.52 mm | 1.53 / 1.55 mm | right 47 px |
+
+Fixed-radius fits (calipered 80.15 mm; output `20261115T1947Z_grid9_crosshair_v3`), the primary
+placement:
+
+| Camera | fixed wall top: points, arc, resid median, centre 1-sigma | fixed vs free wall-top centre | DISH vs cross (primary) | cross-checks: free wall top / free floor / fixed floor |
+| --- | --- | --- | --- | --- |
+| 2010093 | 701, 360 deg, 2.2 px, 0.30 px | 0.04 mm | 0.70 +/- 0.01 mm | 0.68 / 0.90 / 0.75 mm |
+| 2010094 | 680, 345.5 deg, 1.7 px, 0.21 px | 0.06 mm | 2.36 +/- 0.00 mm | 2.30 / 2.87 / 2.39 mm |
+| 2010095 | 689, 346.5 deg, 3.2 px, 0.39 px | 0.32 mm | 1.60 +/- 0.01 mm | 1.92 / 2.44 / 1.63 mm |
+| 2010096 | 529, 293.5 deg, 1.1 px, 0.17 px | 0.24 mm | 1.36 +/- 0.00 mm | 1.54 / 1.52 / 1.38 mm |
+
+The fixed fit covers 293-360 deg where the free fits cover 124-290 deg (2010094's rim is 1 px from
+the bottom of the frame and still fits). The statistical centre uncertainty is a few hundredths of
+a pixel to 0.4 px; the systematic term (fixed vs free, edge choice) is 0.04-0.32 mm. The
+fixed-radius floor fit is not an independent check: its expected radius (2137-2139 px at the floor
+corner) is within 6 px of the wall top, so it lands on the same edge; the lit floor's edge itself
+is 20-35 px smaller than the model's floor corner.
 
 Inlier residuals are 1.0-1.5 px median, 3 px max, for both edges on every camera. The edges do
 not behave like the floor/wall corner and the top of a 2.8 mm wall seen with parallax: the
