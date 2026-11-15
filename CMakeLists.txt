@@ -704,6 +704,9 @@ target_link_libraries(physical_target_fit_cli PRIVATE ${OpenCV_LIBS})
 
 add_executable(orange ${ORANGE_SOURCES})
 target_link_libraries(orange PRIVATE orange_daily_registered_context orange_rig_config_pin)
+# Empty-dish background record-start block (src/empty_background.cpp, zlib PNG).
+target_sources(orange PRIVATE "${SRC_DIR}/empty_background.cpp")
+target_link_libraries(orange PRIVATE ZLIB::ZLIB)
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 target_link_libraries(orange_client PRIVATE orange_rig_config_pin)
 # Empty-dish background binding (fixed.empty_background_capture); kept out of

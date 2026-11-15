@@ -2,8 +2,11 @@
 
 Date: 2026-11-02. Status: design agreed with Jeremy; file layout, descriptor
 and statistic names agreed with Palette (session palette-empty-background,
-2026-11-02, checked against Palette main f6f23487). Not implemented. The
-schema goes to agent-contracts before Orange writes any of these files.
+2026-11-02, checked against Palette main f6f23487). Schemas merged in
+agent-contracts `orange-palette/empty_background_v1`. Implemented on
+2026-11-15 (branch `agent/gui/empty-background-20261102`): the core library,
+the record-start binding and the headless key; the GUI capture action and its
+selection are not built yet (see the checklist).
 
 ## Purpose
 
@@ -251,21 +254,31 @@ they are.
       `orange_recording_empty_background_v1` (start-snapshot block),
       `orange_image_levels_v1` (shared `statistics`, also used by the
       image-levels check), with examples; codegen and jsonschema agree on them.
-- [ ] Palette review of the drafts; agent-contracts PR (push needs Jeremy's
-      word).
-- [ ] With the writer: `ORANGE_GENERATED_SCHEMAS` in CMake,
+- [x] Palette review of the drafts; agent-contracts
+      `orange-palette/empty_background_v1` merged (schemas and fixtures
+      byte-identical to this branch).
+- [x] With the writer: `ORANGE_GENERATED_SCHEMAS` in CMake,
       `published_schemas.EMBEDDED` entry for `/session/empty_background`, and
-      `check_output_surface.py --update`.
-- [ ] Burst capture and median on the snapshot worker; refused while
-      recording; per-camera timeout and failure reporting.
-- [ ] Background store and descriptor, written atomically, descriptor last.
+      `check_output_surface.py --update`; fixtures tested in jsonschema and the
+      generated readers (`empty_background_schema_fixture_tests`).
+- [ ] Burst capture on the snapshot worker; refused while recording;
+      per-camera timeout. (The median, the failure reporting in the
+      descriptor and the consecutive-frame check are in
+      `src/empty_background.cpp`; the worker today delivers single native
+      frames only, so a 17-consecutive-frame burst needs a worker change.)
+- [x] Background store and descriptor, written atomically, descriptor last
+      (`orange::empty_background::WriteCapture`).
 - [ ] GUI: Capture empty background (with the empty-dish declaration),
       selection at record start, the per-recording confirmation and the
       per-camera result display.
-- [ ] Record-start binding: settings check, copy, digest, start-snapshot block.
-- [ ] Headless spec key and the same binding.
-- [ ] Tests: median correctness, statistics, settings-drift flag per setting,
-      missing camera, copy failure, a recording that never selects one.
+- [x] Record-start binding: settings check, copy, digest, start-snapshot block
+      (`BindToRecording`; the GUI writes the not_selected block until its
+      selection exists).
+- [x] Headless spec key `fixed.empty_background_capture` (absolute path of
+      background.json) and the same binding.
+- [x] Tests: median correctness, statistics, settings-drift flag per setting,
+      missing camera, copy failure, a recording that never selects one
+      (`empty_background_tests`, `empty_background_schema_tests`).
 - [ ] Rig check: capture at 4512 x 4512 and 4512 x 1792, then a recording with
       the background attached, with 0 camera frame-id gaps and unchanged NIC
       counters.

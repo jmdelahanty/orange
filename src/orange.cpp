@@ -84,6 +84,8 @@
 #include "spatial_snapshot_worker.h"
 #include "gui/image_levels_check.h"
 #include "image_levels_camera.h"
+#include "empty_background.h"
+#include "empty_background_camera.h"
 #include "usaf_resolution_ui.h"
 #include <opencv2/opencv.hpp>
 
@@ -4429,6 +4431,27 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             }
         } catch (const std::exception& ex) {
             std::cerr << "[GUI][recording] WARNING image levels not captured: " << ex.what() << std::endl;
+        }
+    }
+    {
+        // Empty-dish background (docs/empty_background_capture_design.md):
+        // session.empty_background on every recording. The GUI capture action and
+        // its per-recording selection are not built yet, so every recording camera
+        // is not_selected (a declared absence; no files are written).
+        try {
+            std::vector<orange::empty_background::RecordingCamera> background_cameras;
+            for (int i = 0; i < num_cameras; ++i) {
+                if (cameras_select[i].record) {
+                    background_cameras.push_back({cameras_params[i].camera_serial,
+                        orange::empty_background::CameraConfigurationFromCamera(cameras_params[i])});
+                }
+            }
+            orange::empty_background::WriteRecordingBinding(prepared.recording_folder,
+                                                            orange::empty_background::BindingSelection{},
+                                                            background_cameras,
+                                                            update_recording_snapshot_session_artifacts);
+        } catch (const std::exception& ex) {
+            std::cerr << "[GUI][recording] WARNING empty background block not written: " << ex.what() << std::endl;
         }
     }
     {
