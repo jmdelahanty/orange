@@ -783,7 +783,10 @@ json BuildSubjectCrossCheck(const json& frozen_block, const std::map<std::string
                 const std::string pairs_with = stated_blank ? "orchard_run_plan" : "citrus_operator_declaration";
                 if (citrus_source != pairs_with) camera["differences"].push_back("blank_pairing");
             }
-            if (citrus_run_plan != orange_run_plan) camera["differences"].push_back("run_plan");
+            // One rule with Palette's later check: byte equality of the
+            // canonical form (canonical_json_utf8_sort_keys_compact_v1; nlohmann's
+            // compact dump sorts keys and writes UTF-8), so 2 and 2.0 differ.
+            if (citrus_run_plan.dump() != orange_run_plan.dump()) camera["differences"].push_back("run_plan");
             camera["status"] = camera["differences"].empty() ? "match" : "mismatch";
             if (!camera["differences"].empty()) ++mismatches;
         }

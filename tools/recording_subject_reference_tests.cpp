@@ -426,6 +426,10 @@ void test_cross_check_v2()
         const json overridden = BuildSubjectCrossCheck(frozen,
             {{"2010095", v2("19234_3", 1, "citrus_operator_declaration", nullptr)}}, plan, kNow);
         EXPECT(differences(overridden, "2010095") == json::array({"run_plan"}));
+        json as_float = plan; as_float["plan_revision"] = 2.0;  // same value, other canonical bytes
+        const json float_check = BuildSubjectCrossCheck(frozen,
+            {{"2010095", v2("19234_3", 1, "orchard_run_plan", as_float)}}, plan, kNow);
+        EXPECT(differences(float_check, "2010095") == json::array({"run_plan"}));
         const json undeclared = BuildSubjectCrossCheck(frozen,
             {{"2010095", v2("19234_3", 1, "orchard_run_plan", plan)}}, nullptr, kNow);
         EXPECT(differences(undeclared, "2010095") == json::array({"run_plan"}));

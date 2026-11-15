@@ -196,8 +196,10 @@ inline constexpr const char* kSubjectCrossCheckPolicyEndsWhen =
 //                           Citrus panel arena (citrus_operator_declaration);
 //   run_plan                Citrus's run_plan (null for the panel and for v1)
 //                           is not Orange's declaration v2 source, compared as
-//                           a whole object (orange_run_plan: the source of an
-//                           orchard_run_plan declaration, else null).
+//                           a whole object by its canonical bytes
+//                           (canonical_json_utf8_sort_keys_compact_v1, the rule
+//                           Palette's later check uses; orange_run_plan: the
+//                           source of an orchard_run_plan declaration, else null).
 nlohmann::json BuildSubjectCrossCheck(const nlohmann::json& frozen_block,
                                       const std::map<std::string, nlohmann::json>& citrus_by_camera,
                                       const nlohmann::json& orange_run_plan,
