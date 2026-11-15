@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -450,7 +452,169 @@ PhysicalRegistrationArtifactCandidate parse_candidate(
     }
 }
 
+bool known_selection_policy(const std::string& policy)
+{
+    return policy == kSelectionPolicyAcceptedWithGroupFit ||
+        policy == kSelectionPolicyExplicitOperatorSelection ||
+        policy == kSelectionPolicyExplicitOperatorReuse;
+}
+
+std::string current_utc_timestamp()
+{
+    const auto now = std::chrono::system_clock::now();
+    return format_utc_timestamp_seconds(static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count()));
+}
+
+// Evaluates a revalidated selection's freshness; returns false (with the
+// reason in *error_out) when the pointer's own record is inconsistent.
+bool evaluate_freshness(
+    const nlohmann::json& pointer,
+    const PhysicalRegistrationArtifactCandidate& candidate,
+    const std::string& evaluated_at_utc,
+    nlohmann::json* freshness_out,
+    bool* fresh_out,
+    std::string* error_out)
+{
+    const int version = pointer.value("schema_version", 0);
+    // Version 1 pointers predate reuse: their window starts at the fit.
+    const std::string policy = version == kActivePhysicalRegistrationPointerReadableV1
+        ? std::string(kSelectionPolicyExplicitOperatorSelection)
+        : pointer.value("selection_policy", std::string());
+    if (!known_selection_policy(policy)) {
+        if (error_out) *error_out = "active_pointer_selection_policy_unknown:" + policy;
+        return false;
+    }
+    const std::string selected_at = pointer.value("selected_at_utc", std::string());
+    std::string valid_from;
+    std::string valid_until;
+    std::string window_error;
+    if (!physical_registration_freshness_window(
+            candidate.created_utc, policy, selected_at,
+            &valid_from, &valid_until, &window_error)) {
+        if (error_out) *error_out = window_error;
+        return false;
+    }
+    if (version != kActivePhysicalRegistrationPointerReadableV1) {
+        const nlohmann::json recorded = pointer.value("freshness", nlohmann::json::object());
+        if (!recorded.is_object() ||
+            recorded.value("rule", std::string()) != kPhysicalRegistrationFreshnessRule ||
+            recorded.value("fit_created_utc", std::string()) != candidate.created_utc ||
+            recorded.value("valid_from_utc", std::string()) != valid_from ||
+            recorded.value("valid_until_utc", std::string()) != valid_until) {
+            if (error_out) *error_out = "active_pointer_freshness_record_mismatch";
+            return false;
+        }
+    }
+    long long until_s = 0;
+    long long evaluated_s = 0;
+    parse_utc_timestamp_seconds(valid_until, &until_s);
+    if (!parse_utc_timestamp_seconds(evaluated_at_utc, &evaluated_s)) {
+        if (error_out) *error_out = "freshness_evaluation_time_unparseable:" + evaluated_at_utc;
+        return false;
+    }
+    const bool fresh = evaluated_s < until_s;
+    *fresh_out = fresh;
+    *freshness_out = {
+        {"rule", kPhysicalRegistrationFreshnessRule},
+        {"selection_policy", policy},
+        {"fit_created_utc", candidate.created_utc},
+        {"valid_from_utc", valid_from},
+        {"valid_until_utc", valid_until},
+        {"evaluated_at_utc", evaluated_at_utc},
+        {"state", fresh ? "fresh" : "expired"},
+    };
+    return true;
+}
+
 }  // namespace
+
+bool parse_utc_timestamp_seconds(const std::string& utc, long long* seconds_out)
+{
+    // YYYY-MM-DDTHH:MM:SS, optional .fraction, then Z.
+    if (utc.size() < 20 || utc.back() != 'Z') return false;
+    const auto digits = [&](std::size_t at, std::size_t count, int* out) {
+        if (at + count > utc.size()) return false;
+        int value = 0;
+        for (std::size_t index = at; index < at + count; ++index) {
+            if (!std::isdigit(static_cast<unsigned char>(utc[index]))) return false;
+            value = value * 10 + (utc[index] - '0');
+        }
+        *out = value;
+        return true;
+    };
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (!digits(0, 4, &year) || utc[4] != '-' || !digits(5, 2, &month) ||
+        utc[7] != '-' || !digits(8, 2, &day) || utc[10] != 'T' ||
+        !digits(11, 2, &hour) || utc[13] != ':' || !digits(14, 2, &minute) ||
+        utc[16] != ':' || !digits(17, 2, &second)) {
+        return false;
+    }
+    if (utc.size() != 20) {
+        if (utc[19] != '.' || utc.size() < 22) return false;
+        for (std::size_t index = 20; index + 1 < utc.size(); ++index) {
+            if (!std::isdigit(static_cast<unsigned char>(utc[index]))) return false;
+        }
+    }
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 ||
+        minute > 59 || second > 60) {
+        return false;
+    }
+    std::tm tm{};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = hour;
+    tm.tm_min = minute;
+    tm.tm_sec = second;
+    const time_t seconds = ::timegm(&tm);
+    if (seconds == static_cast<time_t>(-1)) return false;
+    if (seconds_out) *seconds_out = static_cast<long long>(seconds);
+    return true;
+}
+
+std::string format_utc_timestamp_seconds(long long seconds)
+{
+    const time_t value = static_cast<time_t>(seconds);
+    std::tm tm{};
+    ::gmtime_r(&value, &tm);
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buffer;
+}
+
+bool physical_registration_freshness_window(
+    const std::string& fit_created_utc,
+    const std::string& policy,
+    const std::string& selected_at_utc,
+    std::string* valid_from_utc_out,
+    std::string* valid_until_utc_out,
+    std::string* error_out)
+{
+    if (!known_selection_policy(policy)) {
+        if (error_out) *error_out = "selection_policy_unknown:" + policy;
+        return false;
+    }
+    long long fit_s = 0;
+    if (!parse_utc_timestamp_seconds(fit_created_utc, &fit_s)) {
+        if (error_out) *error_out = "fit_created_utc_unparseable:" + fit_created_utc;
+        return false;
+    }
+    long long from_s = fit_s;
+    if (policy == kSelectionPolicyExplicitOperatorReuse) {
+        if (!parse_utc_timestamp_seconds(selected_at_utc, &from_s)) {
+            if (error_out) *error_out = "selected_at_utc_unparseable:" + selected_at_utc;
+            return false;
+        }
+    }
+    if (valid_from_utc_out) *valid_from_utc_out = format_utc_timestamp_seconds(from_s);
+    if (valid_until_utc_out) {
+        *valid_until_utc_out = format_utc_timestamp_seconds(
+            from_s + kPhysicalRegistrationFreshnessSeconds);
+    }
+    return true;
+}
 
 fs::path active_physical_registration_pointer_path(
     const fs::path& calibration_base_dir,
@@ -540,6 +704,19 @@ PhysicalRegistrationSelectionResolution resolve_active_physical_registration(
     int expected_height_px,
     const std::string& expected_pixel_format)
 {
+    return resolve_active_physical_registration(
+        calibration_base_dir, camera_serial, expected_width_px,
+        expected_height_px, expected_pixel_format, current_utc_timestamp());
+}
+
+PhysicalRegistrationSelectionResolution resolve_active_physical_registration(
+    const fs::path& calibration_base_dir,
+    const std::string& camera_serial,
+    int expected_width_px,
+    int expected_height_px,
+    const std::string& expected_pixel_format,
+    const std::string& evaluated_at_utc)
+{
     PhysicalRegistrationSelectionResolution result;
     const fs::path pointer_path = active_physical_registration_pointer_path(
         calibration_base_dir, camera_serial);
@@ -562,10 +739,11 @@ PhysicalRegistrationSelectionResolution resolve_active_physical_registration(
         return result;
     }
     try {
+        const int pointer_version = result.pointer.value("schema_version", 0);
         if (result.pointer.value("schema_id", std::string()) !=
                 kActivePhysicalRegistrationPointerSchemaId ||
-            result.pointer.value("schema_version", 0) !=
-                kActivePhysicalRegistrationPointerSchemaVersion ||
+            (pointer_version != kActivePhysicalRegistrationPointerSchemaVersion &&
+             pointer_version != kActivePhysicalRegistrationPointerReadableV1) ||
             result.pointer.value("camera_serial", std::string()) !=
                 camera_serial) {
             result.status = "invalid_pointer";
@@ -622,6 +800,22 @@ PhysicalRegistrationSelectionResolution resolve_active_physical_registration(
                 "selected_observation_or_manifest_digest_or_identity_mismatch";
             return result;
         }
+        bool fresh = false;
+        std::string freshness_error;
+        if (!evaluate_freshness(result.pointer, result.candidate, evaluated_at_utc,
+                                &result.freshness, &fresh, &freshness_error)) {
+            result.status = "invalid_pointer";
+            result.error = freshness_error;
+            return result;
+        }
+        if (!fresh) {
+            // Never silently used: an expired selection is invalid until the
+            // operator registers again or explicitly reuses it.
+            result.status = "invalid_selected";
+            result.error = "selection_expired:valid_until=" +
+                result.freshness.value("valid_until_utc", std::string());
+            return result;
+        }
         result.valid = true;
         result.status = "selected";
         return result;
@@ -638,9 +832,19 @@ PhysicalRegistrationSelectionResolution resolve_active_physical_registration(
 bool select_physical_registration_artifact(
     const fs::path& calibration_base_dir,
     const PhysicalRegistrationArtifactCandidate& candidate,
-    const std::string& selected_at_utc,
+    const PhysicalRegistrationSelectionRequest& request,
     std::string* error_out)
 {
+    const std::string& selected_at_utc = request.selected_at_utc;
+    if (!known_selection_policy(request.policy)) {
+        if (error_out) *error_out = "Unknown physical registration selection policy: " + request.policy;
+        return false;
+    }
+    if (request.policy == kSelectionPolicyAcceptedWithGroupFit &&
+        request.group_transaction_id.empty()) {
+        if (error_out) *error_out = "A group-accepted selection needs its group transaction id.";
+        return false;
+    }
     if (!candidate.compatible || candidate.camera_serial.empty() ||
         candidate.artifact_id.empty() ||
         candidate.observation_sha256.empty()) {
@@ -667,7 +871,44 @@ bool select_physical_registration_artifact(
         }
         return false;
     }
-    const nlohmann::json pointer = {
+    std::string valid_from;
+    std::string valid_until;
+    std::string window_error;
+    if (!physical_registration_freshness_window(
+            validated.created_utc, request.policy, selected_at_utc,
+            &valid_from, &valid_until, &window_error)) {
+        if (error_out) *error_out = "Physical registration freshness: " + window_error;
+        return false;
+    }
+    long long fit_s = 0;
+    long long selected_s = 0;
+    parse_utc_timestamp_seconds(validated.created_utc, &fit_s);
+    if (!parse_utc_timestamp_seconds(selected_at_utc, &selected_s)) {
+        if (error_out) *error_out = "Selection time does not parse: " + selected_at_utc;
+        return false;
+    }
+    const long long fit_age_s = selected_s - fit_s;
+    const bool fit_inside_window = fit_age_s < kPhysicalRegistrationFreshnessSeconds;
+    if (request.policy == kSelectionPolicyExplicitOperatorReuse && fit_inside_window) {
+        if (error_out) {
+            *error_out = "This fit is still inside its one-day window; select it normally, not as a reuse.";
+        }
+        return false;
+    }
+    if (request.policy != kSelectionPolicyExplicitOperatorReuse && !fit_inside_window) {
+        if (error_out) {
+            *error_out = "This fit is older than one day; register again, or reuse it explicitly.";
+        }
+        return false;
+    }
+    nlohmann::json freshness = {
+        {"rule", kPhysicalRegistrationFreshnessRule},
+        {"fit_created_utc", validated.created_utc},
+        {"fit_age_seconds_at_selection", fit_age_s},
+        {"valid_from_utc", valid_from},
+        {"valid_until_utc", valid_until},
+    };
+    nlohmann::json pointer = {
         {"schema_id", kActivePhysicalRegistrationPointerSchemaId},
         {"schema_version", kActivePhysicalRegistrationPointerSchemaVersion},
         {"status", "selected"},
@@ -694,8 +935,12 @@ bool select_physical_registration_artifact(
             {"coordinate_space", "camera_native_pixels"},
             {"physical_target", "dish_top_rim"},
         }},
-        {"selection_policy", "explicit_operator_selection"},
+        {"selection_policy", request.policy},
+        {"freshness", std::move(freshness)},
     };
+    if (request.policy == kSelectionPolicyAcceptedWithGroupFit) {
+        pointer["group_transaction_id"] = request.group_transaction_id;
+    }
     return write_json_atomically(
         active_physical_registration_pointer_path(
             calibration_base_dir, validated.camera_serial),
@@ -706,25 +951,103 @@ bool clear_active_physical_registration(
     const fs::path& calibration_base_dir,
     const std::string& camera_serial,
     const std::string& cleared_at_utc,
-    std::string* error_out)
+    std::string* error_out,
+    const std::string& policy,
+    const std::string& group_transaction_id)
 {
     if (camera_serial.empty()) {
         if (error_out) *error_out = "Camera serial is required to clear selection.";
         return false;
     }
-    const nlohmann::json pointer = {
+    if (policy != kClearPolicyExplicitOperatorClear &&
+        policy != kClearPolicyFitNotAcceptedInGroup) {
+        if (error_out) *error_out = "Unknown physical registration clear policy: " + policy;
+        return false;
+    }
+    if (policy == kClearPolicyFitNotAcceptedInGroup && group_transaction_id.empty()) {
+        if (error_out) *error_out = "A group clear needs its group transaction id.";
+        return false;
+    }
+    nlohmann::json pointer = {
         {"schema_id", kActivePhysicalRegistrationPointerSchemaId},
         {"schema_version", kActivePhysicalRegistrationPointerSchemaVersion},
         {"status", "cleared"},
         {"camera_serial", camera_serial},
         {"cleared_at_utc", cleared_at_utc},
         {"selection", nullptr},
-        {"selection_policy", "explicit_operator_clear"},
+        {"selection_policy", policy},
     };
+    if (!group_transaction_id.empty()) pointer["group_transaction_id"] = group_transaction_id;
     return write_json_atomically(
         active_physical_registration_pointer_path(
             calibration_base_dir, camera_serial),
         pointer, error_out);
+}
+
+bool apply_physical_registration_group_acceptance(
+    const fs::path& calibration_base_dir,
+    const std::string& group_transaction_id,
+    const std::vector<PhysicalRegistrationArtifactCandidate>& accepted,
+    const std::vector<std::string>& not_accepted_camera_serials,
+    const std::string& accepted_at_utc,
+    std::vector<PhysicalRegistrationGroupAcceptanceResult>* results_out,
+    std::string* error_out)
+{
+    if (group_transaction_id.empty()) {
+        if (error_out) *error_out = "group_transaction_id_missing";
+        return false;
+    }
+    std::vector<PhysicalRegistrationGroupAcceptanceResult> results;
+    std::vector<std::string> failures;
+    const auto pointer_sha = [&](const std::string& serial) {
+        std::string sha;
+        std::string ignored;
+        checksum::file_sha256(
+            active_physical_registration_pointer_path(calibration_base_dir, serial),
+            &sha, &ignored);
+        return sha;
+    };
+    for (const auto& candidate : accepted) {
+        PhysicalRegistrationGroupAcceptanceResult result;
+        result.camera_serial = candidate.camera_serial;
+        result.action = "selected";
+        result.artifact_id = candidate.artifact_id;
+        result.observation_sha256 = candidate.observation_sha256;
+        PhysicalRegistrationSelectionRequest request;
+        request.selected_at_utc = accepted_at_utc;
+        request.policy = kSelectionPolicyAcceptedWithGroupFit;
+        request.group_transaction_id = group_transaction_id;
+        if (!select_physical_registration_artifact(
+                calibration_base_dir, candidate, request, &result.error)) {
+            failures.push_back(candidate.camera_serial + ": " + result.error);
+        } else {
+            result.pointer_sha256 = pointer_sha(candidate.camera_serial);
+        }
+        results.push_back(std::move(result));
+    }
+    for (const auto& serial : not_accepted_camera_serials) {
+        PhysicalRegistrationGroupAcceptanceResult result;
+        result.camera_serial = serial;
+        result.action = "cleared";
+        if (!clear_active_physical_registration(
+                calibration_base_dir, serial, accepted_at_utc, &result.error,
+                kClearPolicyFitNotAcceptedInGroup, group_transaction_id)) {
+            failures.push_back(serial + ": " + result.error);
+        } else {
+            result.pointer_sha256 = pointer_sha(serial);
+        }
+        results.push_back(std::move(result));
+    }
+    if (results_out) *results_out = std::move(results);
+    if (!failures.empty()) {
+        if (error_out) {
+            std::string joined = "physical_registration_group_selection_failed:";
+            for (const auto& failure : failures) joined += " [" + failure + "]";
+            *error_out = joined;
+        }
+        return false;
+    }
+    return true;
 }
 
 }  // namespace orange::gui::spatial_layout

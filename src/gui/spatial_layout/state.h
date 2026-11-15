@@ -398,6 +398,8 @@ struct PhysicalRegistrationSelectionUiState {
     int selected_candidate_index = -1;
     nlohmann::json active_pointer = nlohmann::json::object();
     bool replace_selection_armed = false;
+    // A fit older than one day is selected only as an explicit reuse.
+    bool reuse_older_fit_armed = false;
     bool clear_selection_armed = false;
     std::string status;
     std::string error;

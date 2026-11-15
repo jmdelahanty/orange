@@ -103,8 +103,14 @@ void refresh(
     state->loaded_camera_serial = camera.camera_serial;
     state->initialized = true;
     state->replace_selection_armed = false;
+    state->reuse_older_fit_armed = false;
     state->clear_selection_armed = false;
-    if (active.status == "invalid_pointer" ||
+    if (active.status == "invalid_selected" &&
+        active.error.rfind("selection_expired", 0) == 0) {
+        state->error = active.error;
+        state->status =
+            "The selected physical registration is older than one day and is not used. Register again, or reuse it explicitly.";
+    } else if (active.status == "invalid_pointer" ||
         active.status == "invalid_selected") {
         state->error = active.error;
         state->status = "Selected physical registration is invalid; it was not replaced automatically.";
@@ -138,7 +144,7 @@ void render_physical_registration_selection_panel(
 
     ImGui::SeparatorText("Physical Registration Selection");
     ImGui::TextWrapped(
-        "Accepted evidence and runtime selection are separate. Selecting atomically updates Orange's per-camera active pointer; clearing never deletes immutable artifacts.");
+        "Accepting a group's fits selects them. Here you can select one exact artifact per camera; a selection counts for one day from the fit (or from an explicit reuse). Clearing never deletes immutable artifacts.");
     if (ImGui::Button("Refresh Physical Registrations")) {
         refresh(&state, selected_camera, artifact_root_dir);
     }
@@ -219,17 +225,40 @@ void render_physical_registration_selection_panel(
     ImGui::Checkbox(
         "I intend to replace the active selection with this exact artifact",
         &state.replace_selection_armed);
+    const std::string now_utc = get_current_utc_timestamp();
+    bool candidate_older_than_window = false;
+    if (candidate_index_valid) {
+        long long fit_s = 0;
+        long long now_s = 0;
+        candidate_older_than_window =
+            parse_utc_timestamp_seconds(
+                state.candidates[static_cast<std::size_t>(
+                    state.selected_candidate_index)].created_utc, &fit_s) &&
+            parse_utc_timestamp_seconds(now_utc, &now_s) &&
+            now_s - fit_s >= kPhysicalRegistrationFreshnessSeconds;
+    }
+    if (candidate_older_than_window) {
+        ImGui::Checkbox(
+            "This fit is older than one day: reuse it on purpose (recorded as a reuse; counts for one day from now)",
+            &state.reuse_older_fit_armed);
+    }
     ImGui::BeginDisabled(
         recording_mutation_locked || !candidate_compatible ||
-        !state.replace_selection_armed);
+        !state.replace_selection_armed ||
+        (candidate_older_than_window && !state.reuse_older_fit_armed));
     if (ImGui::Button("Select Exact Physical Registration")) {
         const auto& selected = state.candidates[static_cast<std::size_t>(
             state.selected_candidate_index)];
         std::string error;
+        PhysicalRegistrationSelectionRequest request;
+        request.selected_at_utc = now_utc;
+        request.policy = candidate_older_than_window
+            ? kSelectionPolicyExplicitOperatorReuse
+            : kSelectionPolicyExplicitOperatorSelection;
         if (!select_physical_registration_artifact(
                 calibration_base_dir_from_artifact_root(artifact_root_dir),
                 from_ui_candidate(selected, selected_camera.pixel_format),
-                get_current_utc_timestamp(), &error)) {
+                request, &error)) {
             state.error = error;
         } else {
             refresh(&state, selected_camera, artifact_root_dir);

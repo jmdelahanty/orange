@@ -208,19 +208,24 @@ bool write_json_atomically(
     return write_json_file(path, value, error_out);
 }
 
-bool all_rims_confirmed(
+// A target's fit is accepted when it was detected and the operator confirmed
+// it with a valid circle. Only accepted fits are saved and selected; the
+// group's other cameras are cleared (Jeremy 2026-11-15).
+bool target_rim_accepted(const PhysicalDishRegistrationTargetUiState& target)
+{
+    return target.rim_detection_ok &&
+        target.rim_operator_confirmed &&
+        target.accepted_rim_radius_camera_px > 0.0 &&
+        std::isfinite(target.accepted_rim_center_x_camera_px) &&
+        std::isfinite(target.accepted_rim_center_y_camera_px) &&
+        std::isfinite(target.accepted_rim_radius_camera_px);
+}
+
+bool any_rim_accepted(
     const StandalonePhysicalRegistrationWorkflowUiState& workflow)
 {
-    return !workflow.targets.empty() && std::all_of(
-        workflow.targets.begin(), workflow.targets.end(),
-        [](const auto& target) {
-            return target.rim_detection_ok &&
-                target.rim_operator_confirmed &&
-                target.accepted_rim_radius_camera_px > 0.0 &&
-                std::isfinite(target.accepted_rim_center_x_camera_px) &&
-                std::isfinite(target.accepted_rim_center_y_camera_px) &&
-                std::isfinite(target.accepted_rim_radius_camera_px);
-        });
+    return std::any_of(
+        workflow.targets.begin(), workflow.targets.end(), target_rim_accepted);
 }
 
 bool capture_identity_is_valid(
@@ -430,6 +435,7 @@ bool queue_artifacts(
     std::vector<TopRimObservationSaveJob> jobs;
     jobs.reserve(workflow->targets.size());
     for (auto& target : workflow->targets) {
+        if (!target_rim_accepted(target)) continue;  // not accepted: no artifact
         const CameraParams* camera = find_camera(
             cameras, camera_count, target.camera_serial);
         if (camera == nullptr) {
@@ -488,8 +494,18 @@ bool queue_artifacts(
 nlohmann::json target_manifest_json(
     const PhysicalDishRegistrationTargetUiState& target)
 {
+    if (!target_rim_accepted(target)) {
+        return {
+            {"camera_serial", target.camera_serial},
+            {"acceptance", "not_accepted"},
+            {"rim_detection_ok", target.rim_detection_ok},
+            {"rim_detection_error", target.rim_detection_error},
+            {"operator_confirmed", target.rim_operator_confirmed},
+        };
+    }
     return {
         {"camera_serial", target.camera_serial},
+        {"acceptance", "accepted"},
         {"raw_hough_circle", {
             {"center_px", {
                 {"x", target.detected_rim_center_x_camera_px},
@@ -529,7 +545,14 @@ bool finalize_group_manifest(
     std::string* error_out)
 {
     nlohmann::json targets = nlohmann::json::array();
+    std::vector<PhysicalRegistrationArtifactCandidate> accepted;
+    std::vector<std::string> not_accepted;
     for (auto& target : workflow->targets) {
+        if (!target_rim_accepted(target)) {
+            not_accepted.push_back(target.camera_serial);
+            targets.push_back(target_manifest_json(target));
+            continue;
+        }
         const PhysicalRegistrationArtifactCandidate candidate =
             validate_physical_registration_artifact(
                 workflow->calibration_base_dir,
@@ -551,11 +574,32 @@ bool finalize_group_manifest(
         target.rim_manifest_path = candidate.manifest_path.string();
         target.rim_manifest_sha256 = candidate.manifest_sha256;
         targets.push_back(target_manifest_json(target));
+        accepted.push_back(candidate);
+    }
+    // Accepting selects: every accepted fit becomes its camera's active
+    // selection, and the group's other cameras are cleared.
+    std::vector<PhysicalRegistrationGroupAcceptanceResult> selection_results;
+    std::string selection_error;
+    const bool selection_ok = apply_physical_registration_group_acceptance(
+        workflow->calibration_base_dir, workflow->transaction_id, accepted,
+        not_accepted, get_current_utc_timestamp(), &selection_results,
+        &selection_error);
+    nlohmann::json selection_rows = nlohmann::json::array();
+    for (const auto& result : selection_results) {
+        nlohmann::json row = {
+            {"camera_serial", result.camera_serial},
+            {"action", result.action},
+            {"pointer_sha256", result.pointer_sha256},
+            {"ok", result.error.empty()},
+        };
+        if (!result.artifact_id.empty()) row["artifact_id"] = result.artifact_id;
+        if (!result.error.empty()) row["error"] = result.error;
+        selection_rows.push_back(std::move(row));
     }
     const nlohmann::json manifest = {
         {"schema_id",
          "orange.calibration.standalone_physical_registration_group"},
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"status", "accepted"},
         {"transaction_id", workflow->transaction_id},
         {"created_utc", workflow->created_utc},
@@ -575,8 +619,11 @@ bool finalize_group_manifest(
          ui_state->group_capture_metadata.capture_group_membership},
         {"targets", targets},
         {"selection", {
-            {"status", "available_not_selected"},
-            {"reason", "operator_selection_is_a_separate_action"},
+            {"status", selection_ok ? "selected_on_acceptance"
+                                    : "selection_incomplete"},
+            {"policy", kSelectionPolicyAcceptedWithGroupFit},
+            {"freshness_rule", kPhysicalRegistrationFreshnessRule},
+            {"cameras", selection_rows},
         }},
     };
     workflow->grouped_manifest_path =
@@ -587,6 +634,10 @@ bool finalize_group_manifest(
             workflow->grouped_manifest_path,
             &workflow->grouped_manifest_sha256,
             error_out)) {
+        return false;
+    }
+    if (!selection_ok) {
+        if (error_out) *error_out = selection_error;
         return false;
     }
     return true;
@@ -894,7 +945,7 @@ void advance_standalone_physical_registration_workflow(
         workflow.active = false;
         workflow.stage = "failed";
         workflow.status =
-            "Standalone physical registration failed; immutable evidence already written, if any, is preserved and no active selection changed.";
+            "Standalone physical registration failed; immutable evidence already written, if any, is preserved. See the group manifest for any camera whose selection was already written.";
         workflow.error = error;
         release_spatial_calibration_transaction(
             ui_state, "failed", error);
@@ -942,7 +993,7 @@ void advance_standalone_physical_registration_workflow(
         workflow.active = false;
         workflow.stage = "complete";
         workflow.status =
-            "Accepted physical registrations saved. They are available but not selected; choose each camera's intended artifact below.";
+            "Accepted physical registrations saved and selected for one day; cameras whose fit was not accepted were cleared.";
         workflow.error.clear();
         release_spatial_calibration_transaction(
             ui_state, "complete", workflow.status);
@@ -1021,12 +1072,12 @@ void render_standalone_physical_registration_workflow_panel(
         render_review_images(*ui_state, &workflow);
         render_target_table(&workflow);
         ImGui::Checkbox(
-            "I accept these physical fits; save does not select them for runtime",
+            "I accept the confirmed fits: they become the selection for one day, and unconfirmed cameras are cleared",
             &workflow.save_accepted_rims_armed);
         ImGui::BeginDisabled(
-            !all_rims_confirmed(workflow) ||
+            !any_rim_accepted(workflow) ||
             !workflow.save_accepted_rims_armed);
-        if (ImGui::Button("Save Accepted Physical Registrations")) {
+        if (ImGui::Button("Save and Select Accepted Physical Registrations")) {
             std::string error;
             if (!queue_artifacts(
                     ui_state, &workflow, cameras_params, num_cameras, &error)) {

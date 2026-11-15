@@ -26,6 +26,21 @@ using orange::gui::spatial_layout::active_physical_registration_pointer_path;
 using orange::gui::spatial_layout::resolve_active_physical_registration;
 using orange::gui::spatial_layout::select_physical_registration_artifact;
 using orange::gui::spatial_layout::validate_physical_registration_artifact;
+using orange::gui::spatial_layout::apply_physical_registration_group_acceptance;
+using orange::gui::spatial_layout::PhysicalRegistrationGroupAcceptanceResult;
+using orange::gui::spatial_layout::PhysicalRegistrationSelectionRequest;
+
+// The fixtures' fits are created at 2026-08-23T12:00:00Z; resolving "now"
+// within the one-day window keeps them fresh.
+constexpr const char* kInsideWindow = "2026-08-23T13:00:00Z";
+
+PhysicalRegistrationSelectionRequest operator_selection(const std::string& at)
+{
+    PhysicalRegistrationSelectionRequest request;
+    request.selected_at_utc = at;
+    request.policy = orange::gui::spatial_layout::kSelectionPolicyExplicitOperatorSelection;
+    return request;
+}
 
 void require(bool condition, const std::string& message)
 {
@@ -227,10 +242,10 @@ void test_selection_lifecycle()
 
     std::string error;
     require(select_physical_registration_artifact(
-                root, candidates[0], "2026-08-23T12:01:00Z", &error),
+                root, candidates[0], operator_selection("2026-08-23T12:01:00Z"), &error),
             "selection should succeed: " + error);
     auto resolved = resolve_active_physical_registration(
-        root, "2010095", 4512, 4512, "Mono8");
+        root, "2010095", 4512, 4512, "Mono8", kInsideWindow);
     require(resolved.pointer_exists, "active pointer should exist");
     require(resolved.selected && resolved.valid,
             "selected artifact must revalidate after restart");
@@ -244,7 +259,7 @@ void test_selection_lifecycle()
         1999.0;
     write_json(observation_path, tampered);
     resolved = resolve_active_physical_registration(
-        root, "2010095", 4512, 4512, "Mono8");
+        root, "2010095", 4512, 4512, "Mono8", kInsideWindow);
     require(resolved.selected && !resolved.valid,
             "tampered selected artifact must fail closed");
     require(resolved.status == "invalid_selected",
@@ -254,7 +269,7 @@ void test_selection_lifecycle()
                 root, "2010095", "2026-08-23T12:02:00Z", &error),
             "clear should succeed: " + error);
     resolved = resolve_active_physical_registration(
-        root, "2010095", 4512, 4512, "Mono8");
+        root, "2010095", 4512, 4512, "Mono8", kInsideWindow);
     require(resolved.pointer_exists && !resolved.selected && !resolved.valid,
             "cleared pointer must be explicitly unselected");
     require(resolved.status == "not_selected", "clear status expected");
@@ -299,12 +314,12 @@ void test_compatibility_and_selection_race()
     write_json(observation_path, changed);
     std::string error;
     require(!select_physical_registration_artifact(
-                root, candidates[0], "2026-08-23T12:03:00Z", &error),
+                root, candidates[0], operator_selection("2026-08-23T12:03:00Z"), &error),
             "selection must reject evidence changed after review");
     require(!error.empty(), "race rejection should explain failure");
 
     const auto resolved = resolve_active_physical_registration(
-        root, "2010096", 4512, 4512, "Mono8");
+        root, "2010096", 4512, 4512, "Mono8", kInsideWindow);
     require(!resolved.pointer_exists,
             "failed selection must not publish an active pointer");
 
@@ -362,7 +377,7 @@ void test_malformed_json_fails_closed()
         {"selection", nullptr},
     });
     const auto resolved = resolve_active_physical_registration(
-        root, "2010095", 4512, 4512, "Mono8");
+        root, "2010095", 4512, 4512, "Mono8", kInsideWindow);
     require(resolved.pointer_exists && !resolved.valid && !resolved.selected,
             "null selected pointer must fail closed without throwing");
     require(resolved.status == "invalid_pointer",
@@ -370,7 +385,7 @@ void test_malformed_json_fails_closed()
 
     write_json(pointer_path, nlohmann::json::array({"not", "an", "object"}));
     const auto non_object_resolved = resolve_active_physical_registration(
-        root, "2010095", 4512, 4512, "Mono8");
+        root, "2010095", 4512, 4512, "Mono8", kInsideWindow);
     require(non_object_resolved.pointer_exists &&
                 !non_object_resolved.valid &&
                 non_object_resolved.status == "invalid_pointer",
@@ -395,7 +410,7 @@ void test_recording_prearm_snapshot_and_runtime_marking()
     require(candidate.compatible, "recording candidate must validate");
     std::string error;
     require(select_physical_registration_artifact(
-                root, candidate, "2026-08-23T12:04:00Z", &error),
+                root, candidate, operator_selection("2026-08-23T12:04:00Z"), &error),
             "recording selection should succeed: " + error);
 
     nlohmann::json contract = {
@@ -464,6 +479,236 @@ void test_recording_prearm_snapshot_and_runtime_marking()
     fs::remove_all(root, ignored);
 }
 
+fs::path write_fixture_artifact(
+    const fs::path& root,
+    const std::string& session,
+    const std::string& artifact_id,
+    const std::string& serial,
+    const std::string& created_utc)
+{
+    const fs::path observation_path = root / "sessions" / session /
+        "artifacts" / ("Cam" + serial + "_arena_unknown") /
+        "top_rim_observations" / artifact_id / "observation.json";
+    nlohmann::json observation = accepted_observation(
+        artifact_id, serial, 4512, 4512, "Mono8");
+    observation["created_utc"] = created_utc;
+    write_complete_artifact(observation_path, observation);
+    return observation_path;
+}
+
+nlohmann::json read_pointer(const fs::path& root, const std::string& serial)
+{
+    std::ifstream stream(active_physical_registration_pointer_path(root, serial));
+    nlohmann::json pointer;
+    stream >> pointer;
+    return pointer;
+}
+
+void test_one_day_freshness()
+{
+    const fs::path root = make_root();
+    const fs::path path = write_fixture_artifact(
+        root, "s_fresh", "rim_fresh", "2010093", "2026-11-15T10:00:00Z");
+    const auto candidate = validate_physical_registration_artifact(
+        root, path, "2010093", 4512, 4512, "Mono8");
+    require(candidate.compatible, "fresh fixture must validate");
+    std::string error;
+    require(select_physical_registration_artifact(
+                root, candidate, operator_selection("2026-11-15T10:05:00Z"), &error),
+            "selection of a fresh fit should succeed: " + error);
+    const nlohmann::json pointer = read_pointer(root, "2010093");
+    require(pointer.value("schema_version", 0) == 2, "pointers are written as v2");
+    require(pointer["freshness"].value("valid_until_utc", "") == "2026-11-16T10:00:00Z",
+            "window ends one day after the fit, not after the selection");
+
+    auto resolved = resolve_active_physical_registration(
+        root, "2010093", 4512, 4512, "Mono8", "2026-11-16T09:59:59Z");
+    require(resolved.valid && resolved.status == "selected",
+            "a selection inside its day must be valid");
+    require(resolved.freshness.value("state", "") == "fresh", "fresh state expected");
+
+    resolved = resolve_active_physical_registration(
+        root, "2010093", 4512, 4512, "Mono8", "2026-11-16T10:00:00Z");
+    require(resolved.selected && !resolved.valid &&
+                resolved.status == "invalid_selected",
+            "a selection past its day must be invalid, never silently used");
+    require(resolved.error.rfind("selection_expired", 0) == 0,
+            "expiry must say selection_expired: " + resolved.error);
+    require(resolved.freshness.value("state", "") == "expired", "expired state expected");
+
+    // The freshness record cannot be edited to extend the window.
+    nlohmann::json edited = read_pointer(root, "2010093");
+    edited["freshness"]["valid_until_utc"] = "2030-01-01T00:00:00Z";
+    write_json(active_physical_registration_pointer_path(root, "2010093"), edited);
+    resolved = resolve_active_physical_registration(
+        root, "2010093", 4512, 4512, "Mono8", "2026-11-15T12:00:00Z");
+    require(!resolved.valid && resolved.status == "invalid_pointer" &&
+                resolved.error == "active_pointer_freshness_record_mismatch",
+            "an edited freshness window must fail closed: " + resolved.error);
+
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+}
+
+void test_explicit_reuse_of_an_older_fit()
+{
+    const fs::path root = make_root();
+    const fs::path path = write_fixture_artifact(
+        root, "s_old", "rim_old", "2010094", "2026-11-04T01:00:16Z");
+    const auto candidate = validate_physical_registration_artifact(
+        root, path, "2010094", 4512, 4512, "Mono8");
+    require(candidate.compatible, "old fixture must validate");
+    std::string error;
+    require(!select_physical_registration_artifact(
+                root, candidate, operator_selection("2026-11-15T16:00:00Z"), &error),
+            "a plain selection of a fit older than one day must be refused");
+    require(!fs::exists(active_physical_registration_pointer_path(root, "2010094")),
+            "a refused selection writes no pointer");
+
+    PhysicalRegistrationSelectionRequest reuse;
+    reuse.selected_at_utc = "2026-11-15T16:00:00Z";
+    reuse.policy = orange::gui::spatial_layout::kSelectionPolicyExplicitOperatorReuse;
+    require(select_physical_registration_artifact(root, candidate, reuse, &error),
+            "an explicit reuse should succeed: " + error);
+    const nlohmann::json pointer = read_pointer(root, "2010094");
+    require(pointer.value("selection_policy", "") == "explicit_operator_reuse",
+            "the pointer records the reuse");
+    require(pointer["freshness"].value("fit_age_seconds_at_selection", 0LL) ==
+                (11LL * 86400LL + 14LL * 3600LL + 59LL * 60LL + 44LL),
+            "the pointer records the fit's age at the reuse");
+    require(pointer["freshness"].value("valid_until_utc", "") == "2026-11-16T16:00:00Z",
+            "a reuse counts for one day from the re-selection");
+    auto resolved = resolve_active_physical_registration(
+        root, "2010094", 4512, 4512, "Mono8", "2026-11-16T15:00:00Z");
+    require(resolved.valid, "a reuse inside its day must be valid");
+    resolved = resolve_active_physical_registration(
+        root, "2010094", 4512, 4512, "Mono8", "2026-11-16T16:00:01Z");
+    require(!resolved.valid && resolved.error.rfind("selection_expired", 0) == 0,
+            "a reuse past its day must expire");
+
+    // Reusing a fit that is still fresh is a plain selection, not a reuse.
+    const fs::path fresh_path = write_fixture_artifact(
+        root, "s_new", "rim_new", "2010094", "2026-11-15T15:00:00Z");
+    const auto fresh = validate_physical_registration_artifact(
+        root, fresh_path, "2010094", 4512, 4512, "Mono8");
+    require(!select_physical_registration_artifact(root, fresh, reuse, &error),
+            "a reuse of a fit inside its window must be refused");
+
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+}
+
+void test_group_acceptance_selects_accepted_and_clears_the_rest()
+{
+    const fs::path root = make_root();
+    const std::string at = "2026-11-15T16:00:05Z";
+    std::vector<orange::gui::spatial_layout::PhysicalRegistrationArtifactCandidate> accepted;
+    for (const std::string serial : {"2010093", "2010094", "2010095"}) {
+        const fs::path path = write_fixture_artifact(
+            root, "s_group", "rim_group_" + serial, serial, "2026-11-15T16:00:00Z");
+        accepted.push_back(validate_physical_registration_artifact(
+            root, path, serial, 4512, 4512, "Mono8"));
+        require(accepted.back().compatible, "group fixture must validate");
+    }
+    // Camera 2010096 had an older selection; its fit is not accepted today.
+    const fs::path old_path = write_fixture_artifact(
+        root, "s_prior", "rim_prior_96", "2010096", "2026-11-15T09:00:00Z");
+    const auto old_candidate = validate_physical_registration_artifact(
+        root, old_path, "2010096", 4512, 4512, "Mono8");
+    std::string error;
+    require(select_physical_registration_artifact(
+                root, old_candidate, operator_selection("2026-11-15T09:01:00Z"), &error),
+            "prior selection setup: " + error);
+
+    std::vector<PhysicalRegistrationGroupAcceptanceResult> results;
+    require(apply_physical_registration_group_acceptance(
+                root, "physicalregtxn_test", accepted, {"2010096"}, at,
+                &results, &error),
+            "group acceptance should succeed: " + error);
+    require(results.size() == 4, "one result per camera");
+    for (const std::string serial : {"2010093", "2010094", "2010095"}) {
+        const auto resolved = resolve_active_physical_registration(
+            root, serial, 4512, 4512, "Mono8", "2026-11-15T17:00:00Z");
+        require(resolved.valid && resolved.candidate.artifact_id == "rim_group_" + serial,
+                "every accepted fit must be selected: " + serial);
+        const nlohmann::json pointer = read_pointer(root, serial);
+        require(pointer.value("selection_policy", "") == "accepted_with_group_fit" &&
+                    pointer.value("group_transaction_id", "") == "physicalregtxn_test",
+                "the pointer records the group acceptance");
+    }
+    const auto cleared = resolve_active_physical_registration(
+        root, "2010096", 4512, 4512, "Mono8", "2026-11-15T17:00:00Z");
+    require(cleared.pointer_exists && !cleared.selected && cleared.status == "not_selected",
+            "a camera whose fit was not accepted keeps no older selection");
+    const nlohmann::json cleared_pointer = read_pointer(root, "2010096");
+    require(cleared_pointer.value("selection_policy", "") ==
+                    "cleared_fit_not_accepted_in_group" &&
+                cleared_pointer.value("group_transaction_id", "") == "physicalregtxn_test",
+            "the clear is recorded with the group");
+    require(fs::is_regular_file(old_path), "clearing keeps the immutable evidence");
+
+    require(!apply_physical_registration_group_acceptance(
+                root, "", accepted, {}, at, &results, &error),
+            "a group acceptance needs its transaction id");
+
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+}
+
+void test_version_one_pointer_stays_readable()
+{
+    const fs::path root = make_root();
+    const fs::path path = write_fixture_artifact(
+        root, "s_v1", "rim_v1", "2010095", "2026-11-04T01:00:16Z");
+    const auto candidate = validate_physical_registration_artifact(
+        root, path, "2010095", 4512, 4512, "Mono8");
+    write_json(active_physical_registration_pointer_path(root, "2010095"), {
+        {"schema_id", orange::gui::spatial_layout::kActivePhysicalRegistrationPointerSchemaId},
+        {"schema_version", 1},
+        {"status", "selected"},
+        {"camera_serial", "2010095"},
+        {"selected_at_utc", "2026-11-04T18:42:47Z"},
+        {"selection", {
+            {"artifact_id", candidate.artifact_id},
+            {"observation_path", candidate.observation_path.string()},
+            {"observation_sha256", candidate.observation_sha256},
+            {"manifest_path", candidate.manifest_path.string()},
+            {"manifest_sha256", candidate.manifest_sha256},
+        }},
+        {"selection_policy", "explicit_operator_selection"},
+    });
+    auto resolved = resolve_active_physical_registration(
+        root, "2010095", 4512, 4512, "Mono8", "2026-11-04T20:00:00Z");
+    require(resolved.valid, "a v1 pointer inside its fit's day stays valid");
+    resolved = resolve_active_physical_registration(
+        root, "2010095", 4512, 4512, "Mono8", "2026-11-15T16:00:00Z");
+    require(!resolved.valid && resolved.status == "invalid_selected" &&
+                resolved.error.rfind("selection_expired", 0) == 0,
+            "a v1 pointer (like today's 2026-11-04 selection) expires a day after its fit");
+
+    nlohmann::json contract = {
+        {"schema_id", "orange.recording.geometry_contract"},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
+        {"cameras", {{"2010095", {{"camera_serial", "2010095"}}}}},
+    };
+    orange::recording_geometry::append_recording_physical_registrations(
+        &contract, root, {{"2010095", 4512, 4512, "Mono8"}}, "2026-11-15T16:00:00Z");
+    const auto& physical = contract["cameras"]["2010095"]["physical_registration"];
+    require(physical.value("status", "") == "invalid_selected" &&
+                !physical.value("recording_blocked", true),
+            "an expired selection is recorded as invalid, and an ordinary recording is not blocked");
+    require(physical["freshness"].value("state", "") == "expired" &&
+                physical["freshness"].value("rule", "") ==
+                    "orange_physical_registration_freshness_24h_v1",
+            "the recording carries the freshness evaluation");
+    require(contract["physical_registration_geometry"].value("status", "") ==
+                "invalid_selected",
+            "the envelope reports the invalid selection");
+
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+}
+
 }  // namespace
 
 int main()
@@ -473,6 +718,10 @@ int main()
         test_compatibility_and_selection_race();
         test_malformed_json_fails_closed();
         test_recording_prearm_snapshot_and_runtime_marking();
+        test_one_day_freshness();
+        test_explicit_reuse_of_an_older_fit();
+        test_group_acceptance_selects_accepted_and_clears_the_rest();
+        test_version_one_pointer_stays_readable();
         std::cout << "physical registration selection tests passed\n";
         return 0;
     } catch (const std::exception& exception) {

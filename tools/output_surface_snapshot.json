@@ -3424,6 +3424,11 @@
    "cleared_at_utc",
    "compatibility",
    "coordinate_space",
+   "evaluated_at_utc",
+   "fit_age_seconds_at_selection",
+   "fit_created_utc",
+   "freshness",
+   "group_transaction_id",
    "height_px",
    "image_set_json",
    "manifest_path",
@@ -3434,20 +3439,24 @@
    "pixel_format",
    "registration_hough_overlay",
    "review_overlay",
+   "rule",
    "schema_id",
    "schema_version",
    "selected_at_utc",
    "selection",
    "selection_policy",
    "source_frame",
+   "state",
    "status",
    "valid_detection_overlay",
+   "valid_from_utc",
+   "valid_until_utc",
    "width_px"
   ],
   "schemas": [
    [
     "orange.calibration.active_physical_registration_pointer",
-    "1"
+    "2"
    ]
   ]
  },
@@ -3833,11 +3842,14 @@
  "src/gui/spatial_layout/standalone_physical_registration_workflow.cpp": {
   "csv_headers": [],
   "json_keys": [
+   "acceptance",
    "accepted_inner_rim",
+   "action",
    "artifact_id",
    "authority",
    "camera_serial",
    "camera_timestamp_ns",
+   "cameras",
    "capture",
    "capture_group_id",
    "capture_group_membership",
@@ -3846,20 +3858,27 @@
    "completion_manifest_sha256",
    "coordinate_space",
    "created_utc",
+   "error",
+   "freshness_rule",
    "height",
    "last_camera_frame_id",
    "last_stream_frame_id",
    "observation",
    "off",
+   "ok",
    "operator_confirmed",
    "path",
    "physical_registration_product_id",
+   "pointer_sha256",
+   "policy",
    "product_id",
    "projection_registration",
    "projector_state",
    "radius_px",
    "raw_hough_circle",
    "reason",
+   "rim_detection_error",
+   "rim_detection_ok",
    "schema_id",
    "schema_version",
    "selection",
@@ -3876,7 +3895,7 @@
   "schemas": [
    [
     "orange.calibration.standalone_physical_registration_group",
-    "1"
+    "2"
    ]
   ]
  },
@@ -6074,6 +6093,7 @@
    "declared_checksum",
    "error",
    "errors",
+   "freshness",
    "gating_semantics",
    "image_set_json",
    "intended_recording_relative_path",

@@ -193,6 +193,48 @@ This active pointer is not yet a recording authority. Recording pre-arm must
 consume and revalidate it in Phase E/F before a mask-dependent recording can
 claim that this selection was used.
 
+## Accepting Selects, One-Day Freshness (2026-11-15)
+
+Jeremy, 2026-11-15: "I think all should be used if they are approved as
+accurate dish fits", and a registration "should last for at least one day".
+Until then only Cam2010093 had ever been selected (the others' accepted
+2026-11-04 fits were never put in use) and nothing checked a selection's age.
+
+- **Accepting selects.** In the standalone grouped workflow the operator
+  confirms each camera's fit; saving writes an artifact for every confirmed
+  camera and makes it that camera's active selection in the same action
+  (`apply_physical_registration_group_acceptance`, pointer
+  `selection_policy: accepted_with_group_fit` with the group's
+  `group_transaction_id`). Every other camera of the group is cleared
+  (`cleared_fit_not_accepted_in_group`), so no older selection survives for
+  it. A group may be saved with some cameras unconfirmed. The group manifest
+  (`orange.calibration.standalone_physical_registration_group` v2) lists each
+  camera's acceptance and selection result.
+- **One day.** A selection counts for 24 h (`orange_physical_registration_freshness_24h_v1`)
+  from the fit's own recorded time (observation `created_utc`), never from
+  file times or names. Past that, `resolve_active_physical_registration` and
+  the recording pre-arm report `invalid_selected` with error
+  `selection_expired:valid_until=...`, and every camera entry in the
+  recording's `physical_registration_geometry` carries a `freshness` object
+  (rule, policy, fit time, window, evaluated_at_utc, state). Ordinary
+  full-frame recordings are not blocked; features that need a registration
+  (crop-only, dish masking) refuse, as for any invalid selection.
+- **Explicit reuse.** The selection panel selects a fit older than one day
+  only with an explicit reuse acknowledgement (`explicit_operator_reuse`),
+  recorded with the fit's age at the reuse; a reuse counts for one day from
+  the re-selection. A plain selection of an old fit, or a "reuse" of a fresh
+  one, is refused.
+- **Pointer v2.** `orange.calibration.active_physical_registration_pointer`
+  v2 adds `freshness` {rule, fit_created_utc, fit_age_seconds_at_selection,
+  valid_from_utc, valid_until_utc}, the new policies and
+  `group_transaction_id`. The stored window must equal the one recomputed from
+  the observation, or the pointer is invalid. v1 pointers stay readable;
+  their window starts at the fit.
+- **Not built: scripted acceptance.** A local-control method that captures,
+  fits and accepts without an operator needs objective fit-quality checks.
+  The rim workflow has none today (a fit "passes" when Hough returns any
+  circle), so the thresholds are Jeremy's to set first.
+
 ## Current Gaps
 
 1. The Citrus-backed `src/gui/spatial_layout/daily_registration_workflow.cpp`

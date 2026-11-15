@@ -229,7 +229,8 @@ void append_recording_physical_registrations(
         const auto resolution = orange::gui::spatial_layout::
             resolve_active_physical_registration(
                 calibration_base_dir, camera.camera_serial,
-                camera.width_px, camera.height_px, camera.pixel_format);
+                camera.width_px, camera.height_px, camera.pixel_format,
+                captured_at_utc);
         nlohmann::json camera_entry = {
             {"camera_serial", camera.camera_serial},
             {"status", resolution.pointer_exists
@@ -242,6 +243,12 @@ void append_recording_physical_registrations(
                 : "not_selected"},
             {"recording_blocked", false},
         };
+        // The one-day window (rule, policy, fit time, window, state), for a
+        // selected pointer whose artifact revalidated; an expired one is
+        // invalid_selected below and never used.
+        if (resolution.freshness.is_object()) {
+            camera_entry["freshness"] = resolution.freshness;
+        }
         if (resolution.pointer_exists) {
             camera_entry["active_pointer"] = {
                 {"source_path", fs::absolute(

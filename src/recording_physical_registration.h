@@ -23,7 +23,10 @@ std::filesystem::path resolve_recording_calibration_base_dir();
 // Revalidates each participating camera's exact active physical-registration
 // pointer and appends a recording-bound snapshot to an existing geometry
 // contract. Missing selections are non-blocking. An invalid selected pointer
-// remains explicit and is never replaced with an older nearby artifact.
+// remains explicit and is never replaced with an older nearby artifact. A
+// selection is evaluated for freshness at captured_at_utc (one day from the fit
+// or from an explicit reuse): an expired one is invalid_selected with error
+// selection_expired, and each selected camera carries a "freshness" object.
 void append_recording_physical_registrations(
     nlohmann::json* recording_geometry_contract,
     const std::filesystem::path& calibration_base_dir,
