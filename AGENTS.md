@@ -437,3 +437,58 @@ Orange/Citrus commissioning) are in git history of this file and in
 - omnifin0: with PDU outlets 7/8 on and the trigger unplugged, the IR
   illuminators still glow (arena 1 27 DN at 50 ms, filters off); a true dark
   frame needs 7/8 off.
+
+## Production 26f1c53, 2026-11-14/15 (unattended runs)
+
+- Production and the fork: 26f1c53 and after (tree 1333). What it brought:
+  - Recordings carry `source_version` v2 (8b05058): the top-level commit is
+    the BINARY's build stamp; `worktree_state` is the run-time tree
+    (`matches_build`), `install` the /opt release (null for a tree build).
+    Support files are found next to the binary (`src/runtime_paths.h`), and
+    the data root has one rule, C++ and Python (`src/orange_data_root.h`,
+    `scripts/orange_paths.py`). The /opt install plan is
+    `docs/opt_install_plan_2026-11-14.md` (P1 done; P2-P4 open).
+  - Declared starts (8d8ef2d): a local-control `start_recording` may carry
+    `params.declaration` (orange.recording_start_declaration v1:
+    declared_by, recording_intent, subject_references; all required, no
+    fallback to the saved table or intent). `subject_confirmation.json` is
+    v2 with `confirmed_by` gui_operator | local_control | run_spec, the
+    `declaration` and the `requester` (socket peer from SO_PEERCRED, or the
+    spec). One writer: `src/session/recording_start_declaration.h`.
+    Client: `scripts/orange_local_control_client.py start-recording
+    --declared-by <id> --intent <intent> --blank-subjects`. GUI launcher:
+    `run_gui_fourcam_external_ipc_validation.sh --declared-start`.
+  - Spec-declared headless runs (86d02fc, 26f1c53): `fixed.declaration` in
+    an experiment spec; orange_client seals the exact spec bytes as
+    `run_spec/<spec_sha256>.json` (requester.spec_copy_relative_path).
+    Palette refuses `confirmed_by: run_spec` until #442/#443 are deployed:
+    no spec may carry a declaration until then and Jeremy says so.
+  - `--run-stamp` (8276f09): `run_detect_latency_spec.sh` no longer writes a
+    stamped /tmp copy; orange_client stamps the spec in memory, so the run
+    names the file in experiment_specs/. The benchmark wrapper must be the
+    one installed from this tree (it passes `--run-stamp`).
+  - One video check for GUI and headless (1277a6a,
+    `external_video_sanity.video_content_sanity`); the GUI recorder
+    contract no longer requires a per-folder sanity file.
+  - GUI exit after finalize waits for Citrus's receipts when the binding is
+    required (bb9086b; `session::CitrusReceiptsExpected` /
+    `CitrusReceiptWaitLimit`). Measured: receipts 2.6-2.8 s after finalize
+    on 2-minute runs.
+- Unattended bound Orange+Citrus run, one command (Jeremy approved the
+  orchestrator driving both sockets and sending Citrus's START, 2026-11-15):
+  ```bash
+  scripts/run_orange_citrus_bound.sh --protocol <citrus protocol.json> \
+      --declared-by delahantyj            # dry run: prints the plan
+  scripts/run_orange_citrus_bound.sh ... --execute   # HOLD first; Jeremy's go
+  ```
+  It runs `scripts/orange_citrus_orchestrator.py`: launch Orange
+  (declared-start, canvas at launch) and Citrus (autorun wait_for_control),
+  check Citrus's readiness items, Orange's declared start, Citrus's
+  start_experiment, Citrus's completion stops Orange, then wait for the
+  receipts before anything else; it never stops Orange or Citrus before the
+  receipts settle (0af84a2). First pass: `2026_11_14_23_09_55` (bound, 4
+  receipts, 4 H5s COMPLETE, 0 drops). Run it from production: the GUI
+  wrapper only runs this tree's binary.
+- Sealer: pancake-plate (`JohnsonLabJanelia/pancake-plate`, agent
+  `pancake-plate`) owns the sealer and the provenance questions; Orange's
+  pre-check still pins 3.3.0.
