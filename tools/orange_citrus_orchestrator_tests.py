@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -4060,8 +4061,120 @@ def test_headless_mode_needs_orange_command_and_notify_policy() -> None:
         require("citrus_completion_notify" in str(exc), str(exc))
 
 
+def test_event_log_follower() -> None:
+    """The follower reads only new complete rows, by file identity and size."""
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "citrus.sock.events.jsonl"
+        path.write_text(json.dumps({"event": "experiment_terminal", "old": True}) + "\n")
+        follower = module.EventLogFollower("citrus", str(path))
+        require(follower.poll() == [], "rows from an earlier run are skipped")
+        with path.open("a") as handle:
+            handle.write(json.dumps({"event": "local_control_request"}) + "\n")
+            handle.write(json.dumps({"event": "binding_accepted"}) + "\n")
+            handle.write('{"event": "start_requ')  # partial line
+        rows = follower.poll()
+        require([r["event"] for r in rows] == ["binding_accepted"], f"own status requests never wake: {rows}")
+        with path.open("a") as handle:
+            handle.write('ested"}\nnot json\n')
+        require([r["event"] for r in follower.poll()] == ["start_requested"], "a partial line is completed")
+        require(follower.unparsed_rows == 1, "a bad line is counted, not raised")
+        # Citrus renames its log to .1 at start: a new file is read from its start.
+        path.rename(path.with_suffix(".jsonl.1"))
+        path.write_text(json.dumps({"event": "receipt_delivery", "state": "verifying"}) + "\n" +
+                        json.dumps({"event": "receipt_delivery", "state": "delivered"}) + "\n")
+        require(len(follower.poll()) == 2 and follower.resets == 1, "a renamed log is a new log")
+        # Orange truncates its log at server start: a shrink is a new log.
+        path.write_text(json.dumps({"event": "x"}) + "\n")
+        require([r["event"] for r in follower.poll()] == ["x"] and follower.resets == 2, "a shrink is a new log")
+        record = follower.record()
+        require(record["receipt_delivery_states"] == ["verifying", "delivered"], record)
+        require(record["event_counts"]["local_control_request"] == 1 and record["waking_rows"] == 5, record)
+        socket_row = Path(tmp) / "orange.sock.events.jsonl"
+        orange = module.EventLogFollower("orange", str(socket_row))
+        socket_row.write_text(json.dumps({"request": {"method": "start_recording"}}) + "\n")
+        require(len(orange.poll()) == 1 and orange.event_counts == {"socket_request": 1},
+                "an Orange socket row (no event key) wakes")
+
+
+def test_lifecycle_waker() -> None:
+    """Wake on a lifecycle row, else at the heartbeat; plain polling without a log."""
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "orange.sock.events.jsonl"
+        follower = module.EventLogFollower("orange", str(path))
+        now = [0.0]
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        waker = module.LifecycleWaker([follower], 0.1, 5.0, clock=lambda: now[0], sleep=sleep)
+        require(not waker.available and waker.interval(1.5) == 1.5, "no log: the poll interval")
+        require(waker.wait(1.5) == "fallback" and sleeps == [1.5], "no log: a plain sleep")
+        path.write_text("")
+        require(waker.available and waker.interval(1.5) == 5.0, "with a log the heartbeat is longer")
+        sleeps.clear()
+        require(waker.wait(0.35) == "heartbeat" and abs(sum(sleeps) - 0.35) < 1e-9 and max(sleeps) <= 0.1,
+                f"checked every 0.1 s, never past the deadline: {sleeps}")
+
+        def append_on_third_sleep(seconds: float) -> None:
+            sleep(seconds)
+            if len(sleeps) == 3:
+                with path.open("a") as handle:
+                    handle.write(json.dumps({"event": "recording_drain_finalized"}) + "\n")
+
+        sleeps.clear()
+        waker.sleep = append_on_third_sleep
+        require(waker.wait(5.0) == "event" and len(sleeps) == 3, "a new row ends the wait at once")
+        require(waker.record()["wakes_by_event"] == 1 and waker.record()["fallback_waits"] == 1, waker.record())
+
+
+def test_long_wait_wakes_on_lifecycle_event() -> None:
+    """wait_for_status on a long wait reads status again as soon as a row arrives,
+    and confirms by status (a row alone never satisfies the predicate)."""
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        citrus_log = root / "citrus.sock.events.jsonl"
+        citrus_log.write_text("")
+        args = module.parse_args(["--execute", "--citrus-socket", str(root / "citrus.sock"),
+                                  "--orange-socket", str(root / "orange.sock"),
+                                  "--lifecycle-event-heartbeat-seconds", "30"])
+        orchestrator = module.Orchestrator(args)
+        statuses = iter([{"recording_observation_finalization": {"state": "delivering"}},
+                         {"recording_observation_finalization": {"state": "delivered"}}])
+        reads: list[float] = []
+
+        def fake_status(label: str, schema_id: str, socket_path: str):
+            reads.append(time.monotonic())
+            status = next(statuses)
+            if len(reads) == 1:
+                with citrus_log.open("a") as handle:
+                    handle.write(json.dumps({"event": "receipt_delivery", "state": "delivered"}) + "\n")
+            return {}, status
+
+        orchestrator.status = fake_status  # type: ignore[assignment]
+        orchestrator.raise_if_started_process_exited = lambda context: None  # type: ignore[assignment]
+        started = time.monotonic()
+        status = orchestrator.wait_for_status(
+            "citrus", module.CITRUS_REQUEST_SCHEMA_ID, args.citrus_socket,
+            module.citrus_finalization_settled, 60.0, "receipts_delivered")
+        require(module.citrus_finalization_state(status) == "delivered", status)
+        require(time.monotonic() - started < 2.0, "woken by the row, not the 30 s heartbeat")
+        record = orchestrator.lifecycle_waker.record()
+        require(record["wakes_by_event"] == 1 and record["logs"]["citrus"]["receipt_delivery_states"] == ["delivered"],
+                record)
+        off = module.Orchestrator(module.parse_args(["--lifecycle-events", "off"]))
+        require(off.lifecycle_waker is None, "--lifecycle-events off polls only")
+
+
 def main() -> int:
     tests = [
+        test_event_log_follower,
+        test_lifecycle_waker,
+        test_long_wait_wakes_on_lifecycle_event,
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
         test_long_waits_poll_slowly,

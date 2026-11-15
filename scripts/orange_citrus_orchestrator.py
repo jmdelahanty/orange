@@ -2051,6 +2051,173 @@ def poll_interval_for(args: argparse.Namespace, description: str) -> float:
     return args.poll_interval_seconds
 
 
+def resolve_citrus_local_control_log_path(args: argparse.Namespace) -> str:
+    """Citrus's lifecycle event log: CITRUS_GUI_LOCAL_CONTROL_LOG, else
+    <citrus socket>.events.jsonl (Citrus fde5467; renamed to .1 at start)."""
+    if getattr(args, "citrus_local_control_log", ""):
+        return args.citrus_local_control_log
+    value = parse_env_items(getattr(args, "citrus_env", []) or []).get("CITRUS_GUI_LOCAL_CONTROL_LOG") or \
+        os.environ.get("CITRUS_GUI_LOCAL_CONTROL_LOG", "")
+    return value or f"{args.citrus_socket}.events.jsonl"
+
+
+# Rows that never wake a wait: Citrus logs every socket request, our own
+# status polls included, as local_control_request (Orange does not log status).
+EVENT_LOG_IGNORED_EVENTS = {"local_control_request"}
+
+
+class EventLogFollower:
+    """Follows one append-only JSONL event log by file identity and size.
+
+    Orange truncates its log when its control server starts and Citrus renames
+    its log to .1 at start, so a new inode or a shrink is a new log, read from
+    its first byte; never an offset to resume from
+    (docs/orange_local_control_events_v1.md). Rows already in the file when the
+    follower is made belong to earlier runs and are skipped. Only complete
+    lines are parsed; a line that is not JSON is counted, not raised."""
+
+    def __init__(self, label: str, path: str):
+        self.label = label
+        self.path = path
+        self.identity: tuple[int, int] | None = None
+        self.offset = 0
+        self.partial = b""
+        self.rows_seen = 0
+        self.waking_rows = 0
+        self.unparsed_rows = 0
+        self.resets = 0
+        self.event_counts: dict[str, int] = {}
+        self.receipt_delivery_states: list[str] = []
+        try:
+            st = os.stat(path)
+            self.identity = (st.st_dev, st.st_ino)
+            self.offset = st.st_size
+        except OSError:
+            pass
+
+    @property
+    def available(self) -> bool:
+        return os.path.exists(self.path)
+
+    def poll(self) -> list[dict[str, Any]]:
+        """New complete rows since the last poll that should wake a wait."""
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            return []
+        identity = (st.st_dev, st.st_ino)
+        if identity != self.identity or st.st_size < self.offset:
+            if self.identity is not None:
+                self.resets += 1
+            self.identity, self.offset, self.partial = identity, 0, b""
+        if st.st_size == self.offset:
+            return []
+        try:
+            with open(self.path, "rb") as handle:
+                handle.seek(self.offset)
+                data = handle.read(st.st_size - self.offset)
+        except OSError:
+            return []
+        self.offset += len(data)
+        lines = (self.partial + data).split(b"\n")
+        self.partial = lines.pop()
+        waking: list[dict[str, Any]] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            self.rows_seen += 1
+            try:
+                row = json.loads(line)
+            except ValueError:
+                self.unparsed_rows += 1
+                continue
+            if not isinstance(row, dict):
+                self.unparsed_rows += 1
+                continue
+            event = row.get("event") if isinstance(row.get("event"), str) else "socket_request"
+            self.event_counts[event] = self.event_counts.get(event, 0) + 1
+            if event == "receipt_delivery" and isinstance(row.get("state"), str):
+                self.receipt_delivery_states.append(row["state"])
+            if event in EVENT_LOG_IGNORED_EVENTS:
+                continue
+            self.waking_rows += 1
+            waking.append(row)
+        return waking
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "available": self.available,
+            "rows_seen": self.rows_seen,
+            "waking_rows": self.waking_rows,
+            "unparsed_rows": self.unparsed_rows,
+            "log_resets": self.resets,
+            "event_counts": dict(sorted(self.event_counts.items())),
+            **({"receipt_delivery_states": self.receipt_delivery_states}
+               if self.receipt_delivery_states else {}),
+        }
+
+
+class LifecycleWaker:
+    """Sleeps for a long wait, waking as soon as Orange or Citrus writes a
+    lifecycle row. Status stays the authority: a wake only triggers the next
+    status read. With no log on disk the wait is the plain poll interval
+    (fallback); with one, the status heartbeat stretches to
+    --lifecycle-event-heartbeat-seconds. The files are checked every
+    --lifecycle-event-check-seconds (a stat, no socket traffic)."""
+
+    def __init__(self, followers: list[EventLogFollower], check_seconds: float, heartbeat_seconds: float,
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
+        self.followers = followers
+        self.check_seconds = check_seconds
+        self.heartbeat_seconds = heartbeat_seconds
+        self.clock = clock
+        self.sleep = sleep
+        self.wakes_by_event = 0
+        self.wakes_by_heartbeat = 0
+        self.fallback_waits = 0
+
+    @property
+    def available(self) -> bool:
+        return any(f.available for f in self.followers)
+
+    def interval(self, poll_interval: float) -> float:
+        return max(poll_interval, self.heartbeat_seconds) if self.available else poll_interval
+
+    def drain(self) -> int:
+        return sum(len(f.poll()) for f in self.followers)
+
+    def wait(self, seconds: float) -> str:
+        """'event' when a lifecycle row arrived, 'heartbeat' at the interval,
+        'fallback' when no log exists (plain sleep)."""
+        if seconds <= 0:
+            return "heartbeat"
+        if not self.available:
+            self.fallback_waits += 1
+            self.sleep(seconds)
+            return "fallback"
+        deadline = self.clock() + seconds
+        while True:
+            if self.drain():
+                self.wakes_by_event += 1
+                return "event"
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                self.wakes_by_heartbeat += 1
+                return "heartbeat"
+            self.sleep(min(self.check_seconds, remaining))
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "heartbeat_seconds": self.heartbeat_seconds,
+            "check_seconds": self.check_seconds,
+            "wakes_by_event": self.wakes_by_event,
+            "wakes_by_heartbeat": self.wakes_by_heartbeat,
+            "fallback_waits": self.fallback_waits,
+            "logs": {f.label: f.record() for f in self.followers},
+        }
+
+
 def citrus_finalization_state(status: dict[str, Any]) -> str:
     value = json_path(status, ["recording_observation_finalization", "state"], "")
     return value if isinstance(value, str) else ""
@@ -2297,6 +2464,29 @@ class Orchestrator:
         self.last_orange_coverage_check_monotonic = 0.0
         self.citrus_start_sent = False
         self.headless_result: dict[str, Any] = {}
+        # Long waits follow Orange's and Citrus's lifecycle event logs (made
+        # before either process starts, so earlier runs' rows are skipped).
+        self.lifecycle_waker: LifecycleWaker | None = None
+        if getattr(args, "lifecycle_events", "auto") == "auto":
+            self.lifecycle_waker = LifecycleWaker(
+                [EventLogFollower("orange", resolve_orange_local_control_log_path(args)),
+                 EventLogFollower("citrus", resolve_citrus_local_control_log_path(args))],
+                check_seconds=args.lifecycle_event_check_seconds,
+                heartbeat_seconds=args.lifecycle_event_heartbeat_seconds,
+            )
+
+    def long_wait(self, poll_interval: float, remaining: float) -> tuple[float, bool]:
+        """(seconds to wait, final) for one step of a long wait."""
+        interval = self.lifecycle_waker.interval(poll_interval) if self.lifecycle_waker else poll_interval
+        if interval >= remaining:
+            return remaining, True
+        return interval, False
+
+    def pause(self, seconds: float) -> None:
+        if self.lifecycle_waker is not None:
+            self.lifecycle_waker.wait(seconds)
+        else:
+            time.sleep(seconds)
 
     def step(self, name: str) -> StepLog:
         item = StepLog(name=name)
@@ -2452,6 +2642,10 @@ class Orchestrator:
             if remaining <= 0:
                 break
             interval = poll_interval_for(self.args, description)
+            if description in LONG_WAIT_DESCRIPTIONS:
+                interval, final_check = self.long_wait(interval, remaining)
+                self.pause(interval)
+                continue
             if interval >= remaining:
                 interval = remaining
                 final_check = True
@@ -2530,7 +2724,11 @@ class Orchestrator:
                             status=last_status,
                         )
                         return last_status
-            time.sleep(self.args.long_wait_poll_interval_seconds)
+            # With a run duration set, wake at least at the poll interval so
+            # the duration is measured as before.
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                self.pause(min(self.args.long_wait_poll_interval_seconds, remaining))
         step.finish(ok=False, last_error=last_error, last_status=last_status)
         raise OrchestratorError(
             "timed out waiting for Citrus terminal state or "
@@ -3529,6 +3727,10 @@ class Orchestrator:
             self.args.citrus_log,
             artifact_dir / "citrus.log",
         )
+        artifacts["logs"]["citrus_local_control"] = self.copy_artifact_file(
+            resolve_citrus_local_control_log_path(self.args),
+            artifact_dir / "citrus_local_control.events.jsonl",
+        )
         for validation in summary.get("validations", []):
             if not isinstance(validation, dict):
                 continue
@@ -3647,6 +3849,8 @@ class Orchestrator:
             "error": error,
             "operation_id": self.args.operation_id,
             "bound_run": self.bound_record if self.bound_run() else None,
+            "lifecycle_events": (self.lifecycle_waker.record() if self.lifecycle_waker is not None
+                                 else {"mode": "off"}),
             "mode": "execute" if self.args.execute else "dry_run",
             "orange": {
                 "socket": self.args.orange_socket,
@@ -3741,6 +3945,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Status polling for the readiness waits (about a second).")
     parser.add_argument("--long-wait-poll-interval-seconds", type=positive_float, default=1.5,
                         help="Status polling for the waits that span a protocol or a finalization.")
+    parser.add_argument("--lifecycle-events", choices=("auto", "off"), default="auto",
+                        help="auto: long waits wake on new rows in Orange's and Citrus's lifecycle "
+                             "event logs and read status then (status stays the authority); polling "
+                             "when no log exists. off: poll only.")
+    parser.add_argument("--lifecycle-event-heartbeat-seconds", type=positive_float, default=5.0,
+                        help="With an event log on disk: the longest a long wait goes without a status read.")
+    parser.add_argument("--lifecycle-event-check-seconds", type=positive_float, default=0.1,
+                        help="How often the event logs are checked (a stat; no socket traffic).")
+    parser.add_argument("--citrus-local-control-log", default="",
+                        help="Citrus lifecycle event log. Defaults to CITRUS_GUI_LOCAL_CONTROL_LOG, else "
+                             "<citrus-socket>.events.jsonl.")
     parser.add_argument("--socket-timeout-seconds", type=positive_float, default=2.0)
     parser.add_argument("--launch-socket-preflight-timeout-seconds", type=positive_float, default=0.2)
     parser.add_argument("--timeout-seconds", type=positive_float, default=120.0)
