@@ -31,6 +31,7 @@ double bilinear(const std::uint8_t* gray, int width, double x, double y)
 struct RayResult {
     bool truncated = false;
     bool found = false;
+    bool ring_step_without_valley = false;   // ir_dark_ring: no valley, the strongest step taken
     EdgePoint point;
 };
 
@@ -44,8 +45,13 @@ struct RayResult {
 // the half-width inside the frame), at least max(min_step_dn, step_fraction x the
 // ray's floor-to-dark contrast) deep. Rays with less than min_contrast_dn contrast
 // have no edge. The step nearest the known radius wins (the wall top).
+//
+// ir_dark_ring (EdgeModel): the strongest valley of the matched dark-line response in
+// the window (min_valley_dn deep at least), placed at its centre line or at its inner
+// edge (the steepest bright-to-dark step between the inner flank and the valley centre).
 RayResult sample_ray(const std::uint8_t* gray, int width, int height, double cx, double cy,
-                     double angle_rad, double expected, const Config& config)
+                     double angle_rad, double expected, const Config& config, EdgeModel model,
+                     bool probe_only = false)
 {
     RayResult out;
     const double ux = std::cos(angle_rad);
@@ -103,8 +109,6 @@ RayResult sample_ray(const std::uint8_t* gray, int width, int height, double cx,
         level_out = std::min(level_out, sum / 5.0);
     }
     const double contrast = level_in - level_out;
-    if (contrast < config.min_contrast_dn) return out;
-    const double threshold = std::max(config.min_step_dn, config.step_fraction_of_contrast * contrast);
     // Derivative-of-Gaussian kernel with a unit response to a unit ramp.
     std::vector<double> kernel(2 * half + 1);
     double norm = 0.0;
@@ -122,6 +126,78 @@ RayResult sample_ray(const std::uint8_t* gray, int width, int height, double cx,
         for (int k = -half; k <= half; ++k) gradient += kernel[k + half] * value[i + k];
         step[i] = -gradient;
     }
+    const auto parabola = [](double a, double b, double c) {
+        const double denominator = a - 2.0 * b + c;
+        return std::clamp(std::fabs(denominator) > 1e-12 ? 0.5 * (a - c) / denominator : 0.0, -0.5, 0.5);
+    };
+    if (model == EdgeModel::ir_dark_ring) {
+        const int core = static_cast<int>(std::lround(config.valley_core_half_px));
+        const int gap = static_cast<int>(std::lround(config.valley_gap_px));
+        const int flank = std::max(1, static_cast<int>(std::lround(config.valley_flank_px)));
+        const int reach = core + gap + flank;
+        if (n < 2 * reach + 3) return out;
+        std::vector<double> prefix(n + 1, 0.0);
+        for (int i = 0; i < n; ++i) prefix[i + 1] = prefix[i] + value[i];
+        const auto mean = [&](int a, int b) { return (prefix[b + 1] - prefix[a]) / (b - a + 1); };  // [a, b]
+        std::vector<double> valley(n, -std::numeric_limits<double>::infinity());
+        for (int i = reach; i + reach < n; ++i) {
+            const double inner = mean(i - reach, i - core - gap - 1);
+            const double outer = mean(i + core + gap + 1, i + reach);
+            valley[i] = std::min(inner, outer) - mean(i - core, i + core);
+        }
+        int best = -1;
+        for (int i = reach + 1; i + reach + 1 < n; ++i) {
+            if (valley[i] < valley[i - 1] || valley[i] <= valley[i + 1]) continue;  // local maximum
+            if (best < 0 || valley[i] > valley[best]) best = i;
+        }
+        if (best < 0 || valley[best] < config.min_valley_dn) {
+            // No ring on this ray (where the field outside the rim is dark the ring is a
+            // plain step into the dark): the strongest bright-to-dark step of the window,
+            // the same inner edge of the dark region. Probing for the model never does this.
+            if (probe_only || contrast < config.min_contrast_dn) return out;
+            int edge = -1;
+            for (int k = half + 1; k + half + 1 < n; ++k) {
+                if (!(step[k] > 0.0)) continue;
+                if (step[k] < step[k - 1] || step[k] <= step[k + 1]) continue;
+                if (edge < 0 || step[k] > step[edge]) edge = k;
+            }
+            if (edge < 0 || step[edge] < std::max(config.min_step_dn, config.step_fraction_of_contrast * contrast)) {
+                return out;
+            }
+            const double r = radius[edge] + parabola(step[edge - 1], step[edge], step[edge + 1]);
+            out.found = true;
+            out.ring_step_without_valley = true;
+            out.point.angle_deg = angle_rad * 180.0 / kPi;
+            out.point.x = cx + r * ux;
+            out.point.y = cy + r * uy;
+            out.point.step_dn = step[edge];
+            return out;
+        }
+        double r = radius[best] + parabola(valley[best - 1], valley[best], valley[best + 1]);
+        if (config.ring_edge == RingEdge::inner_edge) {
+            // The inner boundary of the whole dark band: the strongest bright-to-dark step
+            // between max_ring_band_px inside the valley centre and the centre. The band
+            // can be ~25 px wide, striped, with a grey fringe; its deepest sub-valley need
+            // not be at its inner edge, and the black core's edge is the strongest step.
+            int edge = -1;
+            const int lo_index = std::max(half + 1, best - static_cast<int>(config.max_ring_band_px));
+            for (int k = lo_index; k <= best && k + half + 1 < n; ++k) {
+                if (!(step[k] > 0.0)) continue;
+                if (step[k] < step[k - 1] || step[k] <= step[k + 1]) continue;  // local maximum
+                if (edge < 0 || step[k] > step[edge]) edge = k;
+            }
+            if (edge < 0) return out;
+            r = radius[edge] + parabola(step[edge - 1], step[edge], step[edge + 1]);
+        }
+        out.found = true;
+        out.point.angle_deg = angle_rad * 180.0 / kPi;
+        out.point.x = cx + r * ux;
+        out.point.y = cy + r * uy;
+        out.point.step_dn = valley[best];
+        return out;
+    }
+    if (contrast < config.min_contrast_dn) return out;
+    const double threshold = std::max(config.min_step_dn, config.step_fraction_of_contrast * contrast);
     double best_distance = std::numeric_limits<double>::infinity();
     int best = -1;
     for (int i = half + 1; i + half + 1 < n; ++i) {
@@ -358,6 +434,21 @@ std::string side_of(double angle_deg)
 
 }  // namespace
 
+const char* edge_model_name(EdgeModel model)
+{
+    switch (model) {
+    case EdgeModel::wall_top_step: return "wall_top_step";
+    case EdgeModel::ir_dark_ring: return "ir_dark_ring";
+    case EdgeModel::automatic: break;
+    }
+    return "automatic";
+}
+
+const char* ring_edge_name(RingEdge edge)
+{
+    return edge == RingEdge::centre_line ? "centre_line" : "inner_edge";
+}
+
 Result fit_known_radius(const std::uint8_t* gray, int width, int height, double start_cx,
                         double start_cy, double expected_radius_px, const Config& config)
 {
@@ -370,18 +461,47 @@ Result fit_known_radius(const std::uint8_t* gray, int width, int height, double 
     }
     double cx = start_cx;
     double cy = start_cy;
+    // Edge model: from the config, or from the profiles around the starting centre.
+    EdgeModel model = config.edge_model;
+    {
+        int with_samples = 0;
+        int with_valley = 0;
+        for (int i = 0; i < config.rays; ++i) {
+            const double angle = 2.0 * kPi * i / config.rays;
+            const RayResult ray = sample_ray(gray, width, height, cx, cy, angle, expected_radius_px, config,
+                                             EdgeModel::ir_dark_ring, true);
+            if (ray.truncated && !ray.found) continue;
+            ++with_samples;
+            if (ray.found) ++with_valley;
+        }
+        result.ring_ray_fraction = with_samples > 0 ? static_cast<double>(with_valley) / with_samples : 0.0;
+    }
+    if (model == EdgeModel::automatic) {
+        model = result.ring_ray_fraction >= config.ring_ray_fraction ? EdgeModel::ir_dark_ring
+                                                                     : EdgeModel::wall_top_step;
+        result.edge_model_source = "profile";
+    } else {
+        result.edge_model_source = "config";
+    }
+    result.edge_model = edge_model_name(model);
+    if ((config.declared_nir_filters == "in" && model != EdgeModel::ir_dark_ring) ||
+        (config.declared_nir_filters == "out" && model != EdgeModel::wall_top_step)) {
+        result.warnings.push_back("edge_model_disagrees_with_declared_nir_filters");
+    }
     std::vector<EdgePoint> points;
     for (int pass = 0; pass < std::max(1, config.iterations); ++pass) {
         points.clear();
         result.ray_records.clear();
         result.rays_excluded_border = 0;
         result.rays_without_edge = 0;
+        result.rays_ring_step_without_valley = 0;
         for (int i = 0; i < config.rays; ++i) {
             const double angle = 2.0 * kPi * i / config.rays;
-            const RayResult ray = sample_ray(gray, width, height, cx, cy, angle, expected_radius_px, config);
+            const RayResult ray = sample_ray(gray, width, height, cx, cy, angle, expected_radius_px, config, model);
             RayRecord record;
             record.angle_deg = angle * 180.0 / kPi;
             if (ray.found) {
+                if (ray.ring_step_without_valley) ++result.rays_ring_step_without_valley;
                 points.push_back(ray.point);
                 record.status = RayStatus::off_rim_edge;  // until the fit marks it an inlier
             } else if (ray.truncated) {
@@ -494,6 +614,49 @@ Result fit_known_radius(const std::uint8_t* gray, int width, int height, double 
                                          (height - 1.0) - (result.fixed.cy + r)});
     result.points = std::move(points);
 
+    {
+        // Per quadrant: does each side follow the same edge as the others?
+        const std::array<const char*, 4> names = {"right", "bottom", "left", "top"};
+        std::array<std::vector<double>, 4> inlier_residuals;
+        std::array<std::vector<double>, 4> all_residuals;
+        std::array<int, 4> rays_per_side{};
+        Model fixed_model;
+        fixed_model.free_radius = false;
+        fixed_model.harmonic = config.model_ellipticity;
+        fixed_model.cx = result.fixed.cx;
+        fixed_model.cy = result.fixed.cy;
+        fixed_model.r = result.fixed.radius_px;
+        const double phi = result.fixed.ellipticity_axis_deg * kPi / 180.0;
+        fixed_model.ec = result.fixed.ellipticity_px * std::cos(2.0 * phi);
+        fixed_model.es = result.fixed.ellipticity_px * std::sin(2.0 * phi);
+        const auto quadrant = [&](double angle_deg) {
+            const std::string side = side_of(angle_deg);
+            for (int q = 0; q < 4; ++q) if (side == names[q]) return q;
+            return 0;
+        };
+        for (const auto& record : result.ray_records) ++rays_per_side[quadrant(record.angle_deg)];
+        for (const auto& p : result.points) {
+            const int q = quadrant(p.angle_deg);
+            const double r = point_residual(p, fixed_model);
+            all_residuals[q].push_back(r);
+            if (p.inlier) inlier_residuals[q].push_back(r);
+        }
+        for (int q = 0; q < 4; ++q) {
+            SideStats side;
+            side.side = names[q];
+            side.rays = rays_per_side[q];
+            side.points = static_cast<int>(all_residuals[q].size());
+            side.inliers = static_cast<int>(inlier_residuals[q].size());
+            if (!inlier_residuals[q].empty()) {
+                side.fixed_residual_median_px = median(inlier_residuals[q]);
+                std::vector<double> magnitudes;
+                for (double r : inlier_residuals[q]) magnitudes.push_back(std::fabs(r));
+                side.fixed_residual_median_abs_px = median(magnitudes);
+            }
+            if (!all_residuals[q].empty()) side.all_points_fixed_residual_median_px = median(all_residuals[q]);
+            result.sides.push_back(side);
+        }
+    }
     if (result.fixed.inliers < config.min_inliers) result.refusals.push_back("too_few_rim_edge_points");
     if (result.coverage_fraction < config.min_coverage_fraction) result.refusals.push_back("rim_arc_coverage_too_small");
     for (const auto& gap : result.gaps) {
@@ -570,6 +733,23 @@ nlohmann::json to_json(const Result& result, const Config& config, double mm_per
             return gaps;
         }()},
         {"nearest_frame_border_px", result.nearest_border_px},
+        {"edge_model", result.edge_model},
+        {"edge_model_source", result.edge_model_source},
+        {"ring_ray_fraction", result.ring_ray_fraction},
+        {"rays_ring_step_without_valley", result.rays_ring_step_without_valley},
+        {"declared_nir_filters", config.declared_nir_filters.empty() ? nlohmann::json(nullptr)
+                                                                     : nlohmann::json(config.declared_nir_filters)},
+        {"sides", [&] {
+            nlohmann::json sides = nlohmann::json::array();
+            for (const auto& side : result.sides) {
+                sides.push_back({{"side", side.side}, {"rays", side.rays}, {"points", side.points},
+                                 {"inliers", side.inliers},
+                                 {"fixed_residual_median_px", side.fixed_residual_median_px},
+                                 {"fixed_residual_median_abs_px", side.fixed_residual_median_abs_px},
+                                 {"all_points_fixed_residual_median_px", side.all_points_fixed_residual_median_px}});
+            }
+            return sides;
+        }()},
         {"limits", {
             {"min_inliers", config.min_inliers},
             {"min_coverage_fraction", config.min_coverage_fraction},
@@ -593,6 +773,15 @@ nlohmann::json to_json(const Result& result, const Config& config, double mm_per
             {"min_contrast_dn", config.min_contrast_dn},
             {"tangential_samples", config.tangential_samples},
             {"tangential_half_width_px", config.tangential_half_width_px},
+            {"edge_model_config", edge_model_name(config.edge_model)},
+            {"ring_ray_fraction", config.ring_ray_fraction},
+            {"valley_operator", "matched_dark_line_min_flank_minus_core"},
+            {"valley_core_half_px", config.valley_core_half_px},
+            {"valley_gap_px", config.valley_gap_px},
+            {"valley_flank_px", config.valley_flank_px},
+            {"min_valley_dn", config.min_valley_dn},
+            {"max_ring_band_px", config.max_ring_band_px},
+            {"ring_edge", ring_edge_name(config.ring_edge)},
         }},
     };
     if (mm_per_px > 0.0) out["mm_per_px_at_rim_plane"] = mm_per_px;

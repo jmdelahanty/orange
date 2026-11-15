@@ -140,6 +140,63 @@ Jeremy, 2026-11-15:
   outside) undercounts the contrast.
 - The step nearest the known radius is taken.
 
+**Edge model per frame (method v3, 2026-11-15).** On 2010094's 11-04 IR frame,
+Jeremy saw that the step rule (the bright-to-dark step nearest the known
+radius) followed faint floor lines about 30 px inside the dark ring on the
+bottom and left. The fit now picks one of two models per frame:
+- `ir_dark_ring`: the rim images as a dark band, a single ring 5-15 px wide in
+  IR, or two lines about 10 px apart in tonight's filters-out frames.
+  - A matched dark-line response finds the strongest valley on each ray: the
+    lower of the two flank means minus the core mean, so a plain step gives no
+    response.
+  - The edge point is the band's inner boundary: the strongest bright-to-dark
+    step between 30 px inside the valley and the valley itself.
+  - A ray with no valley (a dark field outside the rim) takes the window's
+    strongest step instead. This is counted in
+    `rays_ring_step_without_valley`.
+- `wall_top_step`: the approved filters-out rule, unchanged.
+
+The model is decided from the profiles around the starting centre:
+`ir_dark_ring` when at least half the rays hold a valley of at least 15 DN.
+The evidence separates cleanly: IR and tonight's frames give 0.72-1.00, the
+11-15 uniform-gray frames at most 0.03. The launcher's declared NIR filter
+position is recorded beside the choice, and a disagreement is a warning
+(`edge_model_disagrees_with_declared_nir_filters`). Each fit reports, for each
+side (right, bottom, left, top), its inliers and its median signed residual
+against the fixed fit, so a side that follows another edge shows up as an
+outlier.
+
+**Evidence: 234 frames** (`~/orange_data/registration_accuracy/rim_fit_ir_review_20261115T215604Z/index.html`):
+- the 222 IR rim captures from 34 sessions;
+- the four 11-15 gray frames;
+- tonight's four filters-out autorun frames (`calsess_2026_11_15T21_37_24Z`).
+
+Each frame is shown before (v2) and after (v3). The four sides agree within
+4.7 px on every frame (median 0.4-1.6 px), and coverage is at least 0.917.
+
+v3 passes all 68 October-November IR frames and all eight filters-out frames.
+Across all 234 it refuses 16:
+- 14 June-August frames on `rim_center_uncertainty_too_large`. On those frames
+  the known radius (from the 11-13 scale) is 15-26 px off the measured free
+  radius, a different dish or geometry, so the fixed fit's residuals are
+  inflated.
+- 2 frames on an arc gap (`rim_arc_gap_too_large`).
+
+The fixed centre moves 3.5-7 px (median) against v2, and up to 26 px, which
+is where v2 mixed edges.
+
+**Which line is the rim?** This is open, for Jeremy.
+- On tonight's filters-out frames, v2 sat about 6-7 px outside the band's
+  inner boundary (on the step into the outer line). v3 sits on the band's
+  innermost boundary. Their centres differ by 5.5-6.2 px.
+- Against the known radius (80.15 mm at the rim-top plane), v3's free radius
+  is +2.4 to +4.6 px (median) on the current-geometry IR frames and -6.9 px on
+  tonight's frames. These are different dishes and days, all inside the 20 px
+  check.
+- No saved session shows one dish both in IR and with the filters out.
+- The centre does not depend on the radius: fixed and free centres agree
+  within 1.5 px everywhere.
+
 **The fit:**
 - The model radius is R + ec·cos2t + es·sin2t, because the rim is a slight
   ellipse in the image (2-10 px: lens distortion or a small tilt).

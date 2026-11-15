@@ -37,6 +37,10 @@ struct Scene {
     double bump_px = 0.0;           // the edge pushed outward by this much over one arc
     double bump_start_deg = 0.0;
     double bump_width_deg = 0.0;
+    double floor_line_inner_px = 0.0;    // a thin (3 px) dark floor line this far inside the edge ...
+    double floor_line_depth_dn = 40.0;   // ... this deep ...
+    double floor_line_start_deg = 0.0;   // ... over this arc
+    double floor_line_width_deg = 0.0;
 };
 
 std::vector<std::uint8_t> render(const Scene& s, unsigned seed = 7)
@@ -56,6 +60,9 @@ std::vector<std::uint8_t> render(const Scene& s, unsigned seed = 7)
                 edge += s.bump_px;
             }
             double v;
+            const bool on_floor_line = s.floor_line_width_deg > 0.0 && deg >= s.floor_line_start_deg &&
+                deg < s.floor_line_start_deg + s.floor_line_width_deg &&
+                std::fabs(d - (edge - s.floor_line_inner_px)) <= 1.5;
             if (s.decoy_inner_px > 0.0 && d < edge - s.decoy_inner_px) {
                 v = 200.0;
             } else if (d < edge) {
@@ -68,6 +75,7 @@ std::vector<std::uint8_t> render(const Scene& s, unsigned seed = 7)
             // soften edges by a 1.5 px ramp
             const double ramp = std::clamp((d - edge) / 1.5, -1.0, 1.0);
             (void)ramp;
+            if (on_floor_line) v -= s.floor_line_depth_dn;
             v += noise(rng);
             img[static_cast<std::size_t>(y) * s.width + x] = static_cast<std::uint8_t>(std::clamp(v, 0.0, 255.0));
         }
@@ -98,6 +106,60 @@ int main()
         expect(r.ok, "elliptical rim (5 px cos2t): fit ok");
         expect(std::hypot(r.fixed.cx - 700.0, r.fixed.cy - 700.0) < 1.0, "elliptical rim: centre within 1 px");
         expect(std::fabs(r.fixed.ellipticity_px - 5.0) < 1.5, "elliptical rim: ellipticity measured");
+    }
+    {
+        // 2010094 11-04 (IR, filters in): the rim is a thin dark ring; faint floor lines
+        // run ~30 px inside it. With the starting centre 25 px off, the step rule takes the
+        // floor lines on one side; the ring model follows the ring all the way round.
+        // As on the rig, the ring's inner edge sits ~10 px outside the known radius, and the
+        // start (the Hough proposal) is off toward the top right.
+        Scene s;
+        s.radius = 610.0;
+        s.floor_line_inner_px = 20.0;
+        s.floor_line_start_deg = 60.0;
+        s.floor_line_width_deg = 150.0;   // bottom and left
+        auto img = render(s);
+        fit::Config ring;
+        ring.declared_nir_filters = "in";
+        const auto r = fit::fit_known_radius(img.data(), s.width, s.height, 712.0, 688.0, 600.0, ring);
+        expect(r.ok && r.edge_model == "ir_dark_ring" && r.edge_model_source == "profile" && r.ring_ray_fraction > 0.9,
+               "IR ring with floor lines: ir_dark_ring chosen from the profiles");
+        expect(std::hypot(r.fixed.cx - 700.0, r.fixed.cy - 700.0) < 1.0, "IR ring with floor lines: centre within 1 px");
+        bool sides_agree = r.sides.size() == 4;
+        for (const auto& side : r.sides) {
+            // The fixed fit has the known radius (600); the ring's inner edge is at 610.
+            sides_agree = sides_agree && std::fabs(side.all_points_fixed_residual_median_px - 10.0) < 2.0 &&
+                side.inliers > 150;
+        }
+        expect(sides_agree, "IR ring with floor lines: every side on the ring (+10 px from the known radius, +/- 2)");
+        expect(std::fabs(r.free.radius_px - 610.0) < 1.5, "IR ring with floor lines: free radius on the ring's inner edge");
+        expect(r.warnings.empty(), "IR ring, declared filters in: no disagreement warning");
+        fit::Config step = ring;
+        step.edge_model = fit::EdgeModel::wall_top_step;
+        step.declared_nir_filters.clear();
+        const auto t = fit::fit_known_radius(img.data(), s.width, s.height, 712.0, 688.0, 600.0, step);
+        double worst_side = 0.0;
+        for (const auto& side : t.sides) worst_side = std::max(worst_side, std::fabs(side.all_points_fixed_residual_median_px));
+        expect(t.edge_model == "wall_top_step" && t.edge_model_source == "config" &&
+                   (worst_side > 5.0 || std::hypot(t.fixed.cx - 700.0, t.fixed.cy - 700.0) > 3.0 || !t.ok),
+               "IR ring with floor lines, step rule forced: a side leaves the ring (the 11-04 fault reproduced)");
+    }
+    {
+        // Filters out: a plain step, no valley: the wall-top step model.
+        Scene s;
+        s.ir_dark_ring = false;
+        auto img = render(s);
+        fit::Config config;
+        config.declared_nir_filters = "in";   // wrong on purpose
+        const auto r = fit::fit_known_radius(img.data(), s.width, s.height, 705.0, 695.0, 600.0, config);
+        expect(r.ok && r.edge_model == "wall_top_step" && r.ring_ray_fraction < 0.5,
+               "step edge: wall_top_step chosen from the profiles");
+        bool warned = false;
+        for (const auto& w : r.warnings) warned = warned || w == "edge_model_disagrees_with_declared_nir_filters";
+        expect(warned, "step edge with filters declared in: disagreement warned");
+        const auto j = fit::to_json(r, config);
+        expect(j.at("edge_model") == "wall_top_step" && j.at("declared_nir_filters") == "in" && j.at("sides").size() == 4,
+               "json records the edge model, the declaration and the per-side residuals");
     }
     {
         // 2026-11-15 rig trial (2010093): a sharp edge with a coherent 21 deg arc 5-10 px
@@ -131,8 +193,10 @@ int main()
         expect(t.largest_gap_deg >= 20.0, "coherent +7 px arc with a 3 px tolerance: the arc is lost (rig refusal reproduced)");
     }
     {
-        // The rim reaches past the bottom of the frame (Cam2010094's chronic case).
+        // The rim reaches past the bottom of the frame (Cam2010094's chronic case, a
+        // filters-out frame: the wall-top step).
         Scene s;
+        s.ir_dark_ring = false;
         s.height = 1300;
         s.cy = 696.0;  // bottom of the rim at y = 1296: within the 8 px border margin
         auto img = render(s);

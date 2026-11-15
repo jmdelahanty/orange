@@ -4094,7 +4094,10 @@ bool advance_daily_registration_autorun(
                 if (state->rim_fit_refusal.empty()) state->rim_fit_refusal = "rim_proposal_missing:" + target.camera_serial;
                 continue;
             }
-            const orange::daily_rim_fit::Config fit_config;
+            // The edge model (IR dark ring vs wall-top step) is decided from the frame;
+            // the launcher's declared NIR filter position is recorded beside it.
+            orange::daily_rim_fit::Config fit_config;
+            fit_config.declared_nir_filters = config.nir_filters;
             const auto fit = orange::daily_rim_fit::fit_known_radius(
                 target.rim_gray.data(), width, height,
                 target.detected_rim_center_x_camera_px, target.detected_rim_center_y_camera_px,
@@ -4146,6 +4149,7 @@ bool advance_daily_registration_autorun(
                 {"arc_coverage_fraction", fit.coverage_fraction},
                 {"largest_gap_deg", fit.largest_gap_deg},
                 {"largest_gap_side", fit.largest_gap_side},
+                {"edge_model", fit.edge_model},
                 {"warnings", fit.warnings},
                 {"fit_path", (target_dir / "daily_rim_fit.json").string()},
             });

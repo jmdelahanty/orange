@@ -117,6 +117,12 @@ std::vector<std::string> summary_lines(const Result& result, const std::string& 
                     fmt("; inliers %.0f/%.0f; tolerance %.2f px (provisional median %.2f px)",
                         static_cast<double>(result.fixed.inliers), static_cast<double>(result.points.size()),
                         result.free.inlier_tolerance_px, result.free.provisional_residual_median_px));
+    std::string sides = "edge " + result.edge_model + " (" + result.edge_model_source +
+        fmt(", ring rays %.2f); per-side median residual:", result.ring_ray_fraction);
+    for (const auto& side : result.sides) {
+        sides += " " + side.side + fmt(" %+.1f", side.fixed_residual_median_px);
+    }
+    lines.push_back(sides);
     if (!result.warnings.empty()) lines.push_back("warnings: " + join(result.warnings, ", "));
     return lines;
 }

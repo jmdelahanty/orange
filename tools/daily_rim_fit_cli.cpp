@@ -1,7 +1,8 @@
 // Run the known-radius daily rim fit on a saved 8-bit grey PNG (evidence, dry checks).
 //
 //   daily_rim_fit_cli <png> <camera_serial> <fish_plane_scale.json> <start_cx> <start_cy>
-//                     [--points] [--images <dir>]
+//                     [--points] [--images <dir>] [--edge-model automatic|wall_top_step|ir_dark_ring]
+//                     [--ring-edge inner_edge|centre_line] [--nir-filters in|out]
 //
 // Prints the fit JSON (src/daily_rim_fit.h). Writes nothing unless --images names a
 // directory for the review images (src/daily_rim_fit_images.h).
@@ -18,7 +19,7 @@ int main(int argc, char** argv)
 {
     if (argc < 6) {
         std::cerr << "usage: daily_rim_fit_cli <png> <camera_serial> <fish_plane_scale.json> <start_cx> <start_cy>"
-                     " [--points] [--images <dir>]\n";
+                     " [--points] [--images <dir>] [--edge-model <m>] [--ring-edge <e>] [--nir-filters in|out]\n";
         return 2;
     }
     const cv::Mat image = cv::imread(argv[1], cv::IMREAD_GRAYSCALE);
@@ -32,10 +33,7 @@ int main(int argc, char** argv)
         std::cerr << "known radius: " << known.error << "\n";
         return 2;
     }
-    const fit::Config config;
-    const fit::Result result = fit::fit_known_radius(image.data, image.cols, image.rows,
-                                                     std::atof(argv[4]), std::atof(argv[5]),
-                                                     known.radius_px, config);
+    fit::Config config;
     bool points = false;
     std::string images_dir;
     for (int i = 6; i < argc; ++i) {
@@ -44,11 +42,31 @@ int main(int argc, char** argv)
             points = true;
         } else if (arg == "--images" && i + 1 < argc) {
             images_dir = argv[++i];
+        } else if (arg == "--edge-model" && i + 1 < argc) {
+            const std::string v = argv[++i];
+            if (v == "automatic") config.edge_model = fit::EdgeModel::automatic;
+            else if (v == "wall_top_step") config.edge_model = fit::EdgeModel::wall_top_step;
+            else if (v == "ir_dark_ring") config.edge_model = fit::EdgeModel::ir_dark_ring;
+            else { std::cerr << "unknown edge model: " << v << "\n"; return 2; }
+        } else if (arg == "--ring-edge" && i + 1 < argc) {
+            const std::string v = argv[++i];
+            if (v == "inner_edge") config.ring_edge = fit::RingEdge::inner_edge;
+            else if (v == "centre_line") config.ring_edge = fit::RingEdge::centre_line;
+            else { std::cerr << "unknown ring edge: " << v << "\n"; return 2; }
+        } else if (arg == "--nir-filters" && i + 1 < argc) {
+            config.declared_nir_filters = argv[++i];
+            if (config.declared_nir_filters != "in" && config.declared_nir_filters != "out") {
+                std::cerr << "--nir-filters takes in or out\n";
+                return 2;
+            }
         } else {
             std::cerr << "unknown argument: " << arg << "\n";
             return 2;
         }
     }
+    const fit::Result result = fit::fit_known_radius(image.data, image.cols, image.rows,
+                                                     std::atof(argv[4]), std::atof(argv[5]),
+                                                     known.radius_px, config);
     nlohmann::json out = fit::to_json(result, config, 1.0 / known.px_per_mm, points);
     if (!images_dir.empty()) {
         const std::vector<std::uint8_t> gray(image.data, image.data + image.total());

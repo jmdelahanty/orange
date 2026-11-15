@@ -26,10 +26,44 @@
 
 namespace orange::daily_rim_fit {
 
-inline constexpr const char* kFitMethodId = "orange_daily_rim_fit_known_radius_v2";
+inline constexpr const char* kFitMethodId = "orange_daily_rim_fit_known_radius_v3";
+
+// Which physical edge a ray looks for.
+//   wall_top_step: filters-out / visible frames: the bright-to-dark step of the wall top
+//     (the accuracy tool's rule, approved 2026-11-15).
+//   ir_dark_ring: IR frames (filters in): the rim images as a thin dark ring (a valley,
+//     5-15 px wide, 40-150 DN deep) with bright floor inside and outside. The strongest
+//     valley in the window is the ring; floor scratches and lines are shallower valleys
+//     or plain steps, which the step rule picked where the ring is faint (2010094
+//     11-04: bottom and left followed floor lines ~30 px inside the ring).
+enum class EdgeModel { automatic, wall_top_step, ir_dark_ring };
+const char* edge_model_name(EdgeModel model);
+
+// Where on the dark ring the edge point sits.
+enum class RingEdge { centre_line, inner_edge };
+const char* ring_edge_name(RingEdge edge);
 
 struct Config {
     int rays = 720;
+    // automatic: decided per frame from the profiles: ir_dark_ring when at least
+    // ring_ray_fraction of the rays (with samples) hold a valley of min_valley_dn, else
+    // wall_top_step. The declared NIR filter position, when given, is recorded beside
+    // it and a disagreement is a warning.
+    EdgeModel edge_model = EdgeModel::automatic;
+    std::string declared_nir_filters;   // "in" / "out" / "" (not declared)
+    double ring_ray_fraction = 0.5;
+    // Valley (matched dark-line) response at r: min(inner flank, outer flank) mean minus
+    // the core mean; the core is r +/- valley_core_half_px, each flank valley_flank_px
+    // wide starting valley_gap_px beyond the core. A step has one dark flank and no
+    // response; a valley has both flanks bright.
+    double valley_core_half_px = 4.0;
+    double valley_gap_px = 3.0;
+    double valley_flank_px = 8.0;
+    double min_valley_dn = 15.0;
+    // inner_edge: the strongest bright-to-dark step from this far inside the valley centre
+    // to the centre (the band is up to ~25 px wide, striped, with a grey fringe).
+    double max_ring_band_px = 30.0;
+    RingEdge ring_edge = RingEdge::inner_edge;
     // The edge rule of scripts/registration_accuracy_check.py (Jeremy approved its
     // wall-top fit, 2026-11-15): derivative of Gaussian, sigma 2 px (half-width 6 px,
     // so an edge point is at least 6 px inside the frame), a step of at least
@@ -113,8 +147,23 @@ struct CircleFit {
     double provisional_residual_median_px = 0.0;  // median |residual| of the all-point fit that set the tolerance
 };
 
+struct SideStats {
+    std::string side;                 // right / bottom / left / top (image angle quadrants)
+    int rays = 0;                     // rays of this quadrant
+    int points = 0;                   // edge points found
+    int inliers = 0;
+    double fixed_residual_median_px = 0.0;      // signed, over the inliers (+ = outside the fixed fit)
+    double fixed_residual_median_abs_px = 0.0;
+    double all_points_fixed_residual_median_px = 0.0;  // signed, every edge point of the side
+};
+
 struct Result {
     bool ok = false;                  // the fit is usable (no refusal)
+    std::string edge_model;           // wall_top_step / ir_dark_ring (the model used)
+    std::string edge_model_source;    // profile / config
+    double ring_ray_fraction = 0.0;   // rays with a valley of min_valley_dn (the decision's evidence)
+    int rays_ring_step_without_valley = 0;  // ir_dark_ring rays with no valley: the strongest step taken
+    std::vector<SideStats> sides;
     std::vector<std::string> refusals;
     std::vector<std::string> warnings;
     double expected_radius_px = 0.0;
