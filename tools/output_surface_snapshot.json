@@ -3253,6 +3253,7 @@
    "meaning",
    "method",
    "minimum",
+   "nir_filters",
    "norm",
    "observation_path",
    "observation_sha256",

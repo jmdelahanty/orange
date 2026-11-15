@@ -318,6 +318,12 @@ validate_env_item() {
         return 2
       }
       ;;
+    ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_NIR_FILTERS)
+      [[ "$value" == "in" || "$value" == "out" ]] || {
+        echo "$key must be in or out" >&2
+        return 2
+      }
+      ;;
     ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_CONFIRM_TIMEOUT_SECONDS)
       is_positive_integer "$value" || {
         echo "$key must be a positive integer (seconds)" >&2

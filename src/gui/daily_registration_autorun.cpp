@@ -46,6 +46,7 @@ DailyRegistrationAutorunConfig resolve_daily_registration_autorun_config()
     config.fish_plane_scale_path = env_string("ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_FISH_PLANE_SCALE_PATH");
     config.declared_by = env_string("ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_DECLARED_BY");
     config.result_json_path = env_string("ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_RESULT_JSON");
+    config.nir_filters = env_string("ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_NIR_FILTERS");
     config.exit_after_completion =
         gui_env_flag_enabled("ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_EXIT_AFTER_COMPLETION", true);
     std::string error;
@@ -58,6 +59,8 @@ DailyRegistrationAutorunConfig resolve_daily_registration_autorun_config()
         config.error = "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_FISH_PLANE_SCALE_PATH is required";
     } else if (!daily_registration_identity_valid(config.declared_by)) {
         config.error = "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_DECLARED_BY must match ^[a-z][a-z0-9_-]{0,31}$";
+    } else if (config.nir_filters != "in" && config.nir_filters != "out") {
+        config.error = "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_NIR_FILTERS must be in or out (no default)";
     } else if (config.result_json_path.empty()) {
         config.error = "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_RESULT_JSON is required";
     }

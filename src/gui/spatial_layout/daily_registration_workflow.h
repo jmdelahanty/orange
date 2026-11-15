@@ -47,6 +47,7 @@ struct DailyRegistrationAutorunState {
     double started_s = 0.0;
     double stage_started_s = 0.0;
     double last_attempt_s = -1e9;
+    double streaming_since_s = -1.0;  // first time the autorun saw the cameras streaming
     nlohmann::json known_radius = nlohmann::json::object();
     nlohmann::json fit_summaries = nlohmann::json::object();
     nlohmann::json physical_state_declaration = nullptr;

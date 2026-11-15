@@ -20,8 +20,9 @@
 #
 # Without --execute it prints the plan (dry run). --execute needs a quiet rig (HOLD
 # the other agents first) and Jeremy's go: it drives Citrus's socket and the cameras.
-# --declared-by declares that the dishes and holder are installed, the water has
-# settled, and the normal IR filters and illumination are in place.
+# --declared-by declares that the dishes and holder are installed and the water has
+# settled; --nir-filters in|out states the NIR filters' actual position (both are
+# recorded in the declaration; no default).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,6 +34,7 @@ ORANGE_SOCKET="/tmp/orange_local_control.sock"
 FISH_PLANE_SCALE="/home/jeremy/orange_data/calibrations/commissioning/omnifin0_20261113T230405Z_wet_commissioning_holder_check_fish_plane_scale_/steps/08_fish_plane_scale/fish_plane_scale.json"
 CAMERA_CONFIG_DIR="/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam"
 DECLARED_BY=""
+NIR_FILTERS=""
 CONFIRM_TIMEOUT_SECONDS=1800
 TIMEOUT_SECONDS=3600
 OUT_DIR=""
@@ -47,6 +49,9 @@ usage() {
 
 Options:
   --declared-by <identity>        Required; ^[a-z][a-z0-9_-]{0,31}$ (e.g. delahantyj)
+  --nir-filters in|out            Required: the NIR filters' actual position, recorded in the
+                                  declaration (in = production; out = e.g. a projector-visible
+                                  accuracy session). No default.
   --camera-config-dir <dir>       Orange camera preset (default 100_cam4_ptp_fourcam; the
                                   normal IR path: GPO 0 on 2010096 follows exposure)
   --fish-plane-scale <file>       orange.calibration.fish_plane_scale v1 (default: the 2026-11-13 commissioning)
@@ -61,6 +66,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --declared-by) DECLARED_BY="${2:?--declared-by needs an identity}"; shift 2 ;;
+    --nir-filters) NIR_FILTERS="${2:?--nir-filters needs in or out}"; shift 2 ;;
     --camera-config-dir) CAMERA_CONFIG_DIR="${2:?}"; shift 2 ;;
     --fish-plane-scale) FISH_PLANE_SCALE="${2:?}"; shift 2 ;;
     --citrus-config) CITRUS_CONFIG="${2:?}"; shift 2 ;;
@@ -71,6 +77,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ "${NIR_FILTERS}" == "in" || "${NIR_FILTERS}" == "out" ]] || { echo "--nir-filters in|out is required" >&2; exit 2; }
 [[ "${DECLARED_BY}" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || { echo "--declared-by is required and must match ^[a-z][a-z0-9_-]{0,31}\$" >&2; exit 2; }
 [[ "${CONFIRM_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]] || { echo "--confirm-timeout-seconds must be a positive integer" >&2; exit 2; }
 CAMERA_CONFIG_DIR="$(realpath -e "${CAMERA_CONFIG_DIR}")" || { echo "camera config folder not found" >&2; exit 2; }
@@ -125,13 +132,14 @@ ORANGE_ENV=(
   "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_CITRUS_CONFIG_PATH=${CITRUS_CONFIG}"
   "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_FISH_PLANE_SCALE_PATH=${FISH_PLANE_SCALE}"
   "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_DECLARED_BY=${DECLARED_BY}"
+  "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_NIR_FILTERS=${NIR_FILTERS}"
   "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_RESULT_JSON=${RESULT_JSON}"
   "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_CONFIRM_TIMEOUT_SECONDS=${CONFIRM_TIMEOUT_SECONDS}"
   "ORANGE_GUI_DAILY_REGISTRATION_AUTORUN_EXIT_AFTER_COMPLETION=1"
 )
 
 echo "Daily registration autorun plan:"
-echo "  declared_by=${DECLARED_BY} camera_config=${CAMERA_CONFIG_DIR}"
+echo "  declared_by=${DECLARED_BY} nir_filters=${NIR_FILTERS} camera_config=${CAMERA_CONFIG_DIR}"
 echo "  citrus_config=${CITRUS_CONFIG}"
 echo "  fish_plane_scale=${FISH_PLANE_SCALE} ($(sha256sum "${FISH_PLANE_SCALE}" | cut -c1-16)...)"
 echo "  result=${RESULT_JSON} confirm_timeout=${CONFIRM_TIMEOUT_SECONDS}s"

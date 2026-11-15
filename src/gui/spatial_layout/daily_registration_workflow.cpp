@@ -4006,6 +4006,21 @@ bool advance_daily_registration_autorun(
             }
             return state->exit_requested;
         }
+        // Stream warm-up (2026-11-15 rig trial: the grouped PTP snapshot failed
+        // 0.2 s after stream start because no snapshot worker had seen a frame
+        // yet). Wait at least 2 s of streaming, as the guided capture does, and
+        // until every camera's snapshot worker has observed a camera timestamp.
+        if (state->streaming_since_s < 0.0) state->streaming_since_s = now;
+        bool all_observed = workers != nullptr;
+        for (int i = 0; all_observed && i < camera_count; ++i) {
+            all_observed = workers[i] != nullptr && workers[i]->LatestObservedCameraTimestampNs() != 0;
+        }
+        if (now - state->streaming_since_s < 2.0 || !all_observed) {
+            if (now - state->stage_started_s > config.begin_timeout_seconds) {
+                AutorunFinish(state, config, workflow, false, "camera_timestamps_not_observed");
+            }
+            return state->exit_requested;
+        }
         if (now - state->last_attempt_s < 2.0) return false;
         state->last_attempt_s = now;
         std::string error;
@@ -4023,7 +4038,11 @@ bool advance_daily_registration_autorun(
         state->physical_state_declaration = {
             {"declared_by", config.declared_by},
             {"declared_at_utc", AutorunUtcNow()},
-            {"statement", "holder and dishes installed; water settled; normal IR filters and illumination in place"},
+            {"statement", config.nir_filters == "in"
+                              ? "holder and dishes installed; water settled; normal IR filters and illumination in place"
+                              : "holder and dishes installed; water settled; NIR filters OUT (not the production optical "
+                                "state); illumination otherwise as configured"},
+            {"nir_filters", config.nir_filters},
             {"source", "daily_registration_autorun_launcher"},
         };
         AutorunSetStage(state, "capture_rims");

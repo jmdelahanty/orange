@@ -28,6 +28,8 @@ struct DailyRegistrationAutorunConfig {
     std::string citrus_config_path;        // Citrus canvas (shadow.json)
     std::string fish_plane_scale_path;     // orange.calibration.fish_plane_scale v1
     std::string declared_by;               // who declares dishes, water and IR filters ready
+    std::string nir_filters;               // "in" (production) or "out" (e.g. a filters-off
+                                           // accuracy session); required, recorded as declared
     std::string result_json_path;
     double begin_timeout_seconds = 180.0;
     double confirm_timeout_seconds = 1800.0;
@@ -37,7 +39,7 @@ struct DailyRegistrationAutorunConfig {
 };
 
 // ORANGE_GUI_DAILY_REGISTRATION_AUTORUN=1 and its _CITRUS_CONFIG_PATH,
-// _FISH_PLANE_SCALE_PATH, _DECLARED_BY, _RESULT_JSON, _CONFIRM_TIMEOUT_SECONDS,
+// _FISH_PLANE_SCALE_PATH, _DECLARED_BY, _NIR_FILTERS, _RESULT_JSON, _CONFIRM_TIMEOUT_SECONDS,
 // _EXIT_AFTER_COMPLETION keys.
 DailyRegistrationAutorunConfig resolve_daily_registration_autorun_config();
 
