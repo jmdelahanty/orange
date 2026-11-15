@@ -37,12 +37,12 @@ namespace gen = ::orange::outputs::gen::empty_background_capture_v1;
 inline constexpr const char* kCaptureSchemaId = "orange.empty_background_capture";
 inline constexpr int kCaptureSchemaVersion = 1;
 // The version Orange writes, for the descriptor and the start-snapshot block
-// alike: 1 until agent-contracts PR #129 (orange-palette/empty_background_v2,
-// accepted by Palette 2026-11-15) is merged, then 2. Version 2 adds the
+// alike: 2 since agent-contracts orange-palette/empty_background_v2 was merged
+// (603da1fe, 2026-11-15; Palette reviewed it at 21e2341). Version 2 adds the
 // requester (orange.requester.v1), the capture's declared_by and the
 // local_control selection; a local-control capture or a start that names a
-// capture needs it and is refused while this is 1. Readers accept both.
-inline constexpr int kWriteSchemaVersion = 1;
+// capture needs it (and is refused at 1). Readers accept both versions.
+inline constexpr int kWriteSchemaVersion = 2;
 inline constexpr std::size_t kFrameCount = 17;  // method median_17 v1; odd, so the median is a sample
 inline constexpr const char* kDescriptorFileName = "background.json";
 inline constexpr const char* kStoreDirectoryName = "backgrounds";            // under the Orange data root
