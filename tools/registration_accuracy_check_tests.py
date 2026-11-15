@@ -103,6 +103,29 @@ def test_crosshair_detection() -> None:
                 f"outline fit {outline}")
 
 
+def test_ransac_circle_rejects_outliers() -> None:
+    rng = np.random.default_rng(3)
+    t = rng.uniform(0, 2 * math.pi, 300)
+    xs, ys = 1000 + 800 * np.cos(t), 900 + 800 * np.sin(t)
+    xs[:60] += rng.uniform(25, 60, 60)  # a second edge on one side
+    fit = rac.ransac_circle(xs + rng.normal(0, 0.5, 300), ys + rng.normal(0, 0.5, 300))
+    require(fit["found"] and math.hypot(fit["x"] - 1000, fit["y"] - 900) < 1.0 and close(fit["radius"], 800, 1.0),
+            f"ransac circle {fit.get('x')}, {fit.get('y')}, {fit.get('radius')}")
+    require(fit["inliers"] >= 230, "ransac keeps the true points")
+
+
+def test_two_rims_separates_floor_and_wall_top() -> None:
+    size = 900
+    rows, cols = np.mgrid[0:size, 0:size]
+    rho = np.hypot(cols - 450.0, rows - 450.0)
+    image = np.where(rho <= 340, 200.0, np.where(rho <= 360, 90.0, 10.0)).astype(np.uint8)  # floor, wall band, outside
+    rims = rac.fit_two_rims(image, (452.0, 448.0, 350.0), inward_px=60, outward_px=60)
+    floor, top = rims["floor_edge"], rims["wall_top"]
+    require(floor["found"] and close(floor["radius"], 340.5, 2.5), f"floor edge radius {floor.get('radius')}")
+    require(top["found"] and close(top["radius"], 360.5, 1.5), f"wall top radius {top.get('radius')}")
+    require(all(v["inliers"] > 0 for v in top["per_side"].values()), "every side has wall-top points")
+
+
 def test_grid_scenes(tmp: Path) -> None:
     path = tmp / "scenes.json"
     rac.emit_grid_scenes(path, ["arena_1", "arena_2"])
@@ -125,6 +148,8 @@ def main() -> int:
     test_edge_support_matches_the_gate_rule()
     test_radius_band()
     test_crosshair_detection()
+    test_ransac_circle_rejects_outliers()
+    test_two_rims_separates_floor_and_wall_top()
     with tempfile.TemporaryDirectory() as tmp:
         test_grid_scenes(Path(tmp))
     if failures:

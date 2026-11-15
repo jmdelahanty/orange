@@ -75,28 +75,31 @@ outline circle is an algebraic fit. Reported:
 - `outline_vs_rim`: the projected outline against the rim, each in its own plane's mm (the
   outline is on the film, the rim about 9-11 mm higher).
 
-**Today's rim** (`dish.observed_rim`): on the `uniform_gray` frame the inner rim is measured
-directly: on 720 rays from a starting circle (the active registration, else the projected
-outline scaled to the dish), the strongest bright-to-dark step within +/- 8 % of the radius,
-then a weighted circle fit with 3 x MAD rejection. Its centre against the observed cross is
-`crosshair.dish_placement`, the primary placement number; `dish.registration_vs_today` says how
-far the active registration's circle is from today's rim (has the dish moved since?).
-
-Per-angle edges (`dish.observed_rim.radial_edges`): on the 720 gate angles, the strongest
-bright-to-dark step within +/- 40 px of today's fit gives the radial residual (median and max, px
-and mm). Where two steps of at least 40 % of the strongest are resolved, the innermost is the lit
-floor's edge and the outermost the wall's inner edge at the top; `fit_locks_onto` says which one
-today's fit follows. The registration means the inner rim, water side, at the top
-(`dish_inner_rim_water_side_edge`, plane `dish_top_rim`), i.e. the outermost edge.
+**Today's dish** (`dish.today`): on the `uniform_gray` frame the rim shows two edges, fitted
+separately. On 720 rays from a first-pass circle, each radial profile (stopping 8 px inside the
+frame, so the frame edge is never taken for a rim) is smoothed over 5 px and its bright-to-dark
+steps (>= max(1.5 DN/px, 30 % of the ray's strongest)) are found. The innermost is the floor-edge
+candidate, the outermost the wall-top (inner rim at the top) candidate; each set gets its own
+RANSAC circle (3 px tolerance, iterative refits). Per fit: inliers, median/max residual (px and
+mm), centre, radius, edge support (gate rule) and per-side inliers and median residual (right,
+bottom, left, top; a side with none says "NO EDGE POINTS"). `dish.today.parallax` compares the
+two centres and radii with the fish-plane model (both circles share one physical centre at
+different heights; principal point assumed at the image centre, not measured);
+`frame_border_clearance_px/mm` says how close the rim is to each frame edge.
+`crosshair.dish_placement` is the floor-edge centre against the observed cross (near the film,
+no homography), plus both centres corrected to the film plane with the model as a cross-check.
+`dish.registration_vs_today` compares the active registration with the wall-top fit.
 
 Figures:
 - `Cam<serial>_dish_rim.png` (every camera with a uniform-gray frame, 1/4 size, legend below):
-  today's rim fit and its centre (magenta), the observed crosshair centre with the offset
-  arrow (cyan, drawn 10x longer) and its value in mm, and the active registration's circle where
-  one exists (yellow), labelled with its artifact id and "EXPIRED <time>" or "valid until <time>".
+  the floor-edge fit (green) and the wall-top fit (magenta) with their centres and inlier points,
+  the observed crosshair centre with the arrow to the floor-edge centre (cyan, drawn 10x longer)
+  and its value in mm, and the active registration's circle where one exists (yellow), labelled
+  with its artifact id and "EXPIRED <time>" or "valid until <time>". Sides without edge points
+  are named in the legend.
 - `Cam<serial>_dish_rim_zoom.png`: 320 x 320 native-pixel crops (shown x2) at the top, right,
-  bottom and left of today's rim, with today's fit, the registration's fit and the strongest
-  edge found on each ray, so a person can judge a fit against the actual edge.
+  bottom and left, centred between the two edges, with both fits, their inlier points and the
+  registration's fit; a crop says "NO ... EDGE POINTS HERE" and "black = outside the frame".
 - `Cam<serial>_projection.png` (green: predicted dot, red: measured) and
   `Cam<serial>_crosshair.png` (cyan: fitted arms and outline, red: observed centre, green:
   predicted centre, yellow: the registration's fit, magenta: today's rim).
@@ -123,14 +126,24 @@ lights on, 10 ms; black, uniform gray 64, centre and outline, static_dots
 | 2010095 | 9/9 | 0.17 / 0.25 | (0.07, 0.14), 0.045, 1.0031 | 0.18 | 1.51 | 40.11 mm |
 | 2010096 | 9/9 | 0.29 / 0.35 | (0.05, 0.27), -0.048, 1.0033 | 0.23 | 1.36 | 40.21 mm |
 
-Today's rim, per-angle (720 rays, output `20261115T1947Z_grid9_crosshair_v2`): residual median
-3.5-7.5 px (0.07-0.14 mm), max 31-36 px (0.6-0.7 mm, rays where the strongest step is the floor
-edge instead). Two edges are resolved on 507-641 rays, 25-35 px (0.5-0.65 mm) apart: the lit
-floor's edge at 2115-2123 px (39.6-39.7 mm) and the wall's inner edge at the top at 2143-2152 px
-(40.13-40.31 mm). Today's fit follows the outer one (fit minus outermost -1.5 to -5.5 px), the
-dish top rim the registration means, and that edge sits just above the design band's rim-top
-value (2138-2140 px at 80 mm), as the calipered 80.15 mm predicts. The 2010093 registration of
-2026-11-04 (radius 2165.7 px) is 24 px larger than today's rim as well as 1.65 mm off centre.
+Today's dish, two edges (output `20261115T1947Z_grid9_crosshair_v3`):
+
+| Camera | floor edge r (inliers, sides without points) | wall top r (inliers, sides without points) | centre diff top - floor, measured / predicted (px) | radius diff, measured / predicted (px) | floor centre vs cross | film-corrected: floor / top vs cross | frame clearance |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2010093 | 2124.1 px, 39.81 mm (277/717) | 2144.7 px, 40.09 mm (396/717) | (6.8, -21.6) / (-0.2, 0.1) | 20.6 / 5.9 | 0.90 mm | 0.89 / 0.67 mm | left 55 px |
+| 2010094 | 2118.0 px, 39.69 mm (177/703; top 6) | 2144.4 px, 40.07 mm (408/703) | (2.0, -31.7) / (0.1, 0.4) | 26.3 / 5.8 | 2.87 mm | 2.88 / 2.31 mm | bottom 1 px |
+| 2010095 | 2102.7 px, 39.44 mm (181/720; top 4) | 2132.7 px, 39.89 mm (285/720; left 10, top 5) | (-9.6, -26.1) / (0.1, 0.4) | 30.0 / 5.7 | 2.44 mm | 2.44 / 1.92 mm | bottom 20 px |
+| 2010096 | 2131.3 px, 39.98 mm (184/557) | 2154.8 px, 40.31 mm (273/557; right none) | (-0.1, -16.5) / (0.1, 0.0) | 23.4 / 5.8 | 1.52 mm | 1.53 / 1.55 mm | right 47 px |
+
+Inlier residuals are 1.0-1.5 px median, 3 px max, for both edges on every camera. The edges do
+not behave like the floor/wall corner and the top of a 2.8 mm wall seen with parallax: the
+radius difference is 4-5x the model's, and the floor-edge centre sits 16-32 px toward -y of the
+wall-top centre on all four cameras (the model predicts under 0.5 px). A shift in the same
+direction in every arena points at the projector's light angle: the floor's lit edge looks like
+an illumination edge, not a geometric one. Where the dish is far off-axis (2010094 bottom, near
+the frame) the wall shows as a ~90 px dark band, also far wider than a 2.8 mm wall would give.
+Neither edge alone is a settled reference yet; the two give placements within 0.6 mm of each
+other, and 2010094 and 2010095 are over 2 mm from the projected centre by either.
 
 The October homographies hold to 0.6 mm everywhere; the remaining error is mostly a +0.1 to
 +0.3 % scale (the expected refraction term with dishes and water in the light path), with

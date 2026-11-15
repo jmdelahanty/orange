@@ -417,47 +417,139 @@ def detect_rim(gray: np.ndarray, cx0: float, cy0: float, r0: float, search_fract
             "initial": {"x": cx0, "y": cy0, "radius": r0}}
 
 
-def radial_edges(gray: np.ndarray, cx: float, cy: float, r: float, search_px: float = 40.0,
-                 angles: int = EDGE_SAMPLES) -> dict[str, Any]:
-    """Per-angle bright-to-dark edges near a circle (the 720 gate angles).
+SIDES = (("right", -45.0, 45.0), ("bottom", 45.0, 135.0), ("left", 135.0, 225.0), ("top", 225.0, 315.0))
 
-    On each ray the profile over r +/- search_px (1 px steps) is smoothed over 5 px; the
-    strongest step gives the per-angle edge radius. The innermost and outermost steps of at
-    least 40 % of that strength are kept too: the lit floor's edge (innermost) and the
-    wall's inner edge at the top (outermost) when the two are resolved."""
+
+def side_of(theta: np.ndarray) -> np.ndarray:
+    deg = np.degrees(theta) % 360.0
+    out = np.full(deg.shape, "right", dtype=object)
+    for name, lo, hi in SIDES[1:]:
+        out[(deg >= lo) & (deg < hi)] = name
+    return out
+
+
+def ransac_circle(xs: np.ndarray, ys: np.ndarray, tol: float = 3.0, iterations: int = 600,
+                  seed: int = 7) -> dict[str, Any]:
+    """RANSAC circle (3-point samples), then iterative refits on the inliers."""
+    n = len(xs)
+    if n < 12:
+        return {"found": False, "reason": "too_few_points", "points": int(n)}
+    rng = np.random.default_rng(seed)
+    best = None
+    for _ in range(iterations):
+        i = rng.choice(n, 3, replace=False)
+        try:
+            cx, cy, r = fit_circle_weighted(xs[i], ys[i], np.ones(3))
+        except np.linalg.LinAlgError:
+            continue
+        if not (math.isfinite(r) and r > 100):
+            continue
+        inl = np.abs(np.hypot(xs - cx, ys - cy) - r) <= tol
+        if best is None or inl.sum() > best.sum():
+            best = inl
+    if best is None or best.sum() < 12:
+        return {"found": False, "reason": "no_consensus", "points": int(n)}
+    inl = best
+    for _ in range(4):
+        cx, cy, r = fit_circle_weighted(xs[inl], ys[inl], np.ones(int(inl.sum())))
+        inl = np.abs(np.hypot(xs - cx, ys - cy) - r) <= tol
+    cx, cy, r = fit_circle_weighted(xs[inl], ys[inl], np.ones(int(inl.sum())))
+    resid = np.hypot(xs - cx, ys - cy) - r
+    return {"found": True, "x": cx, "y": cy, "radius": r, "points": int(n), "inliers": int(inl.sum()),
+            "inlier_tolerance_px": tol, "residual_px_median_abs_inliers": float(np.median(np.abs(resid[inl]))),
+            "residual_px_max_abs_inliers": float(np.max(np.abs(resid[inl]))),
+            "residual_px_median_abs_all": float(np.median(np.abs(resid))), "_inlier_mask": inl, "_resid": resid}
+
+
+def fit_two_rims(gray: np.ndarray, init: tuple[float, float, float], inward_px: float = 80.0,
+                 outward_px: float = 110.0, border_margin_px: float = 8.0, angles: int = EDGE_SAMPLES) -> dict[str, Any]:
+    """The lit floor's edge and the wall top (inner rim at the top), fitted separately.
+
+    On each of `angles` rays from the initial centre the radial profile r0 - inward_px ..
+    r0 + outward_px (stopping border_margin_px inside the frame, so the frame edge is never
+    taken for a rim) is smoothed over 5 px; bright-to-dark steps of at least max(1.5 DN/px,
+    30 % of the ray's strongest) are kept. The innermost step is the floor's edge candidate,
+    the outermost the wall-top candidate (the same point when a ray has one step). Each set gets
+    its own RANSAC circle (3 px tolerance)."""
+    cx0, cy0, r0 = init
+    h, w = gray.shape
     theta = 2 * math.pi * (np.arange(angles) + 0.5) / angles
-    radii = np.arange(r - search_px, r + search_px + 1e-9, 1.0)
-    prof = bilinear_many(gray, cx + np.outer(np.cos(theta), radii), cy + np.outer(np.sin(theta), radii))
+    radii = np.arange(r0 - inward_px, r0 + outward_px + 1e-9, 1.0)
+    xs = cx0 + np.outer(np.cos(theta), radii)
+    ys = cy0 + np.outer(np.sin(theta), radii)
+    inside = (xs >= border_margin_px) & (ys >= border_margin_px) & (xs <= w - 1 - border_margin_px) & \
+        (ys <= h - 1 - border_margin_px)
+    prof = bilinear_many(gray, np.where(inside, xs, -1.0), np.where(inside, ys, -1.0))
     kernel = np.ones(5) / 5.0
-    strongest, inner, outer, step = (np.full(angles, np.nan) for _ in range(4))
+    floor_r, top_r = np.full(angles, np.nan), np.full(angles, np.nan)
+    truncated = np.zeros(angles, bool)
     for i in range(angles):
-        row = prof[i]
-        if np.isnan(row).any():
+        valid = ~np.isnan(prof[i])
+        n_valid = int(np.argmin(valid)) if not valid.all() else len(valid)
+        truncated[i] = n_valid < len(valid)
+        if n_valid < 30:
             continue
+        row = prof[i][:n_valid]
         grad = np.diff(np.convolve(row, kernel, mode="same"))[3:-3]
-        j = int(np.argmin(grad))
-        if -grad[j] < 1.0:
+        if grad.size < 3:
             continue
-        mid = radii[3:-4] + 0.5
-        strongest[i], step[i] = mid[j], -grad[j]
-        # local minima of the gradient at >= 40 % of the strongest step
+        strongest = -grad.min()
+        if strongest < 1.5:
+            continue
+        mid = radii[3:3 + grad.size] + 0.5
         idx = [k for k in range(1, len(grad) - 1) if grad[k] <= grad[k - 1] and grad[k] <= grad[k + 1]
-               and -grad[k] >= 0.4 * -grad[j]]
-        if idx:
-            inner[i], outer[i] = mid[min(idx)], mid[max(idx)]
-    valid = ~np.isnan(strongest)
-    resid = strongest[valid] - r
-    two_edges = valid & (outer - inner >= 4.0)
-    return {"theta": theta, "strongest": strongest, "inner": inner, "outer": outer, "step": step,
-            "angles_with_edge": int(valid.sum()),
-            "residual_px_median_abs": float(np.median(np.abs(resid))) if resid.size else None,
-            "residual_px_max_abs": float(np.max(np.abs(resid))) if resid.size else None,
-            "residual_px_median_signed": float(np.median(resid)) if resid.size else None,
-            "radius_px_median": {"strongest": float(np.nanmedian(strongest)) if valid.any() else None,
-                                 "innermost": float(np.nanmedian(inner)) if valid.any() else None,
-                                 "outermost": float(np.nanmedian(outer)) if valid.any() else None},
-            "angles_with_two_resolved_edges": int(two_edges.sum()),
-            "median_edge_separation_px": float(np.nanmedian((outer - inner)[two_edges])) if two_edges.any() else 0.0}
+               and -grad[k] >= max(1.5, 0.3 * strongest)]
+        if not idx:
+            continue
+        floor_r[i], top_r[i] = mid[min(idx)], mid[max(idx)]
+    out: dict[str, Any] = {"initial": {"x": cx0, "y": cy0, "radius": r0}, "rays": angles,
+                           "rays_truncated_by_frame": int(truncated.sum())}
+    sides = side_of(theta)
+    for name, rr in (("floor_edge", floor_r), ("wall_top", top_r)):
+        ok = ~np.isnan(rr)
+        px, py = cx0 + rr[ok] * np.cos(theta[ok]), cy0 + rr[ok] * np.sin(theta[ok])
+        fit = ransac_circle(px, py)
+        if fit.get("found"):
+            inl, resid = fit.pop("_inlier_mask"), fit.pop("_resid")
+            per_side = {}
+            for side, _, _ in SIDES:
+                sel = sides[ok] == side
+                si = sel & inl
+                per_side[side] = ({"edge_points": int(sel.sum()), "inliers": int(si.sum()),
+                                   "median_residual_px": float(np.median(resid[si])) if si.any() else None,
+                                   "note": None if si.any() else "NO EDGE POINTS on this side (inliers)"})
+            fit["per_side"] = per_side
+            fit["_points"] = (px, py, inl)
+        out[name] = fit
+    return out
+
+
+def parallax_check(floor: dict[str, Any], top: dict[str, Any], model: dict[str, float] | None,
+                   principal: tuple[float, float]) -> dict[str, Any] | None:
+    """Both circles share one physical centre; they sit at different heights, so their image
+    centres differ by parallax. Fish-plane model: image = p + s(z) X (p the principal point)."""
+    if not (model and floor.get("found") and top.get("found")):
+        return None
+    band = radius_band(model)
+    s_low, s_high, s0 = scale_at(model, band["z_low_mm"]), scale_at(model, band["z_high_mm"]), scale_at(model, 0.0)
+    p = np.array(principal)
+    c_floor, c_top = np.array([floor["x"], floor["y"]]), np.array([top["x"], top["y"]])
+    x_from_floor = (c_floor - p) / s_low      # dish centre in mm (floor-corner height)
+    predicted_top = p + s_high * x_from_floor
+    film_from_floor = p + s0 * x_from_floor
+    film_from_top = p + s0 * (c_top - p) / s_high
+    return {
+        "principal_point_px": list(principal), "principal_point_source": "image centre (not measured)",
+        "heights_mm": {"floor_corner_seen_through_water": band["z_low_mm"], "wall_top": band["z_high_mm"]},
+        "px_per_mm": {"floor_corner": s_low, "wall_top": s_high, "film": s0},
+        "centre_difference_measured_px": (c_top - c_floor).tolist(),
+        "centre_difference_predicted_px": (predicted_top - c_floor).tolist(),
+        "radius_ratio_measured": top["radius"] / floor["radius"], "radius_ratio_predicted": s_high / s_low,
+        "radius_difference_measured_px": top["radius"] - floor["radius"],
+        "radius_difference_predicted_px": floor["radius"] * (s_high / s_low - 1.0),
+        "floor_centre_at_film_px": film_from_floor.tolist(), "top_centre_at_film_px": film_from_top.tolist(),
+        "film_centres_disagree_px": float(np.hypot(*(film_from_floor - film_from_top))),
+    }
 
 
 def _font(size: int) -> Any:
@@ -469,52 +561,64 @@ def _font(size: int) -> Any:
         return ImageFont.load_default()
 
 
-def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, today: dict[str, Any] | None,
+def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, rims: dict[str, Any] | None,
                       cross: list[float] | None, placement: dict[str, Any] | None,
-                      registration: dict[str, Any] | None, edges: dict[str, Any] | None) -> list[str]:
-    """Cam<serial>_dish_rim.png (whole frame, legend) and Cam<serial>_dish_rim_zoom.png
-    (native-resolution crops at the top, right, bottom and left of today's rim)."""
+                      registration: dict[str, Any] | None) -> list[str]:
+    """Cam<serial>_dish_rim.png (whole frame at 1/4, legend strip below) and
+    Cam<serial>_dish_rim_zoom.png (native-resolution crops at the top, right, bottom, left)."""
     from PIL import Image, ImageDraw
 
+    FLOOR, TOP, REG, CROSS = (0, 255, 0), (255, 0, 255), (255, 200, 0), (0, 230, 255)
+    floor = (rims or {}).get("floor_edge") or {}
+    top = (rims or {}).get("wall_top") or {}
     written = []
     factor = 4
+    f = float(factor)
     small = downsampled_rgb(gray, factor)
     draw = ImageDraw.Draw(small)
     font = _font(18)
-    f = float(factor)
-    TODAY, REG, CROSS = (255, 0, 255), (255, 200, 0), (0, 230, 255)
-    legend = [(TODAY, "today's rim fit (uniform-gray frame of this session)")]
-    if today and today.get("found"):
-        x, y, r = today["x"], today["y"], today["radius"]
-        draw.ellipse([(x - r) / f, (y - r) / f, (x + r) / f, (y + r) / f], outline=TODAY, width=3)
-        draw.line([((x - 80) / f, y / f), ((x + 80) / f, y / f)], fill=TODAY, width=3)
-        draw.line([(x / f, (y - 80) / f), (x / f, (y + 80) / f)], fill=TODAY, width=3)
+
+    def circle(d: Any, c: dict[str, Any], colour: tuple[int, int, int], scale: float, ox: float = 0.0, oy: float = 0.0,
+               width: int = 3) -> None:
+        x, y, r = (c["x"] - ox) / scale, (c["y"] - oy) / scale, c["radius"] / scale
+        d.ellipse([x - r, y - r, x + r, y + r], outline=colour, width=width)
+
+    legend = []
+    for fit, colour, label in ((floor, FLOOR, "floor edge fit (lit floor -> dark)"),
+                               (top, TOP, "wall top / inner rim fit (outermost step)")):
+        if fit.get("found"):
+            circle(draw, fit, colour, f)
+            px, py, inl = fit["_points"]
+            for k in range(0, len(px), 3):
+                if inl[k]:
+                    draw.point((px[k] / f, py[k] / f), fill=colour)
+            draw.line([((fit["x"] - 60) / f, fit["y"] / f), ((fit["x"] + 60) / f, fit["y"] / f)], fill=colour, width=3)
+            draw.line([(fit["x"] / f, (fit["y"] - 60) / f), (fit["x"] / f, (fit["y"] + 60) / f)], fill=colour, width=3)
+            missing = [side for side, v in fit["per_side"].items() if not v["inliers"]]
+            legend.append((colour, label + f": r {fit['radius']:.0f} px, {fit['inliers']}/{fit['points']} inliers"
+                           + (f"; NO EDGE POINTS: {', '.join(missing)}" if missing else "")))
+        else:
+            legend.append((colour, label + ": NOT FOUND"))
     if registration:
-        x, y, r = registration["x"], registration["y"], registration["radius"]
-        draw.ellipse([(x - r) / f, (y - r) / f, (x + r) / f, (y + r) / f], outline=REG, width=2)
+        circle(draw, registration, REG, f, width=2)
         legend.append((REG, registration["label"]))
     if cross:
         x, y = cross
         draw.ellipse([(x - 60) / f, (y - 60) / f, (x + 60) / f, (y + 60) / f], outline=CROSS, width=3)
         legend.append((CROSS, "observed projected crosshair centre"))
-        if today and today.get("found"):
-            # The offset vector (drawn 10 x longer so it is visible), cross -> rim centre.
-            tx, ty = today["x"], today["y"]
-            ex, ey = x + 10 * (tx - x), y + 10 * (ty - y)
+        if floor.get("found"):
+            ex, ey = x + 10 * (floor["x"] - x), y + 10 * (floor["y"] - y)
             draw.line([(x / f, y / f), (ex / f, ey / f)], fill=CROSS, width=3)
-            if placement and placement.get("distance_mm_at_rim_scale") is not None:
-                dx, dy = placement["offset_mm_at_rim_scale"]
-                draw.text((ex / f + 8, ey / f + 4), f"rim centre - cross: {placement['distance_mm_at_rim_scale']:.2f} mm "
+            if placement and placement.get("distance_mm") is not None:
+                dx, dy = placement["offset_mm"]
+                draw.text((ex / f + 8, ey / f + 4), f"floor-edge centre - cross: {placement['distance_mm']:.2f} mm "
                           f"({dx:+.2f}, {dy:+.2f}) [arrow x10]", fill=CROSS, font=font)
-    if not (today and today.get("found")):
-        legend[0] = (TODAY, "today's rim: NOT FOUND")
-    # Legend in a strip below the image, so it never covers the rim.
     strip = 16 + 26 * (len(legend) + 1)
     figure = Image.new("RGB", (small.width, small.height + strip), (0, 0, 0))
     figure.paste(small, (0, 0))
     fd = ImageDraw.Draw(figure)
     y0 = small.height + 8
-    fd.text((12, y0), f"Cam{serial}: dish rim, {small.width * factor} px frame shown at 1/{factor}", fill=(255, 255, 255), font=font)
+    fd.text((12, y0), f"Cam{serial}: dish rim, {gray.shape[1]} px frame shown at 1/{factor}", fill=(255, 255, 255), font=font)
     y0 += 26
     for colour, text in legend:
         fd.line([(12, y0 + 11), (44, y0 + 11)], fill=colour, width=4)
@@ -523,14 +627,17 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, today: dict[str,
     figure.save(out / f"Cam{serial}_dish_rim.png")
     written.append(f"Cam{serial}_dish_rim.png")
 
-    if not (today and today.get("found")):
+    ref = top if top.get("found") else floor
+    if not ref.get("found"):
         return written
     half = 160
     tiles = []
     for name, angle in (("top", -90.0), ("right", 0.0), ("bottom", 90.0), ("left", 180.0)):
         a = math.radians(angle)
-        px, py = today["x"] + today["radius"] * math.cos(a), today["y"] + today["radius"] * math.sin(a)
-        x0, y0c = int(round(px)) - half, int(round(py)) - half
+        # Centre the crop between the two edges on this side.
+        rmid = ref["radius"] - (0.5 * (top["radius"] - floor["radius"]) if (top.get("found") and floor.get("found")) else 0)
+        px0, py0 = ref["x"] + rmid * math.cos(a), ref["y"] + rmid * math.sin(a)
+        x0, y0c = int(round(px0)) - half, int(round(py0)) - half
         crop = np.zeros((2 * half, 2 * half), np.uint8)
         sx0, sy0 = max(0, x0), max(0, y0c)
         sx1, sy1 = min(gray.shape[1], x0 + 2 * half), min(gray.shape[0], y0c + 2 * half)
@@ -539,36 +646,42 @@ def draw_dish_figures(out: Path, serial: str, gray: np.ndarray, today: dict[str,
         stretched = np.clip((crop.astype(np.float64) - lo) / max(1.0, hi - lo) * 255, 0, 255).astype(np.uint8)
         tile = Image.fromarray(stretched).convert("RGB").resize((4 * half, 4 * half), Image.NEAREST)
         td = ImageDraw.Draw(tile)
-        for circle, colour in ((registration, REG), (today, TODAY)):
-            if not circle:
+        notes = []
+        for fit, colour, label in ((registration, REG, None), (floor, FLOOR, "floor"), (top, TOP, "wall top")):
+            if not fit or (label and not fit.get("found")):
                 continue
-            pts = []
-            for t in np.linspace(a - 0.12, a + 0.12, 400):
-                qx, qy = circle["x"] + circle["radius"] * math.cos(t), circle["y"] + circle["radius"] * math.sin(t)
-                pts.append(((qx - x0) * 2, (qy - y0c) * 2))
+            pts = [(((fit["x"] + fit["radius"] * math.cos(t)) - x0) * 2, ((fit["y"] + fit["radius"] * math.sin(t)) - y0c) * 2)
+                   for t in np.linspace(a - 0.12, a + 0.12, 400)]
             td.line(pts, fill=colour, width=2)
-        if edges is not None:
-            for th, rr in zip(edges["theta"], edges["strongest"]):
-                if np.isnan(rr):
-                    continue
-                qx, qy = today["x"] + rr * math.cos(th), today["y"] + rr * math.sin(th)
-                if 0 <= qx - x0 < 2 * half and 0 <= qy - y0c < 2 * half:
-                    cx2, cy2 = (qx - x0) * 2, (qy - y0c) * 2
-                    td.ellipse([cx2 - 3, cy2 - 3, cx2 + 3, cy2 + 3], outline=CROSS, width=1)
-        td.rectangle([0, 0, 4 * half, 26], fill=(0, 0, 0))
+            if label:
+                px, py, inl = fit["_points"]
+                shown = 0
+                for qx, qy, ok in zip(px, py, inl):
+                    if ok and 0 <= qx - x0 < 2 * half and 0 <= qy - y0c < 2 * half:
+                        cx2, cy2 = (qx - x0) * 2, (qy - y0c) * 2
+                        td.ellipse([cx2 - 4, cy2 - 4, cx2 + 4, cy2 + 4], outline=colour, width=2)
+                        shown += 1
+                if shown == 0:
+                    notes.append(f"no {label} edge points here")
+        if x0 < 0 or y0c < 0 or x0 + 2 * half > gray.shape[1] or y0c + 2 * half > gray.shape[0]:
+            notes.append("black = outside the frame")
+        td.rectangle([0, 0, 4 * half, 26 + 24 * len(notes)], fill=(0, 0, 0))
         td.text((6, 3), f"{name}: {2 * half} x {2 * half} native px (shown x2)", fill=(255, 255, 255), font=font)
+        for k, note in enumerate(notes):
+            td.text((6, 27 + 24 * k), note.upper() if note.startswith("no ") else note, fill=(255, 80, 80), font=font)
         tiles.append(tile)
     sheet = Image.new("RGB", (8 * half, 8 * half + 60), (0, 0, 0))
     for k, tile in enumerate(tiles):
         sheet.paste(tile, ((k % 2) * 4 * half, (k // 2) * 4 * half))
     sd = ImageDraw.Draw(sheet)
-    key = [(TODAY, "today's fit"), (CROSS, "strongest radial edge per angle")]
+    key = [(FLOOR, "floor edge fit + its inlier points"), (TOP, "wall top fit + its inlier points")]
     if registration:
-        key.insert(1, (REG, registration["label"]))
+        key.append((REG, registration["label"]))
+    yk = 8 * half + 8
     x = 8
     for colour, text in key:
-        sd.line([(x, 8 * half + 30), (x + 30, 8 * half + 30)], fill=colour, width=4)
-        sd.text((x + 36, 8 * half + 20), text, fill=colour, font=font)
+        sd.line([(x, yk + 14), (x + 30, yk + 14)], fill=colour, width=4)
+        sd.text((x + 36, yk + 4), text, fill=colour, font=font)
         x += 60 + int(9.5 * len(text))
     sheet.save(out / f"Cam{serial}_dish_rim_zoom.png")
     written.append(f"Cam{serial}_dish_rim_zoom.png")
@@ -1025,58 +1138,88 @@ def main(argv: list[str] | None = None) -> int:
                     r = rim["radius"]
                     draw.ellipse([(rim["x"] - r) / f, (rim["y"] - r) / f, (rim["x"] + r) / f, (rim["y"] + r) / f],
                                  outline=(255, 220, 0))
-                today = dish.get("observed_rim") or {}
-                if today.get("found"):
-                    r = today["radius"]
-                    draw.ellipse([(today["x"] - r) / f, (today["y"] - r) / f, (today["x"] + r) / f, (today["y"] + r) / f],
-                                 outline=(255, 0, 255))
                 cross_overlay.save(out / f"Cam{serial}_crosshair.png")
             if crosshair.get("status") != "checked":
                 warnings.append(f"Cam{serial}: crosshair {crosshair.get('status')} ({crosshair.get('reason', '')})")
         entry["crosshair"] = crosshair
 
-        # ---- D. dish figures and today's rim edge residuals (every camera with a lit frame)
+        # ---- D. today's dish: two edges, fitted separately (every camera with a lit frame)
         if uniform_gray is not None:
-            today = dish.get("observed_rim")
-            if today is None:  # no crosshair: start from the registration, else give up
+            first = dish.get("observed_rim")
+            if first is None or not first.get("found"):
                 reg0 = dish.get("accepted_circle_camera_px")
                 if reg0 and all(math.isfinite(v) for v in reg0.values()):
-                    today = detect_rim(uniform_gray, reg0["x"], reg0["y"], reg0["radius"])
-                    dish["observed_rim"] = today
-            edges = None
-            if today and today.get("found"):
-                edges = radial_edges(uniform_gray, today["x"], today["y"], today["radius"])
-                model = scale_model(fish_plane, serial) if fish_plane else None
-                s_rim = radius_band(model)["px_per_mm_at_rim"] if model else None
-                stats = {k: v for k, v in edges.items() if k not in ("theta", "strongest", "inner", "outer", "step")}
-                if s_rim:
-                    stats["residual_mm_median_abs"] = stats["residual_px_median_abs"] / s_rim
-                    stats["residual_mm_max_abs"] = stats["residual_px_max_abs"] / s_rim
-                    stats["radius_mm_median"] = {k: (v / s_rim if v is not None else None)
-                                                 for k, v in stats["radius_px_median"].items()}
+                    first = detect_rim(uniform_gray, reg0["x"], reg0["y"], reg0["radius"])
+            model = scale_model(fish_plane, serial) if fish_plane else None
+            rims = None
+            if first and first.get("found"):
+                dish["first_pass_single_circle"] = {k: v for k, v in first.items() if k != "radial_edges"}
+                dish["first_pass_single_circle"]["note"] = ("first pass only (a single circle can mix the floor edge "
+                                                            "and the wall top); the two fits below replace it")
+                dish.pop("observed_rim", None)
+                rims = fit_two_rims(uniform_gray, (first["x"], first["y"], first["radius"]))
+                s_low = s_high = s0 = None
+                if model:
                     band = radius_band(model)
-                    stats["expected_band_px"] = {"floor_corner_through_water": band["expected_min_px"],
-                                                 "rim_top": band["expected_max_px"],
-                                                 "inner_diameter_mm_used": DISH_INNER_DIAMETER_MM}
-                sep = stats["median_edge_separation_px"]
-                stats["edge_interpretation"] = (
-                    "one edge per ray (floor edge and wall top not resolved: they are expected only ~"
-                    f"{(band['expected_max_px'] - band['expected_min_px']) if s_rim else float('nan'):.1f} px apart)"
-                    if stats["angles_with_two_resolved_edges"] < 0.25 * stats["angles_with_edge"]
-                    else f"two edges resolved on {stats['angles_with_two_resolved_edges']} rays, {sep:.1f} px apart: "
-                         "the innermost is the lit floor's edge, the outermost the wall's inner edge at the top "
-                         "(the 'dish top rim' the registration and the gate mean)")
-                med = stats["radius_px_median"]
-                if med.get("innermost") is not None and med.get("outermost") is not None:
-                    d_in, d_out = abs(today["radius"] - med["innermost"]), abs(today["radius"] - med["outermost"])
-                    stats["fit_locks_onto"] = ("outermost edge: the wall's inner edge at the top (dish top rim)"
-                                               if d_out < d_in else "innermost edge: the lit floor's edge")
-                    stats["fit_minus_outermost_px"] = today["radius"] - med["outermost"]
-                    stats["fit_minus_innermost_px"] = today["radius"] - med["innermost"]
-                stats["registration_target"] = ("the registration's accepted boundary is the dish's inner rim, water "
-                                                 "side, at the top (operator_review.confirmed_target_feature "
-                                                 "dish_inner_rim_water_side_edge, plane dish_top_rim)")
-                today["radial_edges"] = stats
+                    s_low, s_high = scale_at(model, band["z_low_mm"]), scale_at(model, band["z_high_mm"])
+                    s0 = scale_at(model, 0.0)
+                report_rims: dict[str, Any] = {k: v for k, v in rims.items() if k not in ("floor_edge", "wall_top")}
+                for name, scale in (("floor_edge", s_low), ("wall_top", s_high)):
+                    fit = rims[name]
+                    shown = {k: v for k, v in fit.items() if not k.startswith("_")}
+                    if fit.get("found") and scale:
+                        shown["radius_mm"] = fit["radius"] / scale
+                        shown["residual_mm_median_abs_inliers"] = fit["residual_px_median_abs_inliers"] / scale
+                        shown["residual_mm_max_abs_inliers"] = fit["residual_px_max_abs_inliers"] / scale
+                        shown["px_per_mm_used"] = scale
+                        shown["edge_support_gate_rule"] = round(edge_support_fraction(
+                            uniform_gray, fit["x"], fit["y"], fit["radius"]), 6)
+                    report_rims[name] = shown
+                h_img, w_img = uniform_gray.shape
+                principal = ((w_img - 1) / 2.0, (h_img - 1) / 2.0)
+                report_rims["parallax"] = parallax_check(rims["floor_edge"], rims["wall_top"], model, principal)
+                outer = rims["wall_top"] if rims["wall_top"].get("found") else rims["floor_edge"]
+                if outer.get("found"):
+                    gaps = {"left": outer["x"] - outer["radius"], "top": outer["y"] - outer["radius"],
+                            "right": (w_img - 1) - (outer["x"] + outer["radius"]),
+                            "bottom": (h_img - 1) - (outer["y"] + outer["radius"])}
+                    report_rims["frame_border_clearance_px"] = gaps
+                    if s_high:
+                        report_rims["frame_border_clearance_mm"] = {k: v / s_high for k, v in gaps.items()}
+                    tight = [k for k, v in gaps.items() if v < 60]
+                    if tight:
+                        warnings.append(f"Cam{serial}: the dish rim comes within 60 px of the frame on the {', '.join(tight)}")
+                dish["today"] = report_rims
+                floor = rims["floor_edge"]
+                if crosshair.get("found") and floor.get("found"):
+                    ox, oy = crosshair["centre_camera_px"]
+                    dx, dy = floor["x"] - ox, floor["y"] - oy
+                    placement = {"basis": "floor_edge_centre_vs_observed_crosshair", "offset_camera_px": [dx, dy],
+                                 "distance_camera_px": math.hypot(dx, dy),
+                                 "note": "PRIMARY: the floor edge is near the film plane the crosshair is drawn on; "
+                                         "both measured in the same camera; no homography"}
+                    if s_low:
+                        placement.update({"offset_mm": [dx / s_low, dy / s_low], "distance_mm": math.hypot(dx, dy) / s_low,
+                                          "px_per_mm_used": s_low, "pass": bool(math.hypot(dx, dy) / s_low <= args.max_dish_offset_mm)})
+                    par = report_rims.get("parallax")
+                    if par and s0:
+                        for key, label in (("floor_centre_at_film_px", "floor_edge"), ("top_centre_at_film_px", "wall_top")):
+                            fx_, fy_ = par[key]
+                            placement[f"{label}_centre_corrected_to_film_vs_cross_mm"] = [(fx_ - ox) / s0, (fy_ - oy) / s0]
+                            placement[f"{label}_centre_corrected_to_film_vs_cross_mm_norm"] = math.hypot(fx_ - ox, fy_ - oy) / s0
+                    crosshair["dish_placement"] = placement
+                    crosshair.pop("outline_vs_rim", None)
+                    entry["crosshair"] = crosshair
+                reg = dish.get("accepted_circle_camera_px")
+                top = rims["wall_top"]
+                if reg and top.get("found") and s_high:
+                    dish["registration_vs_today"] = {
+                        "compared_with": "wall_top fit (the registration's target is the inner rim at the top)",
+                        "centre_offset_camera_px": [reg["x"] - top["x"], reg["y"] - top["y"]],
+                        "centre_offset_mm": math.hypot(reg["x"] - top["x"], reg["y"] - top["y"]) / s_high,
+                        "radius_difference_px": reg["radius"] - top["radius"]}
+                else:
+                    dish.pop("registration_vs_today", None)
             reg_circle = None
             reg = dish.get("accepted_circle_camera_px")
             if reg and all(math.isfinite(v) for v in reg.values()):
@@ -1084,8 +1227,8 @@ def main(argv: list[str] | None = None) -> int:
                          else f"EXPIRED {dish.get('valid_until_utc') or '?'}")
                 reg_circle = {**reg, "label": f"registration {dish.get('artifact_id') or '?'}, {state}"}
             entry.setdefault("figures", []).extend(draw_dish_figures(
-                out, serial, uniform_gray, today, (crosshair.get("centre_camera_px") if crosshair.get("found") else None),
-                crosshair.get("dish_placement"), reg_circle, edges))
+                out, serial, uniform_gray, rims, (crosshair.get("centre_camera_px") if crosshair.get("found") else None),
+                crosshair.get("dish_placement"), reg_circle))
 
         if overlay is not None:
             from PIL import ImageDraw
@@ -1120,7 +1263,7 @@ def main(argv: list[str] | None = None) -> int:
             "projection_residual_mm_max": float(np.max(all_residuals_mm)) if all_residuals_mm else None,
             "projection_pass": bool(projection_pass) and all(projection_pass),
             "crosshair_cameras_checked": sum(1 for c in cameras.values() if c.get("crosshair", {}).get("status") == "checked"),
-            "dish_placement_mm_max": max((c["crosshair"]["dish_placement"].get("distance_mm_at_rim_scale", float("nan"))
+            "dish_placement_mm_max": max((c["crosshair"]["dish_placement"].get("distance_mm", float("nan"))
                                           for c in cameras.values() if c.get("crosshair", {}).get("dish_placement")), default=None),
             "dish_cameras_checked": len(dish_checks),
             "dish_pass": bool(dish_checks) and all(
@@ -1151,21 +1294,31 @@ def main(argv: list[str] | None = None) -> int:
             hc = x.get("homography_at_centre") or {}
             dp = x.get("dish_placement") or {}
             line += (f" | cross: homography at centre {hc.get('residual_mm_norm', float('nan')):.2f} mm"
-                     f", today's rim vs cross {dp.get('distance_mm_at_rim_scale', float('nan')):.2f} mm")
-        o = (c.get("dish") or {}).get("observed_rim") or {}
-        if o.get("found"):
-            line += (f" | rim today r {o['radius']:.1f} px ({o.get('radius_mm_at_rim', float('nan')):.2f} mm), "
-                     f"edge support {o.get('edge_support_fraction')}, fit rms {o['rms_residual_px']:.1f} px, "
-                     f"{o['inliers']}/{o['edge_points']} pts, step {o['median_step_dn_per_px_smoothed']} DN/px")
-        re_ = ((c.get("dish") or {}).get("observed_rim") or {}).get("radial_edges")
-        if re_:
-            line += (f" | radial residual median {re_['residual_px_median_abs']:.1f} px"
-                     f" ({re_.get('residual_mm_median_abs', float('nan')):.3f} mm), max {re_['residual_px_max_abs']:.1f} px"
-                     f" ({re_.get('residual_mm_max_abs', float('nan')):.3f} mm) over {re_['angles_with_edge']}/720"
-                     f", two edges on {re_['angles_with_two_resolved_edges']} rays (sep {re_['median_edge_separation_px']:.1f} px)")
+                     f", floor-edge centre vs cross {dp.get('distance_mm', float('nan')):.2f} mm"
+                     f" (film-corrected floor {dp.get('floor_edge_centre_corrected_to_film_vs_cross_mm_norm', float('nan')):.2f},"
+                     f" top {dp.get('wall_top_centre_corrected_to_film_vs_cross_mm_norm', float('nan')):.2f})")
+        t = (c.get("dish") or {}).get("today") or {}
+        for name in ("floor_edge", "wall_top"):
+            fit = t.get(name) or {}
+            if fit.get("found"):
+                missing = [k for k, v in fit["per_side"].items() if not v["inliers"]]
+                line += (f"\n    {name}: r {fit['radius']:.1f} px ({fit.get('radius_mm', float('nan')):.2f} mm), "
+                         f"{fit['inliers']}/{fit['points']} inliers, resid median {fit['residual_px_median_abs_inliers']:.1f} "
+                         f"max {fit['residual_px_max_abs_inliers']:.1f} px; per side "
+                         + ", ".join(f"{k} {v['inliers']}" for k, v in fit["per_side"].items())
+                         + (f"; NO POINTS {missing}" if missing else ""))
+            elif name in t:
+                line += f"\n    {name}: not found ({fit.get('reason')})"
+        par = t.get("parallax")
+        if par:
+            line += (f"\n    parallax: centre diff measured {np.round(par['centre_difference_measured_px'], 1).tolist()} px vs "
+                     f"predicted {np.round(par['centre_difference_predicted_px'], 1).tolist()} px; radius diff measured "
+                     f"{par['radius_difference_measured_px']:.1f} vs predicted {par['radius_difference_predicted_px']:.1f} px")
+        if t.get("frame_border_clearance_px"):
+            line += "\n    frame clearance px: " + ", ".join(f"{k} {v:.0f}" for k, v in t["frame_border_clearance_px"].items())
         rv = (c.get("dish") or {}).get("registration_vs_today")
         if rv:
-            line += f" | registration vs today {rv['centre_offset_mm']:.2f} mm"
+            line += f"\n    registration vs today's wall top: {rv['centre_offset_mm']:.2f} mm, radius diff {rv['radius_difference_px']:.1f} px"
         print(line)
     for warning in warnings:
         print("warning: " + warning)
