@@ -2243,6 +2243,14 @@ def citrus_finalization_never_started(status: dict[str, Any]) -> bool:
     )
 
 
+def citrus_receipt_build_error(status: dict[str, Any]) -> str:
+    """Citrus's reason for building no receipts (status
+    recording_observation_finalization.receipt_build_error, null while none;
+    citrus PR #119). Non-empty means no receipts will come."""
+    value = json_path(status, ["recording_observation_finalization", "receipt_build_error"], None)
+    return value if isinstance(value, str) else ""
+
+
 def citrus_receipt_wait_limit_seconds(recording_folder: str) -> float:
     """Citrus's own bound, as Orange's GUI exit uses it
     (session::CitrusReceiptWaitLimit): 330 s for the manifest, then 120 s +
@@ -2974,7 +2982,7 @@ class Orchestrator:
         grace_started = time.monotonic()
 
         def receipts_settled_or_never(status: dict[str, Any]) -> bool:
-            if citrus_finalization_settled(status):
+            if citrus_finalization_settled(status) or citrus_receipt_build_error(status):
                 return True
             return (
                 citrus_finalization_never_started(status)
@@ -2994,13 +3002,20 @@ class Orchestrator:
             "state": state,
             "limit_s": limit,
             "waited_s": round(time.monotonic() - grace_started, 3),
+            "receipt_build_error": citrus_receipt_build_error(final_citrus_status) or None,
+            "orange_completion_sent": json_path(final_citrus_status,
+                                                ["experiment", "orange_completion_sent"], None),
         }
         if folder:
             self.bound_record["citrus_h5_session_status"] = citrus_h5_session_statuses(folder)
         if state != CITRUS_FINALIZATION_DELIVERED:
-            reason = ("Citrus built no receipts (idle, 0 attempts)"
-                      if citrus_finalization_never_started(final_citrus_status)
-                      else f"recording_observation_finalization.state={state!r}")
+            build_error = citrus_receipt_build_error(final_citrus_status)
+            if build_error:
+                reason = f"Citrus built no receipts: {build_error}"
+            elif citrus_finalization_never_started(final_citrus_status):
+                reason = "Citrus built no receipts (idle, 0 attempts)"
+            else:
+                reason = f"recording_observation_finalization.state={state!r}"
             raise OrchestratorError("Citrus receipts not delivered: " + reason)
         # Orange's GUI exits by itself once the receipts are stored.
         orange_process = self.processes.get("orange")

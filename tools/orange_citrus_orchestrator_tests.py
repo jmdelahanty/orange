@@ -4131,6 +4131,39 @@ def test_lifecycle_waker() -> None:
         require(waker.record()["wakes_by_event"] == 1 and waker.record()["fallback_waits"] == 1, waker.record())
 
 
+def test_receipt_build_error_settles_and_is_reported() -> None:
+    module = load_module()
+    error = "H5 Cam2010093 sealed FAILED"
+    failed = {"recording_observation_finalization": {"state": "idle", "attempts": 0,
+                                                    "receipt_build_error": error},
+              "experiment": {"orange_completion_sent": True}}
+    require(module.citrus_receipt_build_error(failed) == error, "the build error is read")
+    require(module.citrus_receipt_build_error(
+        {"recording_observation_finalization": {"receipt_build_error": None}}) == "", "null means none")
+    require(module.citrus_receipt_build_error({}) == "", "an older Citrus without the field")
+
+    args = module.parse_args(["--declared-by", "delahantyj", "--intent", "stimulus_experiment",
+                              "--blank-subjects", "--citrus-receipt-timeout-seconds", "60"])
+    orchestrator = module.Orchestrator(args)
+    seen: dict[str, Any] = {}
+
+    def fake_wait(label, schema_id, socket_path, predicate, timeout_seconds, description):
+        seen["settles_at_once"] = predicate(failed)
+        return failed
+
+    orchestrator.wait_for_status = fake_wait
+    message = ""
+    try:
+        orchestrator.settle_bound_receipts({})
+    except module.OrchestratorError as exc:
+        message = str(exc)
+    require(seen.get("settles_at_once") is True, "a build error ends the wait without the idle grace")
+    require(error in message, f"the failure names Citrus's reason: {message!r}")
+    receipts = orchestrator.bound_record["receipts"]
+    require(receipts["receipt_build_error"] == error and receipts["orange_completion_sent"] is True,
+            f"the summary records both fields: {receipts}")
+
+
 def test_long_wait_wakes_on_lifecycle_event() -> None:
     """wait_for_status on a long wait reads status again as soon as a row arrives,
     and confirms by status (a row alone never satisfies the predicate)."""
@@ -4175,6 +4208,7 @@ def main() -> int:
         test_event_log_follower,
         test_lifecycle_waker,
         test_long_wait_wakes_on_lifecycle_event,
+        test_receipt_build_error_settles_and_is_reported,
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
         test_long_waits_poll_slowly,
