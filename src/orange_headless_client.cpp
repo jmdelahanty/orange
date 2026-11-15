@@ -8893,6 +8893,21 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             if (error_out) *error_out = "Experiment spec fixed.crop_recording must be an object";
             return false;
         }
+        // Every key is known: an unknown one (a typo, or a retired key) is
+        // refused instead of silently ignored.
+        static const std::set<std::string> kCropRecordingKeys = {
+            "mode", "crop_size_px", "recorder_gpu", "recorder_gpus", "interleave", "qp"};
+        for (const auto& [key, value] : node.items()) {
+            (void)value;
+            if (kCropRecordingKeys.count(key)) continue;
+            if (error_out) {
+                *error_out = key == "recorder_tool_path"
+                    ? "Experiment spec fixed.crop_recording.recorder_tool_path was retired on 2026-10-08: crop "
+                      "recorders run the full-frame recorder tool (fixed.external_recorder_contract.recorder_tool_path)"
+                    : "Experiment spec fixed.crop_recording has an unknown key: " + key;
+            }
+            return false;
+        }
         spec->crop_recording.mode = node.value("mode", std::string("off"));
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
         spec->crop_recording.recorder_gpu = node.value("recorder_gpu", -1);
@@ -8902,11 +8917,20 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             if (error_out) *error_out = "Experiment spec fixed.crop_recording.qp must be 0 (lossless) or 1..51";
             return false;
         }
-        if (node.contains("recorder_gpus") && node["recorder_gpus"].is_object()) {
+        if (node.contains("recorder_gpus")) {
+            if (!node["recorder_gpus"].is_object()) {
+                if (error_out) *error_out = "Experiment spec fixed.crop_recording.recorder_gpus must be an object";
+                return false;
+            }
             for (const auto& [serial, gpu] : node["recorder_gpus"].items()) {
-                if (gpu.is_number_integer()) {
-                    spec->crop_recording.recorder_gpus[serial] = gpu.get<int>();
+                if (!gpu.is_number_integer()) {
+                    if (error_out) {
+                        *error_out = "Experiment spec fixed.crop_recording.recorder_gpus." + serial +
+                                     " must be an integer GPU id";
+                    }
+                    return false;
                 }
+                spec->crop_recording.recorder_gpus[serial] = gpu.get<int>();
             }
         }
         if (spec->crop_recording.mode != "off" && spec->crop_recording.mode != "in_process" &&

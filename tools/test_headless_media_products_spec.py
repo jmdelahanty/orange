@@ -31,10 +31,15 @@ def main():
              ("discard_sink", full, base, False),
              ("no_detector", both, crops, False),
              ("native_full_independent_crop", both, crops, True),
-             ("crop_tool", both, crops, True),
+             # crop_recording.recorder_tool_path was retired on 2026-10-08 (crop
+             # recorders run the full-frame tool): any value is refused, as is any
+             # other unknown crop_recording key or a non-integer recorder GPU.
+             ("crop_tool", both, crops, False),
              ("crop_tool_relative", both, crops, False),
              ("crop_tool_empty", both, crops, False),
              ("crop_tool_type", both, crops, False),
+             ("crop_unknown_key", both, crops, False),
+             ("crop_recorder_gpus_string", both, crops, False),
              # One source: the old spec keys are refused, and the cameras must agree.
              ("legacy_spec_key", full, base, False),
              ("recording_override_key", full, base, False),
@@ -93,6 +98,10 @@ def main():
                 spec["fixed"]["crop_recording"]["recorder_tool_path"] = {
                     "crop_tool": "/tmp/not-executed/external_recorder_ipc_probe",
                     "crop_tool_relative": "relative", "crop_tool_empty": "", "crop_tool_type": 3}[name]
+            if name == "crop_unknown_key":
+                spec["fixed"]["crop_recording"]["crop_size"] = 384
+            if name == "crop_recorder_gpus_string":
+                spec["fixed"]["crop_recording"]["recorder_gpus"] = {"2010096": "4"}
             # Media products come from the camera configuration: every selected
             # camera's JSON in the spec's config_folder (2026-11-15).
             serials = spec.get("selection", {}).get("camera_serials") or ["2010096"]
@@ -120,6 +129,10 @@ def main():
                 capture_output=True, text=True, timeout=20, check=False)
             if (result.returncode == 0) != accepted:
                 raise AssertionError(f"{name}: exit {result.returncode}\n{result.stdout}\n{result.stderr}")
+            expected_text = {"crop_tool": "retired on 2026-10-08", "crop_unknown_key": "unknown key: crop_size",
+                             "crop_recorder_gpus_string": "must be an integer GPU id"}.get(name)
+            if expected_text and expected_text not in result.stdout + result.stderr:
+                raise AssertionError(f"{name}: refusal does not say {expected_text!r}\n{result.stdout}\n{result.stderr}")
             if (directory / "must_not_exist").exists():
                 raise AssertionError("admission entered recording startup")
         print(f"{len(cases)} headless media selection cases passed (no camera launch)")
