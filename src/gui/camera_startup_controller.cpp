@@ -22,6 +22,7 @@
 #include "recording_ingress.h"
 #include "session/recording_session.h"
 #include "spatial_snapshot_worker.h"
+#include "empty_background_burst_worker.h"
 #include "yolo_worker.h"
 
 #include <algorithm>
@@ -940,6 +941,32 @@ struct GuiCameraStartupController::Impl {
                             name.c_str(),
                             &stream_bindings.camera_params[i],
                             *resources.recycle_queue));
+                    // Empty-dish background burst: its 17-frame staging area is
+                    // reserved here, once per stream, never mid-stream. A failed
+                    // reservation only refuses the burst for this camera.
+                    const std::string burst_name =
+                        "EmptyBackgroundBurst_Cam_" +
+                        stream_bindings.camera_params[i].camera_serial;
+                    auto burst = std::make_unique<EmptyBackgroundBurstWorker>(
+                        burst_name.c_str(),
+                        &stream_bindings.camera_params[i],
+                        *resources.recycle_queue);
+                    std::string burst_error;
+                    if (burst->Reserve(&burst_error)) {
+                        std::cout << "[GUI][empty_background] Cam"
+                                  << stream_bindings.camera_params[i].camera_serial
+                                  << " burst staging reserved: "
+                                  << burst->reserved_bytes() << " bytes on GPU "
+                                  << stream_bindings.camera_params[i].gpu_id
+                                  << std::endl;
+                    } else {
+                        std::cerr << "[GUI][empty_background][WARN] Cam"
+                                  << stream_bindings.camera_params[i].camera_serial
+                                  << " no burst staging (background capture refused"
+                                  << " for this camera): " << burst_error
+                                  << std::endl;
+                    }
+                    runtime.SetEmptyBackgroundBurstWorker(std::move(burst));
                 }
             }
 
@@ -1259,6 +1286,13 @@ struct GuiCameraStartupController::Impl {
                     (*stream_bindings.spatial_snapshot_workers)[i]->SetMaxQueueSize(2);
                     (*stream_bindings.spatial_snapshot_workers)[i]->StartThread();
                 }
+                if (EmptyBackgroundBurstWorker* burst =
+                        (*stream_bindings.stream_runtimes)[static_cast<std::size_t>(i)]
+                            .empty_background_burst_worker()) {
+                    burst->SetMaxQueueSize(
+                        static_cast<int>(EmptyBackgroundBurstWorker::kMaxQueuedFrames) + 1);
+                    burst->StartThread();
+                }
                 if ((*stream_bindings.crop_producer_workers)[i]) {
                     (*stream_bindings.crop_producer_workers)[i]->SetMaxQueueSize(240);
                     (*stream_bindings.crop_producer_workers)[i]->StartThread();
@@ -1301,6 +1335,8 @@ struct GuiCameraStartupController::Impl {
                 FrameIPCManager* acquire_ipc = runtime.frame_ipc_manager();
                 SpatialSnapshotWorker* acquire_snapshot =
                     (*stream_bindings.spatial_snapshot_workers)[i];
+                EmptyBackgroundBurstWorker* acquire_burst =
+                    runtime.empty_background_burst_worker();
                 GuiStartupTimingRecorder* timing = stream_bindings.timing;
                 GuiStartupTimingScope scope(
                     timing,
@@ -1324,7 +1360,8 @@ struct GuiCameraStartupController::Impl {
                                 acquire_ipc,
                                 nullptr,
                                 acquire_snapshot,
-                                timing);
+                                timing,
+                                acquire_burst);
                         } catch (const std::exception& error) {
                             timing->MarkCameraInstant(
                                 acquire_params->camera_serial,

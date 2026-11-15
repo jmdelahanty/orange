@@ -99,6 +99,10 @@ struct CameraBurst {
     // each. Released by the writer once the median is computed.
     std::vector<SourceFrame> source_frames;
     std::vector<std::vector<std::uint8_t>> frames;
+    // Instead of frames: the median already computed from them (the GUI burst
+    // computes it on the landing die, src/empty_background_median.cu, so the 17
+    // frames never leave the device). Exactly one of frames / median is given.
+    std::optional<BurstMedian> median;
     // Non-empty: the burst did not complete; the camera is written as failed.
     std::string failure_reason;
 };

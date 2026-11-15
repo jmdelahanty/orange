@@ -390,6 +390,7 @@ CaptureReceipt WriteCapture(const CapturePlan& plan, std::vector<CameraBurst>* b
         if (c.width == 0 || c.height == 0 || c.width > 65535 || c.height > 65535 || c.offset_x > 65535 ||
             c.offset_y > 65535 || c.width * c.height > kMaxFrameBytes)
             fail("Cam" + burst.camera_serial + " raster is outside the burst limits");
+        if (burst.median && !burst.frames.empty()) fail("Cam" + burst.camera_serial + " burst gives both frames and a median");
     }
 
     orange::ScopedFsuid fsuid_guard;
@@ -413,16 +414,26 @@ CaptureReceipt WriteCapture(const CapturePlan& plan, std::vector<CameraBurst>* b
         const std::size_t pixel_count = static_cast<std::size_t>(burst.configuration.width * burst.configuration.height);
         std::string failure = burst.failure_reason;
         if (failure.empty()) failure = burst_identity_problem(burst.source_frames);
-        if (failure.empty() && burst.frames.size() != kFrameCount)
-            failure = "burst has " + std::to_string(burst.frames.size()) + " of 17 frames";
-        if (failure.empty())
+        if (failure.empty() && burst.median) {
+            if (burst.source_frames.size() != kFrameCount)
+                failure = "burst has " + std::to_string(burst.source_frames.size()) + " of 17 frames";
+            else if (burst.median->median.size() != pixel_count)
+                failure = "the burst median does not match the configured raster";
+            else if (burst.median->any_frame_saturated_pixels > pixel_count)
+                failure = "the burst's saturated pixel count exceeds the raster";
+        } else if (failure.empty()) {
+            if (burst.frames.size() != kFrameCount)
+                failure = "burst has " + std::to_string(burst.frames.size()) + " of 17 frames";
             for (const auto& frame : burst.frames)
-                if (frame.size() != pixel_count) failure = "a burst frame does not match the configured raster";
+                if (failure.empty() && frame.size() != pixel_count)
+                    failure = "a burst frame does not match the configured raster";
+        }
         if (!failure.empty()) {
             camera.capture_status = "failed";
             camera.failure_reason = failure.substr(0, 1024);
         } else {
-            BurstMedian median = MedianOfBurst(burst.frames, pixel_count);
+            BurstMedian median = burst.median ? std::move(*burst.median) : MedianOfBurst(burst.frames, pixel_count);
+            burst.median.reset();
             std::vector<std::vector<std::uint8_t>>().swap(burst.frames);  // source frames are not kept
             const std::string png = EncodePngGray8(median.median.data(), static_cast<std::uint32_t>(burst.configuration.width),
                                                    static_cast<std::uint32_t>(burst.configuration.height));
@@ -443,6 +454,7 @@ CaptureReceipt WriteCapture(const CapturePlan& plan, std::vector<CameraBurst>* b
                 static_cast<double>(median.any_frame_saturated_pixels) / static_cast<double>(pixel_count);
         }
         burst.frames.clear();
+        burst.median.reset();
         descriptor.cameras.push_back(std::move(camera));
     }
 

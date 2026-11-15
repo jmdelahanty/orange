@@ -20,6 +20,7 @@ class CropAndEncodeWorker;
 class RecordingIngress;
 class FrameIPCManager;
 class SpatialSnapshotWorker;
+class EmptyBackgroundBurstWorker;
 namespace yolo_event_log {
 class SyntheticYoloEventEmitter;
 }
@@ -42,6 +43,7 @@ void acquire_frames(
     FrameIPCManager* frame_ipc_manager,
     yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter = nullptr,
     SpatialSnapshotWorker* spatial_snapshot_worker = nullptr,
-    orange::gui::GuiStartupTimingRecorder* startup_timing = nullptr
+    orange::gui::GuiStartupTimingRecorder* startup_timing = nullptr,
+    EmptyBackgroundBurstWorker* empty_background_burst = nullptr
 );
 #endif

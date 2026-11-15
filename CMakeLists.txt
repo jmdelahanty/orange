@@ -324,6 +324,7 @@ set(ORANGE_CUDA_SOURCES
     "${SRC_DIR}/kernel.cu"
     "${SRC_DIR}/detect_roi.cu"
     "${SRC_DIR}/pose_crop_from_roi.cu"
+    "${SRC_DIR}/empty_background_median.cu"
 )
 if(EXISTS "${SRC_DIR}/optimized_yolo_preprocess.cu")
     list(APPEND ORANGE_CUDA_SOURCES "${SRC_DIR}/optimized_yolo_preprocess.cu")
@@ -440,6 +441,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/spatial_snapshot_worker.cpp"
+    "${SRC_DIR}/empty_background_burst_worker.cpp"
     "${SRC_DIR}/spatial_layout_ui.cpp"
     "${SRC_DIR}/usaf_resolution_calibration.cpp"
     "${SRC_DIR}/usaf_resolution_ui.cpp"
@@ -538,6 +540,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/spatial_snapshot_worker.cpp"
+    "${SRC_DIR}/empty_background_burst_worker.cpp"
     "${SRC_DIR}/yolov8_det.cpp"
     "${SRC_DIR}/yolo_worker.cpp"
     "${SRC_DIR}/yolo_event_log.cpp"
@@ -1290,6 +1293,18 @@ if(BUILD_TESTING)
     target_compile_features(empty_background_tests PRIVATE cxx_std_17)
     target_link_libraries(empty_background_tests PRIVATE ZLIB::ZLIB)
     add_test(NAME empty_background_tests COMMAND empty_background_tests)
+    # The burst on a GPU (device 0 only; skipped without one): GPU median == CPU median,
+    # burst worker leases, refusals, WriteCapture with the GPU median.
+    add_executable(empty_background_burst_tests "tools/empty_background_burst_tests.cpp"
+                   "${SRC_DIR}/empty_background_burst_worker.cpp" "${SRC_DIR}/empty_background_median.cu"
+                   "${SRC_DIR}/empty_background.cpp" "${SRC_DIR}/image_levels.cpp" "${SRC_DIR}/offthreadmachine.cpp")
+    target_include_directories(empty_background_burst_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS}
+                               "${ORANGE_CUDA_ROOT}/include")
+    target_compile_features(empty_background_burst_tests PRIVATE cxx_std_17)
+    target_link_libraries(empty_background_burst_tests PRIVATE Threads::Threads ZLIB::ZLIB ${CUDA_CUDART_LIBRARY}
+        ${EVT_CAMERA_LIBRARY} ${EVT_GENICAM_LIBRARY} ${EVT_GIGE_LIBRARY})
+    add_test(NAME empty_background_burst_tests COMMAND empty_background_burst_tests)
+    set_tests_properties(empty_background_burst_tests PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77 LABELS "gpu")
     add_test(NAME empty_background_schema_tests
              COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/empty_background_schema_tests.py"
                      "${CMAKE_BINARY_DIR}/empty_background_tests")

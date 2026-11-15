@@ -21,6 +21,7 @@
 #include "display_preview_policy.h"
 #include "recording_ingress.h"
 #include "spatial_snapshot_worker.h"
+#include "empty_background_burst_worker.h"
 #include "cuda_context_debug.h"
 #include "frame_ipc_manager.h"
 #include "shaman_v2_recording_identity.h"
@@ -1291,7 +1292,8 @@ void acquire_frames(
     FrameIPCManager* frame_ipc_manager,
     yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter,
     SpatialSnapshotWorker* spatial_snapshot_worker,
-    orange::gui::GuiStartupTimingRecorder* startup_timing
+    orange::gui::GuiStartupTimingRecorder* startup_timing,
+    EmptyBackgroundBurstWorker* empty_background_burst
 ){
     const uint64_t acquisition_thread_entered_ns =
         orange::gui::GuiStartupTimingRecorder::NowNs();
@@ -2383,6 +2385,10 @@ void acquire_frames(
                 spatial_snapshot_worker &&
                 spatial_snapshot_worker->HasPendingRequest(camera_timestamp_ns);
             if (will_snapshot) dispatch_count++;
+            // Empty-dish background burst (empty_background_burst_worker.h): a
+            // consumer of the owned copy like the snapshot, only while armed.
+            const bool will_burst = empty_background_burst && empty_background_burst->WantsFrame();
+            if (will_burst) dispatch_count++;
 
             cudaPointerAttributes attrs{};
             cudaError_t attr_status = cudaPointerGetAttributes(&attrs, received_frame->imagePtr);
@@ -2401,8 +2407,8 @@ void acquire_frames(
                 will_record &&
                 recording_ingress &&
                 recording_ingress->requires_owned_cuda_source();
-            const bool snapshot_requires_owned_source = will_snapshot &&
-                spatial_snapshot_worker->RequiresOwnedNativeSource();
+            const bool snapshot_requires_owned_source = (will_snapshot &&
+                spatial_snapshot_worker->RequiresOwnedNativeSource()) || will_burst;
             // ORANGE_ANALYTICS_EARLY_OWNED_FRAME=0 is a diagnostic for the
             // engine-only specs (it selects the ring-copy or, with
             // ORANGE_ACQ_FORCE_DIRECT_READ, the direct-read path). With a
@@ -2896,6 +2902,14 @@ void acquire_frames(
                         }
                         log_fanout_enqueue_rejected("spatial_snapshot");
                     }
+                }
+                if (will_burst) {
+                    // Never blocks: the entry is retained and queued, or the burst fails.
+                    empty_background_burst->OfferFrame(
+                        current_entry,
+                        camera_control->record_video || camera_control->recording_draining,
+                        free_entries_available,
+                        free_events_available);
                 }
                 if (will_record) {
                     if (will_yolo) {

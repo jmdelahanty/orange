@@ -13,6 +13,7 @@ class CropProducerWorker;
 class FrameIPCManager;
 class PoseWorker;
 class SpatialSnapshotWorker;
+class EmptyBackgroundBurstWorker;
 class YoloWorker;
 
 namespace orange::gui {
@@ -70,6 +71,8 @@ public:
         std::unique_ptr<CropPreviewWorker> worker) noexcept;
     void SetSpatialSnapshotWorker(
         std::unique_ptr<SpatialSnapshotWorker> worker) noexcept;
+    void SetEmptyBackgroundBurstWorker(
+        std::unique_ptr<EmptyBackgroundBurstWorker> worker) noexcept;
     void SetPoseWorker(std::unique_ptr<PoseWorker> worker) noexcept;
     void SetYoloWorker(std::unique_ptr<YoloWorker> worker) noexcept;
 
@@ -78,6 +81,7 @@ public:
     CropAndEncodeWorker* crop_encode_worker() const noexcept;
     CropPreviewWorker* crop_preview_worker() const noexcept;
     SpatialSnapshotWorker* spatial_snapshot_worker() const noexcept;
+    EmptyBackgroundBurstWorker* empty_background_burst_worker() const noexcept;
     PoseWorker* pose_worker() const noexcept;
     YoloWorker* yolo_worker() const noexcept;
 
@@ -113,6 +117,7 @@ private:
     std::unique_ptr<CropAndEncodeWorker> crop_encode_worker_;
     std::unique_ptr<CropPreviewWorker> crop_preview_worker_;
     std::unique_ptr<SpatialSnapshotWorker> spatial_snapshot_worker_;
+    std::unique_ptr<EmptyBackgroundBurstWorker> empty_background_burst_worker_;
     std::unique_ptr<PoseWorker> pose_worker_;
     std::unique_ptr<YoloWorker> yolo_worker_;
 };

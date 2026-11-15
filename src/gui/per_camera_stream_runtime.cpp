@@ -7,6 +7,7 @@
 #include "opengldisplay.h"
 #include "pose_worker.h"
 #include "spatial_snapshot_worker.h"
+#include "empty_background_burst_worker.h"
 #include "yolo_worker.h"
 
 #include <cuda_runtime.h>
@@ -94,7 +95,7 @@ bool PerCameraStreamRuntime::empty() const noexcept
         !frame_array_ && allocated_frame_buffer_count_ == 0 &&
         !frame_ipc_manager_ && !display_worker_ && !crop_producer_worker_ &&
         !crop_encode_worker_ && !crop_preview_worker_ &&
-        !spatial_snapshot_worker_ && !pose_worker_ && !yolo_worker_;
+        !spatial_snapshot_worker_ && !empty_background_burst_worker_ && !pose_worker_ && !yolo_worker_;
 }
 
 void PerCameraStreamRuntime::InitializeCameraResources(
@@ -260,6 +261,18 @@ PerCameraStreamRuntime::crop_preview_worker() const noexcept
     return crop_preview_worker_.get();
 }
 
+void PerCameraStreamRuntime::SetEmptyBackgroundBurstWorker(
+    std::unique_ptr<EmptyBackgroundBurstWorker> worker) noexcept
+{
+    empty_background_burst_worker_ = std::move(worker);
+}
+
+EmptyBackgroundBurstWorker*
+PerCameraStreamRuntime::empty_background_burst_worker() const noexcept
+{
+    return empty_background_burst_worker_.get();
+}
+
 SpatialSnapshotWorker*
 PerCameraStreamRuntime::spatial_snapshot_worker() const noexcept
 {
@@ -285,6 +298,7 @@ void PerCameraStreamRuntime::StopWorkers() noexcept
     stop_worker(crop_encode_worker_.get());
     stop_worker(pose_worker_.get());
     stop_worker(spatial_snapshot_worker_.get());
+    stop_worker(empty_background_burst_worker_.get());
 }
 
 void PerCameraStreamRuntime::FinalizeAndDestroyWorkers() noexcept
@@ -321,6 +335,8 @@ void PerCameraStreamRuntime::FinalizeAndDestroyWorkers() noexcept
         pose_worker_.reset();
     }
     spatial_snapshot_worker_.reset();
+    // Frees its staging area on the landing die (the thread is stopped above).
+    empty_background_burst_worker_.reset();
 
     if (crop_producer_worker_) {
         try {
@@ -417,6 +433,7 @@ void PerCameraStreamRuntime::MoveFrom(
     crop_encode_worker_ = std::move(other.crop_encode_worker_);
     crop_preview_worker_ = std::move(other.crop_preview_worker_);
     spatial_snapshot_worker_ = std::move(other.spatial_snapshot_worker_);
+    empty_background_burst_worker_ = std::move(other.empty_background_burst_worker_);
     pose_worker_ = std::move(other.pose_worker_);
     yolo_worker_ = std::move(other.yolo_worker_);
 
