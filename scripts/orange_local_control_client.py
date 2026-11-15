@@ -181,6 +181,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Headless experiment spec whose fixed.declaration declares this GUI recording.",
     )
 
+    confirm = subparsers.add_parser(
+        "confirm-daily-registration",
+        help=(
+            "The one operator confirmation of an unattended daily registration: the rims "
+            "follow the dishes' inner rim; accept and select the translation if Orange's "
+            "automatic geometry QC passes. Read the transaction's "
+            "autorun_pending_confirmation.json and rim fits first."
+        ),
+    )
+    add_request_id_arg(confirm)
+    add_operation_id_arg(confirm, help_text="Operation id. Default: generated from request id.")
+    confirm.add_argument("--transaction-id", required=True,
+                         help="status.local_control.daily_registration_autorun.transaction_id")
+    confirm.add_argument("--declared-by", required=True,
+                         help="Identity of the person confirming (e.g. delahantyj).")
+
     stop = subparsers.add_parser(
         "stop-recording",
         help="Send a stop_recording request. Requires Orange recording-stop control to be enabled.",
@@ -249,6 +265,7 @@ def build_request(args: argparse.Namespace) -> dict[str, Any]:
         "citrus-completion": "citrus_completion",
         "start-recording": "start_recording",
         "stop-recording": "stop_recording",
+        "confirm-daily-registration": "confirm_daily_registration",
     }
     method = method_by_command[args.command]
     completion_operation_id = ""
@@ -290,6 +307,13 @@ def build_request(args: argparse.Namespace) -> dict[str, Any]:
         }
         if args.declaration is not None:
             payload["params"]["declaration"] = args.declaration
+    elif args.command == "confirm-daily-registration":
+        payload["operation_id"] = args.operation_id or f"confirm-daily-registration-{request_id}"
+        payload["params"] = {
+            "transaction_id": args.transaction_id,
+            "step": "rims_and_acceptance",
+            "declared_by": args.declared_by,
+        }
     elif args.command == "stop-recording":
         payload["operation_id"] = args.operation_id or f"stop-recording-{request_id}"
         payload["params"] = {

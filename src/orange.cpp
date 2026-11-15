@@ -53,6 +53,8 @@
 #include "gui/frame_ipc_panel.h"
 #include "gui/camera_temperature_sampling.h"
 #include "gui/guided_capture_autorun.h"
+#include "gui/daily_registration_autorun.h"
+#include "gui/spatial_layout/daily_registration_workflow.h"
 #include "gui/gui_timing_sidecar_writer.h"
 #include "gui/host_ptp_panel.h"
 #include "gui/incremental_clip_shadow.h"
@@ -1184,6 +1186,7 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     snapshot.recording_finalized = recording_run.finalized;
     snapshot.recording_manifest = recording_run.recording_manifest;
     snapshot.empty_background_capture = orange::gui::GuiEmptyBackgroundCapture().StatusJson();
+    snapshot.daily_registration_autorun = orange::gui::GuiDailyRegistrationAutorun().StatusJson();
     snapshot.recording_sink_mode = recording_session.recording_sink_mode;
     snapshot.expected_camera_serials = gui_split_expected_camera_serials();
     snapshot.open_camera_serials =
@@ -1350,6 +1353,28 @@ void gui_drain_local_control_commands(
         }
         gui_log_local_control_event(event_log_path, std::move(accepted_event));
 
+        if (command.method == orange::gui::kDailyRegistrationConfirmMethod) {
+            // The daily-registration autorun takes it on its next frame and records it
+            // with the socket peer (gui/daily_registration_autorun.h).
+            orange::gui::DailyRegistrationConfirmation confirmation;
+            confirmation.request_id = command.request_id;
+            confirmation.operation_id = command.operation_id;
+            confirmation.source = command.source;
+            confirmation.received_at_utc = command.received_at_utc;
+            confirmation.params = command.params;
+            confirmation.peer = command.peer;
+            orange::gui::GuiDailyRegistrationAutorun().Post(std::move(confirmation));
+            gui_log_local_control_event(
+                event_log_path,
+                {{"event", "daily_registration_confirmation_queued"},
+                 {"method", command.method},
+                 {"request_id", command.request_id},
+                 {"operation_id", command.operation_id},
+                 {"command_source", command.source},
+                 {"peer", command.peer},
+                 {"received_at_utc", command.received_at_utc}});
+            continue;
+        }
         if (command.method == orange::empty_background::kLocalControlCaptureMethod) {
             // Validated and started by the capture's Poll on this thread, which
             // has the cameras; its state is published in local-control status.
@@ -5741,6 +5766,24 @@ int main(int /*argc*/, char ** /*args*/) {
     }
     const orange::gui::ArenaCenteringAutorunConfig arena_centering_autorun_config =
         orange::gui::resolve_arena_centering_autorun_config();
+    const orange::gui::DailyRegistrationAutorunConfig daily_registration_autorun_config =
+        orange::gui::resolve_daily_registration_autorun_config();
+    if (daily_registration_autorun_config.enabled) {
+        std::cout << "[GUI][daily_registration_autorun] enabled citrus_config="
+                  << daily_registration_autorun_config.citrus_config_path
+                  << " fish_plane_scale=" << daily_registration_autorun_config.fish_plane_scale_path
+                  << " declared_by=" << daily_registration_autorun_config.declared_by
+                  << " result=" << daily_registration_autorun_config.result_json_path
+                  << (daily_registration_autorun_config.error.empty()
+                          ? std::string()
+                          : " CONFIG ERROR: " + daily_registration_autorun_config.error)
+                  << std::endl;
+        if (guided_capture_autorun_config.enabled || arena_centering_autorun_config.enabled) {
+            std::cerr << "[GUI] the daily-registration autorun cannot run with another "
+                         "calibration autorun." << std::endl;
+            return EXIT_FAILURE;
+        }
+    }
     if (guided_capture_autorun_config.enabled &&
         arena_centering_autorun_config.enabled) {
         std::cerr << "[GUI] guided capture sweep and arena-centering autorun "
@@ -5750,7 +5793,8 @@ int main(int /*argc*/, char ** /*args*/) {
     }
     if (gui_autorun_config.enabled &&
         (guided_capture_autorun_config.enabled ||
-         arena_centering_autorun_config.enabled)) {
+         arena_centering_autorun_config.enabled ||
+         daily_registration_autorun_config.enabled)) {
         force_gui_autorun_calibration_selection(&gui_autorun_config);
         std::cout << "[GUI][autorun] calibration capture: detection, crops, "
                      "pose and recording forced off"
@@ -6411,6 +6455,9 @@ int main(int /*argc*/, char ** /*args*/) {
     if (gui_autorun_config.enabled) {
         gui_autorun_enter_stage(&gui_autorun_state, GuiAutorunStage::kSelectConfig);
     }
+    orange::gui::spatial_layout::DailyRegistrationAutorunState daily_registration_autorun_state;
+    bool daily_registration_autorun_exit_pending = false;
+    bool daily_registration_autorun_stream_stop_requested = false;
     orange::gui::GuidedCaptureAutorunState guided_capture_autorun_state;
     orange::gui::guided_capture_autorun_start(
         &guided_capture_autorun_state,
@@ -6748,6 +6795,17 @@ int main(int /*argc*/, char ** /*args*/) {
             gui_autorun_requests.close_window ||
             guided_capture_requests.close_window ||
             arena_centering_requests.close_window;
+        // The daily-registration autorun finished: stop the stream, then close.
+        if (daily_registration_autorun_exit_pending) {
+            if (camera_control->subscribe) {
+                if (!daily_registration_autorun_stream_stop_requested) {
+                    gui_autorun_requests.toggle_streaming = true;
+                    daily_registration_autorun_stream_stop_requested = true;
+                }
+            } else {
+                gui_autorun_requests.close_window = true;
+            }
+        }
         calibration_transaction_snapshot =
             orange::calibration::global_transaction_coordinator().snapshot();
         calibration_tool_busy = calibration_transaction_snapshot.active;
@@ -7728,6 +7786,21 @@ int main(int /*argc*/, char ** /*args*/) {
             spatialSnapshotWorkers.empty()
                 ? nullptr
                 : spatialSnapshotWorkers.data());
+
+        if (daily_registration_autorun_config.enabled &&
+            orange::gui::spatial_layout::advance_daily_registration_autorun(
+                &daily_registration_autorun_state,
+                daily_registration_autorun_config,
+                &spatial_layout_ui_state,
+                cameras_params,
+                cameras_select,
+                num_cameras,
+                spatialSnapshotWorkers.empty() ? nullptr : spatialSnapshotWorkers.data(),
+                spatial_calibration_sessions_folder,
+                camera_control->subscribe,
+                camera_control->record_video || camera_control->recording_draining)) {
+            daily_registration_autorun_exit_pending = true;
+        }
 
         calibration_transaction_snapshot =
             orange::calibration::global_transaction_coordinator().snapshot();

@@ -1414,6 +1414,57 @@ void test_empty_background_capture_and_start_selection()
             "capture and named start reach the GUI thread with params and the SO_PEERCRED peer");
 }
 
+void test_confirm_daily_registration()
+{
+    const auto socket_path = temp_path("daily_registration.sock");
+    std::filesystem::remove(socket_path);
+
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.allow_gui_start_recording_commands = true;
+    std::string error;
+    require(server.Start(options, &error), "server start should allow start_recording mode");
+    wait_until_running(&server);
+    LocalControlStatusSnapshot status = healthy_status();
+    status.recording_active = false;
+    status.active_recorders = 0;
+    status.local_control_recording_start.enabled = true;
+    status.daily_registration_autorun = {{"stage", "awaiting_operator_confirmation"}, {"transaction_id", "dailyregtxn_x"}};
+    server.UpdateStatus(status);
+
+    const nlohmann::json params = {
+        {"transaction_id", "dailyregtxn_x"}, {"step", "rims_and_acceptance"}, {"declared_by", "delahantyj"}};
+    nlohmann::json wrong_step = params;
+    wrong_step["step"] = "accept";
+    nlohmann::json extra_key = params;
+    extra_key["note"] = "extra";
+    const nlohmann::json no_operation =
+        send_request(socket_path, request_json("confirm_daily_registration", "conf-noop", "", params));
+    const nlohmann::json bad_step =
+        send_request(socket_path, request_json("confirm_daily_registration", "conf-step", "conf-op-step", wrong_step));
+    const nlohmann::json bad_keys =
+        send_request(socket_path, request_json("confirm_daily_registration", "conf-keys", "conf-op-keys", extra_key));
+    const nlohmann::json confirmed =
+        send_request(socket_path, request_json("confirm_daily_registration", "conf-1", "conf-op-1", params));
+    const std::vector<PendingLocalControlCommand> pending = server.DrainPendingCommands();
+    server.Stop();
+
+    require(!no_operation["ok"].get<bool>(), "confirm_daily_registration needs an operation_id (it is mutating)");
+    require(!bad_step["ok"].get<bool>(), "confirm_daily_registration refuses a step other than rims_and_acceptance");
+    require(!bad_keys["ok"].get<bool>(), "confirm_daily_registration refuses extra keys");
+    require(confirmed["ok"].get<bool>() && confirmed["queued_for_gui_thread"].get<bool>() &&
+                confirmed["effect"]["daily_registration_confirmation_queued"].get<bool>() &&
+                confirmed["effect"]["result_in_status"] == "local_control.daily_registration_autorun",
+            "a confirmation is accepted, queued for the GUI thread, and points at its status");
+    require(confirmed["status"]["local_control"]["daily_registration_autorun"]["stage"] ==
+                "awaiting_operator_confirmation",
+            "status carries local_control.daily_registration_autorun");
+    require(pending.size() == 1 && pending[0].method == "confirm_daily_registration" &&
+                pending[0].params == params && pending[0].peer.is_object() && pending[0].peer["uid"] == ::getuid(),
+            "the confirmation reaches the GUI thread with its params and the SO_PEERCRED peer");
+}
+
 void test_start_recording_carries_declaration_and_peer()
 {
     const auto socket_path = temp_path("start_declaration.sock");
@@ -2038,6 +2089,8 @@ int main()
          test_start_recording_carries_declaration_and_peer},
         {"empty_background_capture_and_start_selection",
          test_empty_background_capture_and_start_selection},
+        {"confirm_daily_registration",
+         test_confirm_daily_registration},
         {"start_stop_are_rejected_in_diagnostic_mode",
          test_start_stop_are_rejected_in_diagnostic_mode},
         {"parse_rejects_invalid_epoch_and_seq",

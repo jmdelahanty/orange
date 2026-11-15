@@ -92,6 +92,7 @@ bool is_mutating_method(const std::string& method)
 {
     return method == "start_recording" ||
            method == "capture_empty_background" ||
+           method == "confirm_daily_registration" ||
            method == "stop_recording" ||
            method == "citrus_completion" ||
            method == "finalize_recording_observation_bindings" ||
@@ -705,6 +706,7 @@ nlohmann::json LocalControlStatusSnapshotToJson(
                   snapshot.local_control_recording_stop.citrus_completion_enabled)},
              {"recording_manifest", snapshot.recording_manifest},
              {"empty_background_capture", snapshot.empty_background_capture},
+             {"daily_registration_autorun", snapshot.daily_registration_autorun},
          }},
     };
 }
@@ -742,6 +744,7 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
     if (parsed.method != "status" &&
         parsed.method != "start_recording" &&
         parsed.method != "capture_empty_background" &&
+        parsed.method != "confirm_daily_registration" &&
         parsed.method != "stop_recording" &&
         parsed.method != "citrus_completion" &&
         parsed.method != "finalize_recording_observation_bindings" &&
@@ -809,6 +812,20 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
     if (parsed.method == "capture_empty_background" && !parsed.params.is_object()) {
         set_error(error_out, "capture_empty_background params must be an object");
         return false;
+    }
+    // The one recorded operator judgement of an unattended daily registration
+    // (gui/daily_registration_autorun.h): exactly these keys.
+    if (parsed.method == "confirm_daily_registration") {
+        if (!parsed.params.is_object() || parsed.params.size() != 3 ||
+            !parsed.params.contains("transaction_id") || !parsed.params.at("transaction_id").is_string() ||
+            parsed.params.at("transaction_id").get<std::string>().empty() ||
+            !parsed.params.contains("step") || parsed.params.at("step") != "rims_and_acceptance" ||
+            !parsed.params.contains("declared_by") || !parsed.params.at("declared_by").is_string()) {
+            set_error(error_out,
+                      "confirm_daily_registration params must be exactly {transaction_id, "
+                      "step: \"rims_and_acceptance\", declared_by}");
+            return false;
+        }
     }
     if (parsed.method == "finalize_recording_observation_bindings") {
         const auto experiment_it = parsed.params.find("experiment_id");
@@ -1237,6 +1254,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request,
     // Who asked is recorded from the kernel, never from the request: a capture,
     // or a start that names a capture, from a peer the kernel does not report is refused.
     if ((parsed.method == "capture_empty_background" ||
+         parsed.method == "confirm_daily_registration" ||
          (parsed.method == "start_recording" && parsed.params.contains("empty_background"))) &&
         !peer.is_object()) {
         nlohmann::json response =
@@ -1330,6 +1348,8 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request,
              start_recording_allowed) ||
             // A setup step before a recording, under the same permission as a start.
             (parsed.method == "capture_empty_background" &&
+             start_recording_allowed) ||
+            (parsed.method == "confirm_daily_registration" &&
              start_recording_allowed) ||
             (parsed.method == "stop_recording" &&
              stop_recording_allowed);
@@ -1511,6 +1531,38 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request,
         };
         AppendEpochTelemetry(&response, parsed);
         LogEvent({{"received_at_utc", received_at_utc},
+                  {"request", request},
+                  {"response", response}});
+        return response;
+    }
+
+    if (parsed.method == "confirm_daily_registration" &&
+        start_recording_allowed) {
+        // Applied by the daily-registration autorun on the GUI thread; its state is
+        // status.local_control.daily_registration_autorun.
+        nlohmann::json response = {
+            {"schema_id", kLocalControlResponseSchemaId},
+            {"schema_version", kLocalControlSchemaVersion},
+            {"ok", true},
+            {"accepted", true},
+            {"duplicate", duplicate},
+            {"diagnostic_only", false},
+            {"queued_for_gui_thread", queued_for_gui_thread},
+            {"request_id", parsed.request_id},
+            {"operation_id", parsed.operation_id},
+            {"method", parsed.method},
+            {"responded_at_utc", utc_now()},
+            {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
+            {"effect",
+             {
+                 {"gui_lifecycle_command_deferred", queued_for_gui_thread},
+                 {"daily_registration_confirmation_queued", queued_for_gui_thread},
+                 {"result_in_status", "local_control.daily_registration_autorun"},
+             }},
+        };
+        AppendEpochTelemetry(&response, parsed);
+        LogEvent({{"received_at_utc", received_at_utc},
+                  {"peer", peer},
                   {"request", request},
                   {"response", response}});
         return response;

@@ -103,6 +103,9 @@ struct LocalControlStatusSnapshot {
     // capture_id, descriptor_path and descriptor_sha256 once written, per camera
     // the burst outcome. A capture_empty_background client polls status for it.
     nlohmann::json empty_background_capture = nullptr;
+    // local_control.daily_registration_autorun: null unless the daily-registration
+    // autorun runs (gui/daily_registration_autorun.h).
+    nlohmann::json daily_registration_autorun = nullptr;
 };
 
 struct LocalControlServerOptions {

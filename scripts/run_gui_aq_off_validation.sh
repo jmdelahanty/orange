@@ -1088,6 +1088,10 @@ while IFS= read -r var_name; do
   [[ -n "${var_name}" ]] || continue
   ENV_ARGS+=("${var_name}=${!var_name}")
 done < <(compgen -e ORANGE_GUI_ARENA_CENTERING_ | sort)
+while IFS= read -r var_name; do
+  [[ -n "${var_name}" ]] || continue
+  ENV_ARGS+=("${var_name}=${!var_name}")
+done < <(compgen -e ORANGE_GUI_DAILY_REGISTRATION_AUTORUN | sort)
 for var_name in \
   ORANGE_GUI_OPERATOR_MONITOR \
   ORANGE_GUI_RESERVED_MONITOR \

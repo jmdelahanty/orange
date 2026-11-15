@@ -598,6 +598,36 @@ these keys:
   `local_control`, the start request's `requester`, and the requested
   descriptor's sha256.
 
+### `confirm_daily_registration`
+
+The one recorded operator judgement of an unattended daily registration
+(`ORANGE_GUI_DAILY_REGISTRATION_AUTORUN`; `docs/daily_registration_autorun_plan.md`,
+`scripts/run_daily_registration_autorun.sh`). Mutating (needs `operation_id`),
+under the GUI's start permission (`allow_gui_start_recording_commands`); a
+request whose socket peer (SO_PEERCRED) the kernel does not report is refused
+(`peer_unknown`). Params, exactly these keys:
+
+```json
+{"transaction_id": "<status.local_control.daily_registration_autorun.transaction_id>",
+ "step": "rims_and_acceptance", "declared_by": "<identity>"}
+```
+
+- Meaning: "these rims follow the dishes' water-side inner rim; accept and select
+  the resulting translation if Orange's automatic geometry QC passes". Read the
+  transaction's `autorun_pending_confirmation.json` and the per-camera
+  `daily_rim_fit.json` first.
+- The response is `accepted` and `queued_for_gui_thread`. The autorun applies it
+  only while its state is `awaiting_operator_confirmation` and the
+  `transaction_id` matches; otherwise it is ignored and logged. It records the
+  request with the peer in `autorun_confirmation.json` and in the accepted
+  registration's `verification.autorun`.
+- `status.local_control.daily_registration_autorun`: `stage`, `finished`,
+  `passed`, `error`, `transaction_id`, `awaiting` (method, step, transaction,
+  pending-confirmation path) and the per-camera rim-fit summaries. Null when the
+  autorun is off.
+- Client: `scripts/orange_local_control_client.py confirm-daily-registration
+  --transaction-id <id> --declared-by <identity>`.
+
 ## Citrus GUI Control Slice
 
 Citrus now has its first opt-in real-GUI automation and local-control status

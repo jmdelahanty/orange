@@ -55,6 +55,7 @@ Empty-dish background (local-control `capture_empty_background`):
 | event | meaning |
 | --- | --- |
 | `empty_background_capture_queued` | a capture request reached the GUI thread; `peer`. Its outcome is in status `local_control.empty_background_capture`, not in this log |
+| `daily_registration_confirmation_queued` | a `confirm_daily_registration` request reached the GUI thread; `peer`. The daily-registration autorun records it in its transaction (`autorun_confirmation.json`) and its outcome is in status `local_control.daily_registration_autorun`, not in this log |
 
 Recording stop (Citrus completion or `stop_recording`):
 

@@ -1,4 +1,7 @@
 #include "gui/spatial_layout/daily_registration_workflow.h"
+#include "daily_rim_fit.h"
+#include "gui/daily_registration_autorun.h"
+#include "gui/spatial_layout/citrus_template_workflow.h"
 #include "gui/spatial_layout/daily_registration_citrus_status.h"
 #include "gui/spatial_layout/daily_native_context_capture.h"
 
@@ -2299,7 +2302,8 @@ bool FreezeManualAlignment(
 
 bool AcceptAndSelect(
     DailyRegistrationWorkflowUiState* workflow,
-    std::string* error_out)
+    std::string* error_out,
+    const nlohmann::json& autorun_record = nullptr)
 {
     nlohmann::json target_checks = nlohmann::json::array();
     for (const auto& target : workflow->targets) {
@@ -2381,6 +2385,24 @@ bool AcceptAndSelect(
              workflow->geometry_outline_operator_confirmed},
             {"runtime_optical_path_changed", false},
             {"canonical_experimental_area_resized", false},
+            {"targets", std::move(target_checks)},
+        };
+    } else if (!autorun_record.is_null()) {
+        // Unattended run (gui/daily_registration_autorun.h): one recorded human
+        // confirmation of the rims, with pre-authorisation to accept and select if
+        // Orange's automatic geometry QC passes. No manual visual alignment.
+        verification = {
+            {"result", "passed"},
+            {"policy", orange::gui::kDailyRegistrationAutorunPolicy},
+            {"alignment_basis", kRimOnlyAlignmentBasis},
+            {"automatic_geometry_review_passed", GeometryReviewPasses(*workflow)},
+            {"maximum_residual_beyond_integer_translation_quantization_camera_px",
+             workflow->maximum_geometry_residual_beyond_quantization_camera_px},
+            {"manual_visual_alignment", "not_performed"},
+            {"operator_confirmed_outline_containment", false},
+            {"runtime_optical_path_changed", false},
+            {"canonical_experimental_area_resized", false},
+            {"autorun", autorun_record},
             {"targets", std::move(target_checks)},
         };
     } else {
@@ -3797,6 +3819,421 @@ void render_daily_registration_workflow_panel(
         }
     }
     render_daily_native_context_capture(ui_state, cameras, camera_count, workers, recording_mutation_locked);
+}
+
+
+// ---- Unattended daily registration (gui/daily_registration_autorun.h) -----------
+
+namespace {
+
+std::string AutorunUtcNow()
+{
+    const std::time_t now = std::time(nullptr);
+    std::tm tm_utc{};
+    gmtime_r(&now, &tm_utc);
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+    return buffer;
+}
+
+void AutorunPublish(const DailyRegistrationAutorunState& state)
+{
+    orange::gui::GuiDailyRegistrationAutorun().SetStatus({
+        {"stage", state.stage},
+        {"finished", state.finished},
+        {"passed", state.passed},
+        {"error", state.error.empty() ? nlohmann::json(nullptr) : nlohmann::json(state.error)},
+        {"transaction_id", state.transaction_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(state.transaction_id)},
+        {"awaiting", state.stage == "awaiting_operator_confirmation"
+            ? nlohmann::json({{"method", orange::gui::kDailyRegistrationConfirmMethod},
+                              {"step", orange::gui::kDailyRegistrationConfirmStep},
+                              {"transaction_id", state.transaction_id},
+                              {"pending_confirmation_path", state.pending_confirmation_path}})
+            : nlohmann::json(nullptr)},
+        {"rim_fits", state.fit_summaries},
+        {"workflow_stage", state.workflow_stage},
+    });
+}
+
+void AutorunSetStage(DailyRegistrationAutorunState* state, const std::string& stage)
+{
+    state->stage = stage;
+    state->stage_started_s = MonotonicSeconds();
+    std::cout << "[GUI][daily_registration_autorun] stage=" << stage << std::endl;
+    AutorunPublish(*state);
+}
+
+void AutorunWriteResult(DailyRegistrationAutorunState* state,
+                        const orange::gui::DailyRegistrationAutorunConfig& config,
+                        const DailyRegistrationWorkflowUiState& workflow)
+{
+    if (state->result_written || config.result_json_path.empty()) return;
+    nlohmann::json targets = nlohmann::json::array();
+    for (const auto& target : workflow.targets) {
+        targets.push_back({
+            {"camera_serial", target.camera_serial},
+            {"arena_id", target.arena_id},
+            {"accepted_rim_center_camera_px", {target.accepted_rim_center_x_camera_px,
+                                               target.accepted_rim_center_y_camera_px}},
+            {"accepted_rim_radius_camera_px", target.accepted_rim_radius_camera_px},
+            {"rim_observation_path", target.rim_observation_path},
+            {"applied_translation_canvas_px", {target.applied_translation_x_canvas_px,
+                                               target.applied_translation_y_canvas_px}},
+            {"geometry_center_residual_norm_camera_px", target.geometry_center_residual_norm_camera_px},
+        });
+    }
+    const nlohmann::json result = {
+        {"schema_id", "orange.daily_registration_autorun_result"},
+        {"schema_version", 1},
+        {"written_at_utc", AutorunUtcNow()},
+        {"status", state->passed ? "pass" : "fail"},
+        {"error", state->error},
+        {"policy", orange::gui::kDailyRegistrationAutorunPolicy},
+        {"declared_by", config.declared_by},
+        {"transaction_id", state->transaction_id},
+        {"transaction_dir", workflow.transaction_dir},
+        {"final_stage", state->stage},
+        {"workflow_stage", workflow.stage},
+        {"rim_fits", state->fit_summaries},
+        {"known_radius", state->known_radius},
+        {"confirmation", state->confirmation},
+        {"accepted_registration", {{"path", workflow.accepted_registration_path},
+                                   {"sha256", workflow.accepted_registration_sha256}}},
+        {"targets", std::move(targets)},
+    };
+    std::string error;
+    if (!WriteJsonAtomically(config.result_json_path, result, &error)) {
+        std::cerr << "[GUI][daily_registration_autorun] result write failed: " << error << std::endl;
+    }
+    state->result_written = true;
+}
+
+void AutorunFinish(DailyRegistrationAutorunState* state,
+                   const orange::gui::DailyRegistrationAutorunConfig& config,
+                   const DailyRegistrationWorkflowUiState& workflow,
+                   bool passed, const std::string& error)
+{
+    state->finished = true;
+    state->passed = passed;
+    state->error = error;
+    AutorunSetStage(state, passed ? "complete" : "failed");
+    AutorunWriteResult(state, config, workflow);
+    state->exit_requested = config.exit_after_completion;
+}
+
+// Abort the Citrus transaction (restoring its scene) and finish failed once the
+// workflow reaches a terminal stage.
+void AutorunAbort(DailyRegistrationAutorunState* state, DailyRegistrationWorkflowUiState* workflow,
+                  const std::string& reason)
+{
+    state->error = reason;
+    std::string ignored;
+    if (workflow->active && !RequestAbort(workflow, reason, "failed", &ignored)) {
+        SetFailure(workflow, reason);
+    }
+    AutorunSetStage(state, "aborting");
+}
+
+bool WorkflowTerminal(const std::string& stage)
+{
+    return stage == "complete" || stage == "failed" || stage == "aborted" || stage == "rejected" ||
+           stage == "idle";
+}
+
+}  // namespace
+
+bool advance_daily_registration_autorun(
+    DailyRegistrationAutorunState* state,
+    const orange::gui::DailyRegistrationAutorunConfig& config,
+    SpatialLayoutUiState* ui_state,
+    const CameraParams* cameras,
+    const CameraEachSelect* selections,
+    int camera_count,
+    SpatialSnapshotWorker* const* workers,
+    const std::string& artifact_root_dir,
+    bool streaming,
+    bool recording_mutation_locked)
+{
+    if (state == nullptr || ui_state == nullptr || !config.enabled) return false;
+    auto& workflow = ui_state->daily_registration_workflow;
+    if (state->finished) return state->exit_requested;
+    state->workflow_stage = workflow.stage;
+    const double now = MonotonicSeconds();
+    if (state->stage == "idle") {
+        state->started_s = now;
+        if (!config.error.empty()) {
+            AutorunFinish(state, config, workflow, false, "autorun_config_invalid:" + config.error);
+            return state->exit_requested;
+        }
+        AutorunSetStage(state, "import");
+    }
+
+    if (state->stage == "import") {
+        if (cameras == nullptr || camera_count <= 0) return false;
+        std::string status;
+        std::string error;
+        if (!import_citrus_canvas_templates(ui_state, cameras[0], config.citrus_config_path, &status, &error)) {
+            AutorunFinish(state, config, workflow, false, "citrus_canvas_import_failed:" + error);
+            return state->exit_requested;
+        }
+        for (int i = 0; i < camera_count; ++i) {
+            const auto known = orange::daily_rim_fit::known_radius_from_scale_file(
+                config.fish_plane_scale_path, cameras[i].camera_serial);
+            if (!known.ok) {
+                AutorunFinish(state, config, workflow, false,
+                              "known_radius_unavailable:" + cameras[i].camera_serial + ":" + known.error);
+                return state->exit_requested;
+            }
+            state->known_radius[cameras[i].camera_serial] = {
+                {"inner_diameter_mm", known.inner_diameter_mm},
+                {"inner_diameter_uncertainty_mm", orange::daily_rim_fit::kCaliperedInnerDiameterUncertaintyMm},
+                {"inner_diameter_source", "caliper, 3 readings, consistent across angles, Jeremy 2026-11-15"},
+                {"wall_height_mm", known.wall_height_mm},
+                {"z_rim_top_mm", known.z_rim_top_mm},
+                {"px_per_mm", known.px_per_mm},
+                {"radius_camera_px", known.radius_px},
+                {"fish_plane_scale_path", config.fish_plane_scale_path},
+                {"fish_plane_scale_sha256", known.scale_file_sha256},
+            };
+        }
+        AutorunSetStage(state, "begin");
+    }
+
+    if (state->stage == "begin") {
+        if (!streaming) {
+            if (now - state->stage_started_s > config.begin_timeout_seconds) {
+                AutorunFinish(state, config, workflow, false, "cameras_not_streaming");
+            }
+            return state->exit_requested;
+        }
+        if (now - state->last_attempt_s < 2.0) return false;
+        state->last_attempt_s = now;
+        std::string error;
+        if (!BeginWorkflow(ui_state, cameras, selections, camera_count, workers, artifact_root_dir,
+                           recording_mutation_locked, &error)) {
+            if (now - state->stage_started_s > config.begin_timeout_seconds) {
+                AutorunFinish(state, config, workflow, false, "begin_failed:" + error);
+            }
+            return state->exit_requested;
+        }
+        // The GUI's "dishes installed, water settled, IR filters in place" checkbox,
+        // declared by the launcher's identity.
+        workflow.start_physical_state_armed = true;
+        state->transaction_id = workflow.transaction_id;
+        state->physical_state_declaration = {
+            {"declared_by", config.declared_by},
+            {"declared_at_utc", AutorunUtcNow()},
+            {"statement", "holder and dishes installed; water settled; normal IR filters and illumination in place"},
+            {"source", "daily_registration_autorun_launcher"},
+        };
+        AutorunSetStage(state, "capture_rims");
+    }
+
+    if (state->stage == "capture_rims") {
+        if (WorkflowTerminal(workflow.stage) && workflow.stage != "idle") {
+            AutorunFinish(state, config, workflow, false, "workflow_ended_before_rim_capture:" + workflow.error);
+            return state->exit_requested;
+        }
+        if (workflow.stage == "ready_rim_capture") {
+            std::string error;
+            if (!RequestSceneCapture(ui_state, cameras, selections, camera_count, workers, "rim", &error)) {
+                AutorunAbort(state, &workflow, "rim_capture_request_failed:" + error);
+            }
+            return false;
+        }
+        if (workflow.stage != "review_rims") {
+            if (now - state->stage_started_s > config.workflow_timeout_seconds) {
+                AutorunAbort(state, &workflow, "rim_capture_timeout");
+            }
+            return false;
+        }
+        // Known-radius rim fit per camera.
+        nlohmann::json pending_targets = nlohmann::json::array();
+        bool all_ok = true;
+        std::string first_refusal;
+        for (auto& target : workflow.targets) {
+            const auto& known = state->known_radius[target.camera_serial];
+            const int width = target.rim_capture.width;
+            const int height = target.rim_capture.height;
+            if (!target.rim_detection_ok || target.rim_gray.size() != static_cast<std::size_t>(width) * height) {
+                all_ok = false;
+                if (first_refusal.empty()) first_refusal = "rim_proposal_missing:" + target.camera_serial;
+                continue;
+            }
+            const orange::daily_rim_fit::Config fit_config;
+            const auto fit = orange::daily_rim_fit::fit_known_radius(
+                target.rim_gray.data(), width, height,
+                target.detected_rim_center_x_camera_px, target.detected_rim_center_y_camera_px,
+                known.value("radius_camera_px", 0.0), fit_config);
+            const double mm_per_px = 1.0 / known.value("px_per_mm", 1.0);
+            nlohmann::json fit_json = orange::daily_rim_fit::to_json(fit, fit_config, mm_per_px, true);
+            fit_json["camera_serial"] = target.camera_serial;
+            fit_json["arena_id"] = target.arena_id;
+            fit_json["known_radius"] = known;
+            fit_json["hough_proposal"] = {{"center_camera_px", {target.detected_rim_center_x_camera_px,
+                                                                target.detected_rim_center_y_camera_px}},
+                                          {"radius_camera_px", target.detected_rim_radius_camera_px}};
+            const fs::path target_dir = fs::path(workflow.transaction_dir) / "targets" /
+                (target.camera_serial + "_" + target.arena_id);
+            std::string write_error;
+            WriteJsonAtomically(target_dir / "daily_rim_fit.json", fit_json, &write_error);
+            nlohmann::json summary = fit_json;
+            summary.erase("edge_points_xy_inlier");
+            summary["path"] = (target_dir / "daily_rim_fit.json").string();
+            state->fit_summaries[target.camera_serial] = summary;
+            if (!fit.ok) {
+                all_ok = false;
+                if (first_refusal.empty()) {
+                    first_refusal = "rim_fit_refused:" + target.camera_serial + ":" +
+                        (fit.refusals.empty() ? std::string("unknown") : fit.refusals.front());
+                }
+                continue;
+            }
+            // Primary: the known-radius centre with the known radius. The Hough proposal
+            // stays recorded as the detected circle.
+            target.accepted_rim_center_x_camera_px = fit.fixed.cx;
+            target.accepted_rim_center_y_camera_px = fit.fixed.cy;
+            target.accepted_rim_radius_camera_px = fit.expected_radius_px;
+            pending_targets.push_back({
+                {"camera_serial", target.camera_serial},
+                {"arena_id", target.arena_id},
+                {"center_camera_px", {fit.fixed.cx, fit.fixed.cy}},
+                {"center_sigma_mm", {fit.fixed.sigma_cx_px * mm_per_px, fit.fixed.sigma_cy_px * mm_per_px}},
+                {"radius_camera_px", fit.expected_radius_px},
+                {"free_minus_known_radius_px", fit.free.radius_px - fit.expected_radius_px},
+                {"arc_coverage_fraction", fit.coverage_fraction},
+                {"largest_gap_deg", fit.largest_gap_deg},
+                {"largest_gap_side", fit.largest_gap_side},
+                {"warnings", fit.warnings},
+                {"fit_path", (target_dir / "daily_rim_fit.json").string()},
+            });
+        }
+        if (!all_ok) {
+            AutorunAbort(state, &workflow, first_refusal);
+            return false;
+        }
+        const nlohmann::json pending = {
+            {"schema_id", "orange.daily_registration_autorun_pending_confirmation"},
+            {"schema_version", 1},
+            {"transaction_id", workflow.transaction_id},
+            {"created_utc", AutorunUtcNow()},
+            {"physical_state_declaration", state->physical_state_declaration},
+            {"confirm_with", {{"method", orange::gui::kDailyRegistrationConfirmMethod},
+                              {"params", {{"transaction_id", workflow.transaction_id},
+                                          {"step", orange::gui::kDailyRegistrationConfirmStep},
+                                          {"declared_by", "<identity>"}}}}},
+            {"meaning", "These rims follow the dishes' water-side inner rim; accept and select the resulting "
+                        "translation if Orange's automatic geometry QC passes."},
+            {"targets", pending_targets},
+        };
+        state->pending_confirmation_path =
+            (fs::path(workflow.transaction_dir) / "autorun_pending_confirmation.json").string();
+        std::string write_error;
+        if (!WriteJsonAtomically(state->pending_confirmation_path, pending, &write_error)) {
+            AutorunAbort(state, &workflow, "pending_confirmation_write_failed:" + write_error);
+            return false;
+        }
+        AutorunSetStage(state, "awaiting_operator_confirmation");
+        return false;
+    }
+
+    if (state->stage == "awaiting_operator_confirmation") {
+        orange::gui::DailyRegistrationConfirmation confirmation;
+        while (orange::gui::GuiDailyRegistrationAutorun().Take(&confirmation)) {
+            const auto& params = confirmation.params;
+            const std::string transaction = params.value("transaction_id", "");
+            const std::string step = params.value("step", "");
+            const std::string declared_by = params.value("declared_by", "");
+            if (transaction != workflow.transaction_id || step != orange::gui::kDailyRegistrationConfirmStep ||
+                !orange::gui::daily_registration_identity_valid(declared_by) || !confirmation.peer.is_object()) {
+                std::cout << "[GUI][daily_registration_autorun] confirmation ignored request_id="
+                          << confirmation.request_id << " (transaction, step, identity or peer mismatch)"
+                          << std::endl;
+                continue;
+            }
+            state->confirmation = {
+                {"method", orange::gui::kDailyRegistrationConfirmMethod},
+                {"step", step},
+                {"declared_by", declared_by},
+                {"request_id", confirmation.request_id},
+                {"operation_id", confirmation.operation_id},
+                {"command_source", confirmation.source},
+                {"received_at_utc", confirmation.received_at_utc},
+                {"peer", confirmation.peer},
+                {"transport", "local_control_socket"},
+                {"pending_confirmation_path", state->pending_confirmation_path},
+            };
+            std::string write_error;
+            WriteJsonAtomically(fs::path(workflow.transaction_dir) / "autorun_confirmation.json",
+                                state->confirmation, &write_error);
+            // The person confirmed the rims: the v3 observations are operator-confirmed.
+            for (auto& target : workflow.targets) target.rim_operator_confirmed = true;
+            std::string error;
+            if (!QueueRimArtifacts(ui_state, &workflow, cameras, camera_count, &error)) {
+                AutorunAbort(state, &workflow, "rim_artifact_queue_failed:" + error);
+                return false;
+            }
+            workflow.stage = "waiting_rim_save";
+            workflow.status = "Saving per-camera schema-v2 top-rim artifacts (autorun, operator-confirmed).";
+            workflow.error.clear();
+            Checkpoint(&workflow);
+            AutorunSetStage(state, "running");
+            return false;
+        }
+        if (now - state->stage_started_s > config.confirm_timeout_seconds) {
+            AutorunAbort(state, &workflow, "operator_confirmation_timeout");
+        }
+        AutorunPublish(*state);
+        return false;
+    }
+
+    if (state->stage == "running") {
+        if (workflow.stage == "review_geometry_candidate") {
+            if (!GeometryReviewPasses(workflow)) {
+                AutorunAbort(state, &workflow, "automatic_geometry_qc_failed");
+                return false;
+            }
+            workflow.automatic_geometry_review_passed = true;
+            workflow.accept_registration_armed = true;     // pre-authorised by the confirmation
+            workflow.select_runtime_mode_armed = true;
+            workflow.geometry_outline_operator_confirmed = false;  // no one looked at the outline
+            if (workflow.valid_until_utc.empty()) workflow.valid_until_utc = DefaultValidUntilUtc();
+            const nlohmann::json record = {
+                {"confirmation", state->confirmation},
+                {"physical_state_declaration", state->physical_state_declaration},
+                {"rim_fit_method", orange::daily_rim_fit::kFitMethodId},
+                {"rim_fits", state->fit_summaries},
+            };
+            std::string error;
+            if (!AcceptAndSelect(&workflow, &error, record)) {
+                AutorunAbort(state, &workflow, "accept_failed:" + error);
+            }
+            return false;
+        }
+        if (workflow.stage == "complete") {
+            AutorunFinish(state, config, workflow, true, "");
+            return state->exit_requested;
+        }
+        if (WorkflowTerminal(workflow.stage)) {
+            AutorunFinish(state, config, workflow, false,
+                          "workflow_" + workflow.stage + (workflow.error.empty() ? "" : ":" + workflow.error));
+            return state->exit_requested;
+        }
+        if (now - state->stage_started_s > config.workflow_timeout_seconds) {
+            AutorunAbort(state, &workflow, "workflow_timeout_at:" + workflow.stage);
+        }
+        return false;
+    }
+
+    if (state->stage == "aborting") {
+        if (WorkflowTerminal(workflow.stage) || !workflow.active ||
+            now - state->stage_started_s > 120.0) {
+            AutorunFinish(state, config, workflow, false, state->error);
+            return state->exit_requested;
+        }
+        return false;
+    }
+    return false;
 }
 
 }  // namespace orange::gui::spatial_layout
