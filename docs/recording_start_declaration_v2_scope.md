@@ -50,8 +50,9 @@ serial; arena-to-camera mapping is the generator's.
     "file_sha256": "<64 hex, the plan file's bytes at commit:path>",
     "tree_dirty": false,
     "plan_id": "...", "plan_revision": 2, "session_id": "S1",
-    "plan_sha256": "<64 hex>", "plan_hash_rule": "<orchard's rule name>",
-    "sign_off": {"entry_id": "...", "entry_sha256": "<64 hex>", "by": "delahantyj", "at_utc": "..."},
+    "plan_sha256": "<64 hex>", "plan_hash_rule": "canonical_json_utf8_sort_keys_compact_v1",
+    "sign_off": {"entry_id": "...", "entry_sha256": "<64 hex>", "by": "delahantyj", "at_utc": "...",
+                 "record_path": "specs/<spec_id>/run_plans/<plan>.record.yaml", "record_commit": "<40 hex>"},
     "generator": {"repo": "jmdelahanty/orchard", "commit": "<40 hex>", "tool": "tools/declare.py"}
   }
 }
@@ -71,7 +72,14 @@ and keep meaning what they mean today.
   recording records is listed (declared or `blank`). Jeremy: a signed run
   from an edited plan is refused.
 - Orange records `source` as given (a claim) and does not fetch or re-hash
-  orchard; the checks above are on the declaration itself.
+  orchard; the checks above are on the declaration itself. `plan_hash_rule`
+  is recorded as given (form only: a short token); Palette, the verifier,
+  may refuse a rule it cannot check, so a new rule is never an Orange release.
+- `repo` is `owner/name` (`jmdelahanty/orchard`), not a remote URL.
+- `sign_off.entry_sha256` is over that one run-record entry (canonical rule);
+  the record file grows after sign-off, so its file hash is not used.
+- The camera-list check is Orange's: Orange knows the recording cameras, so
+  orchard does not need the rig's camera list.
 - `blank: true` is exclusive with `dish_id` and `subject_count`. It is emitted
   in the subject reference as status `not_collected` with a new reason
   `declared_blank` (today's undeclared camera stays `no_dish_declared`).
@@ -91,7 +99,30 @@ and keep meaning what they mean today.
   next to `run_spec/`) or by the sha256 store; Jeremy's decision is pending
   with you.
 - **Citrus**: none for Orange's declaration; its own subject declaration v2
-  comes from the same plan (citrus-agent's design).
+  comes from the same plan and needs an agent-contracts entry first
+  (citrus-agent); declare.py's citrus block carries rig_id and the protocol
+  reference.
+
+## Answers so far (experiment-spec, 2026-11-15)
+
+- Unknown `plan_hash_rule`: record as given (above).
+- `subject_type` from Orange: experiment-spec says no (Citrus is the single
+  writer of type and members; count separates one from several). Palette to
+  confirm.
+- `kind: operator`: keep it; in v2 `source` is required, and a stated kind is
+  easier for Palette than absence.
+- Who writes the run spec: the generator can only run after loading, minutes
+  before START, so the per-session run spec cannot be committed ahead.
+  Proposal: a committed run-spec **template** in Orange's repo (cameras,
+  encoders, modes; named by the plan's `orange.preset`), plus an
+  Orange-owned step that applies the generated
+  `<plan>.r<rev>.<session>.orange_declaration.json` to it. The merged file
+  is generated, not committed; it is trustworthy because both inputs are in
+  git and named (the template by repo, commit, path and sha256, the plan by
+  `source`), and its bytes are sealed as `run_spec/<sha256>.json`.
+- Order at the rig: sign-off entry, load entries, run record ready,
+  `declare.py --out`, Orange's merge step, orange_client with the merged spec,
+  Citrus's values.
 
 ## Open questions
 
@@ -103,8 +134,7 @@ and keep meaning what they mean today.
 3. Groups: Orange declares the source dish and the count (decided). Does
    Palette need the subject_type (individual/group) from Orange too, or only
    from Citrus?
-4. The run spec route (Jeremy, 2026-11-15: the generated declaration goes
-   into the run spec as `fixed.declaration`): who writes that run spec, and
-   where it is committed so the spec copy names a file in git.
-5. Is `operator` worth a kind, or is "no source" enough for GUI and client
-   starts?
+4. The merge step: where the template's identity is recorded in the merged
+   spec (proposal: `fixed.declaration_template` {repo, commit, path,
+   sha256}), and whether the template must be committed and clean (proposal:
+   yes, refused otherwise, as for the plan).
