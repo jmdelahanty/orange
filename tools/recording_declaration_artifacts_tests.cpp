@@ -184,6 +184,21 @@ void test_v2_routes_and_coverage()
     EXPECT(DeclarationFileCopies(plan).size() == 3, "three run_plan copies");
     EXPECT(plan.ToJson() == load_fixture_declaration(), "v2 round-trips unchanged");
 
+    // A plan session with no fish (e.g. a fish-free session before the real
+    // one): recording_only, every camera blank, still plan-sourced.
+    json fish_free = load_fixture_declaration();
+    fish_free["recording_intent"] = "recording_only";
+    for (auto& [serial, entry] : fish_free["subject_references"]["cameras"].items()) entry = {{"blank", true}};
+    const auto fish_free_plan = ParseRecordingStartDeclaration(fish_free);
+    EXPECT(fish_free_plan.schema_version == 2 && fish_free_plan.source_kind() == kSourceKindOrchardRunPlan &&
+               fish_free_plan.recording_intent == "recording_only",
+           "a recording_only, all-blank plan declaration is accepted");
+    EXPECT(!refuses([&] { CheckDeclarationRoute(fish_free_plan, kConfirmedByRunSpec); }) &&
+               !refuses([&] { CheckDeclarationCoversCameras(fish_free_plan, {"2010093", "2010094", "2010095", "2010096"}); }),
+           "it reaches Orange as a run spec and covers every camera");
+    EXPECT(DeclarationFileCopies(fish_free_plan).size() == 3 && fish_free_plan.ToJson() == fish_free,
+           "it names the plan copies and round-trips unchanged");
+
     json op = load_fixture_declaration();
     op["source"] = {{"kind", "operator"}};
     for (auto& [serial, entry] : op["subject_references"]["cameras"].items()) entry = {{"blank", true}};

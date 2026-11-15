@@ -4044,6 +4044,7 @@ class Orchestrator:
             "error": error,
             "operation_id": self.args.operation_id,
             "bound_run": self.bound_record if self.bound_run() else None,
+            "camera_config": self.args.camera_config,
             "lifecycle_events": (self.lifecycle_waker.record() if self.lifecycle_waker is not None
                                  else {"mode": "off"}),
             "mode": "execute" if self.args.execute else "dry_run",
@@ -4288,6 +4289,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--citrus-exit-timeout-seconds", type=positive_float, default=180.0,
                         help="Headless: time for a launched Citrus to exit on its own after orange_client exits "
                              "(CITRUS_GUI_AUTORUN_EXIT_AFTER_COMPLETE) before it is terminated.")
+    parser.add_argument("--camera-config-json", type=Path, default=None,
+                        help="The launcher's camera preset record (scripts/camera_config_dir_digest.py "
+                             "--write: name, path, hash_rule, files, sha256, expected_sha256), copied "
+                             "into the summary.")
     parser.add_argument("--no-stop-orange-on-failure", dest="stop_orange_on_failure", action="store_false")
     parser.set_defaults(stop_orange_on_failure=True)
     parser.add_argument(
@@ -4310,6 +4315,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.declaration = build_declaration(args)
     except ValueError as exc:
         parser.error(str(exc))
+    args.camera_config = None
+    if args.camera_config_json is not None:
+        try:
+            args.camera_config = json.loads(args.camera_config_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"--camera-config-json: {exc}")
     if args.declaration is not None and args.orange_mode == "headless":
         parser.error("headless runs declare in the experiment spec (fixed.declaration), not on this command line")
     path = args.citrus_subject_declaration_request
@@ -4334,6 +4345,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         "execute_required": True,
         "orange_mode": args.orange_mode,
         "citrus_start_gate": args.citrus_start_gate if args.orange_mode == "headless" else None,
+        "camera_config": args.camera_config,
         "orange": {
             "socket": args.orange_socket,
             "log_path": args.orange_log,

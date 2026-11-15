@@ -4379,6 +4379,130 @@ def test_long_wait_wakes_on_lifecycle_event() -> None:
         require(off.lifecycle_waker is None, "--lifecycle-events off polls only")
 
 
+def test_camera_config_dir_digest_rule() -> None:
+    digest_tool = REPO_ROOT / "scripts" / "camera_config_dir_digest.py"
+    import hashlib
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "preset"
+        folder.mkdir()
+        (folder / "2010093.json").write_text('{"exposure": 50}\n')
+        (folder / "2010094.json").write_text('{"exposure": 50, "x": "\u00e9"}\n')
+        (folder / "README.md").write_text("not part of the digest\n")
+        files = {p.name: "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.glob("*.json")}
+        expected = "sha256:" + hashlib.sha256(
+            json.dumps({"files": files}, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest()
+
+        def run(*extra: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([sys.executable, str(digest_tool), str(folder), *extra],
+                                  capture_output=True, text=True, check=False)
+
+        result = run()
+        require(result.returncode == 0 and result.stdout.strip() == expected,
+                f"the rule: raw bytes per file, sort-keys compact JSON: {result.stdout} {result.stderr}")
+        (folder / "README.md").write_text("changed\n")
+        require(run().stdout.strip() == expected, "README and other non-JSON files are not in the digest")
+        record_path = Path(tmp) / "out" / "camera_config.json"
+        require(run("--expect", expected, "--write", str(record_path)).returncode == 0, "a matching pin passes")
+        record = json.loads(record_path.read_text())
+        require(record["sha256"] == expected and record["expected_sha256"] == expected
+                and record["hash_rule"] == "orange_camera_config_dir_sha256_v1"
+                and record["name"] == "preset" and record["files"] == files, f"the record: {record}")
+        mismatch = run("--expect", "sha256:" + "0" * 64, "--write", str(record_path))
+        require(mismatch.returncode == 3 and "refusing" in mismatch.stderr, f"a different pin refuses: {mismatch}")
+        require(json.loads(record_path.read_text())["expected_sha256"] == "sha256:" + "0" * 64,
+                "the refused record still names both digests")
+        require(run("--expect", "abc").returncode == 2, "a malformed pin is refused")
+        (folder / "2010095.json").symlink_to(folder / "2010093.json")
+        linked = run()
+        require(linked.returncode == 2 and "2010095.json" in linked.stderr and "symlink" in linked.stderr,
+                f"a symlinked camera JSON is an error naming it: {linked}")
+        (folder / "2010095.json").unlink()
+        (folder / "2010096.json").mkdir()
+        require(run().returncode == 2, "a *.json that is not a regular file is an error")
+        (folder / "2010096.json").rmdir()
+        (folder / "2010093.json").write_text('{"exposure": 100}\n')
+        require(run().stdout.strip() != expected, "any camera JSON byte change changes the digest")
+        empty = Path(tmp) / "empty"
+        empty.mkdir()
+        require(subprocess.run([sys.executable, str(digest_tool), str(empty)], capture_output=True,
+                               check=False).returncode == 2, "a folder with no camera JSON has no digest")
+
+
+def test_bound_launcher_preset_pin_and_clip_seconds() -> None:
+    launcher = REPO_ROOT / "scripts" / "run_orange_citrus_bound.sh"
+    digest_tool = REPO_ROOT / "scripts" / "camera_config_dir_digest.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        citrus = root / "citrus"
+        (citrus / "targets" / "rigs" / "omnifin0" / "shadow").mkdir(parents=True)
+        (citrus / "targets" / "rigs" / "omnifin0" / "shadow" / "shadow.json").write_text("{}\n")
+        (citrus / "targets" / "citrus").write_text("#!/bin/sh\nexit 1\n")
+        (citrus / "targets" / "citrus").chmod(0o755)
+        protocol = root / "protocol.json"
+        protocol.write_text("{}\n")
+        preset = root / "30_cam4_ptp_fourcam"
+        preset.mkdir()
+        (preset / "2010093.json").write_text('{"frame_rate": 30}\n')
+        digest = subprocess.run([sys.executable, str(digest_tool), str(preset)], capture_output=True,
+                                text=True, check=True).stdout.strip()
+        env = {**__import__("os").environ, "CITRUS_ROOT": str(citrus)}
+        env.pop("ORANGE_GUI_CONFIG_DIR", None)
+
+        def launch(out: str, *extra: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["bash", str(launcher), "--protocol", str(protocol), "--declared-by", "tester",
+                 "--camera-config-dir", str(preset), "--out-dir", str(root / out), *extra],
+                capture_output=True, text=True, check=False, env=env,
+            )
+
+        ok = launch("ok", "--camera-config-sha256", digest, "--clip-seconds", "900")
+        require(ok.returncode == 0, f"a matching pin dry-runs: {ok.stderr}")
+        plan = json.loads(ok.stdout)
+        require(plan["result"] == "dry_run", "the launcher without --execute is a dry run")
+        require(plan["camera_config"]["sha256"] == digest and plan["camera_config"]["expected_sha256"] == digest
+                and plan["camera_config"]["path"] == str(preset.resolve()), f"summary records the preset: {plan}")
+        require(plan["orange"]["command"][-2:] == ["--clip-seconds", "900"], f"clip passthrough: {plan['orange']}")
+        require(plan["orange"]["env_overlay"]["ORANGE_GUI_CONFIG_DIR"] == str(preset.resolve()),
+                "the preset reaches Orange")
+        require(f"camera_config_sha256={digest}" in ok.stderr and "clip_seconds=900" in ok.stderr,
+                f"the [bound-run] line names digest and clip: {ok.stderr}")
+        require(json.loads((root / "ok" / "camera_config.json").read_text())["sha256"] == digest,
+                "camera_config.json is written in the out dir")
+
+        unpinned = launch("unpinned")
+        require(unpinned.returncode == 0, f"no pin still runs: {unpinned.stderr}")
+        unpinned_plan = json.loads(unpinned.stdout)
+        require(unpinned_plan["camera_config"]["expected_sha256"] is None
+                and unpinned_plan["camera_config"]["sha256"] == digest, "the digest is always recorded")
+        require("--clip-seconds" not in unpinned_plan["orange"]["command"]
+                and "clip_seconds=app_config" in unpinned.stderr, "no clip flag: the app config decides")
+
+        mismatch = launch("mismatch", "--camera-config-sha256", "sha256:" + "1" * 64)
+        require(mismatch.returncode == 2 and "not launching" in mismatch.stderr and not mismatch.stdout.strip(),
+                f"a different folder digest refuses before the orchestrator runs: {mismatch}")
+        bad_clip = launch("bad_clip", "--clip-seconds", "0")
+        require(bad_clip.returncode == 2 and "positive integer" in bad_clip.stderr, f"clip 0 refused: {bad_clip}")
+
+
+def test_plan_declaration_recording_only_all_blank_is_accepted() -> None:
+    module = load_module()
+    fixture = next((REPO_ROOT / "tools" / "fixtures" / "declaration_v2" / "orchard_v2").glob("*.orange_declaration.json"))
+    declaration = json.loads(fixture.read_text())
+    declaration["recording_intent"] = "recording_only"
+    declaration["subject_references"]["cameras"] = {
+        serial: {"blank": True} for serial in declaration["subject_references"]["cameras"]
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "fish_free.orange_declaration.json"
+        path.write_text(json.dumps(declaration))
+        args = module.parse_args(["--declaration-file", str(path)])
+        require(args.declaration == declaration, f"accepted unchanged: {args.declaration}")
+        require(args.declaration["source"]["kind"] == "orchard_run_plan", "still plan-sourced")
+        start = module.build_orange_start_request("op", "req", "test", args.declaration)
+        require(start["params"]["declaration"] == declaration, "the start carries it")
+
+
 def main() -> int:
     tests = [
         test_event_log_follower,
@@ -4386,6 +4510,9 @@ def main() -> int:
         test_long_wait_wakes_on_lifecycle_event,
         test_receipt_build_error_settles_and_is_reported,
         test_citrus_declare_subjects_and_executor_rule,
+        test_camera_config_dir_digest_rule,
+        test_bound_launcher_preset_pin_and_clip_seconds,
+        test_plan_declaration_recording_only_all_blank_is_accepted,
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
         test_long_waits_poll_slowly,

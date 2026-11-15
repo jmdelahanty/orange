@@ -489,6 +489,17 @@ Orange/Citrus commissioning) are in git history of this file and in
   receipts settle (0af84a2). First pass: `2026_11_14_23_09_55` (bound, 4
   receipts, 4 H5s COMPLETE, 0 drops). Run it from production: the GUI
   wrapper only runs this tree's binary.
+  Camera preset per run: `--camera-config-dir <preset folder>` (default
+  `100_cam4_ptp_fourcam`) and `--camera-config-sha256 <sha256:...>`, the run
+  plan's pin: the launcher refuses to start when the folder's digest
+  (`scripts/camera_config_dir_digest.py`, rule
+  `orange_camera_config_dir_sha256_v1`: every `*.json` directly in the
+  folder by raw bytes; a symlinked one is an error) differs, and always
+  records it in `<out-dir>/camera_config.json` and the summary's
+  `camera_config`. `--clip-seconds <n>` sets GUI rolling clips for the run
+  (default: the app config's `recording.recording_control.clip_seconds`).
+  Each run relaunches the GUI, so a preset change between sessions needs no
+  stream restart.
 - Sealer: pancake-plate (`JohnsonLabJanelia/pancake-plate`, agent
   `pancake-plate`) owns the sealer and the provenance questions; Orange's
   pre-check still pins 3.3.0.
