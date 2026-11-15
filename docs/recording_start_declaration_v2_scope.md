@@ -165,6 +165,21 @@ verbatim copies at the recording root, sealed like `run_spec/`:
   plan-sourced declarations, never under `recording_observation_bindings/`.
   Palette can then verify `plan_sha256` and the entry against sealed bytes.
 
+Palette's requirements (2026-11-15):
+- Field names: `source.plan_copy_relative_path` and
+  `source.sign_off_copy_relative_path` (mirroring `spec_copy_relative_path`).
+  Both files must be sealed, with bytes hashing to the named sha.
+- `file_sha256` is the plain sha256 of the plan file's bytes, never a git
+  blob id; repo, commit and path are recorded beside it.
+- The sign-off entry must itself contain `file_sha256` and/or `plan_sha256`,
+  so Palette can bind it to the sealed plan (orchard's to provide).
+- Palette recomputes `plan_sha256` from the YAML only once orchard pins its
+  loader rules and a YAML-to-`plan_sha256` test vector; until then it records
+  it as given.
+- "Signed" today means a named approval (`by`, `at_utc`): recorded, never a
+  gate. A cryptographic signature (pinned key and algorithm) would be a
+  separate decision for Jeremy.
+
 How the bytes reach Orange (proposal): Orange never reads orchard. The
 generator writes both files beside its `orange_declaration.json` (`--out`
 DIR); the merge step names them in the merged run spec; orange_client reads
