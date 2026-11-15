@@ -4580,6 +4580,7 @@
    "skeleton_path",
    "source",
    "spatial_mask",
+   "spec_copy_relative_path",
    "spec_path",
    "spec_sha256",
    "started_at_utc",

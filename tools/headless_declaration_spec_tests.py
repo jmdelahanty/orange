@@ -9,6 +9,7 @@ src/session/recording_start_declaration.h.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -74,6 +75,13 @@ def main() -> int:
                 raise AssertionError(f"{name}: the refusal should name the declaration\n{result.stderr}")
             if (directory / "must_not_exist").exists():
                 raise AssertionError("admission entered recording startup")
+            if accepted and "declaration" in spec["fixed"]:
+                # The sealed copy is the exact file bytes, named by their sha256.
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                expected = (f"spec_sha256={digest} spec_copy=run_spec/{digest}.json "
+                            f"spec_copy_bytes={len(path.read_bytes())}")
+                if expected not in result.stdout:
+                    raise AssertionError(f"{name}: declaration line should read {expected!r}\n{result.stdout}")
     print(f"{len(cases)} headless declaration spec cases passed (no camera launch)")
     return 0
 

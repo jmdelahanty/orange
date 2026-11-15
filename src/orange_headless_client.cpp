@@ -281,6 +281,7 @@ struct HeadlessCliOptions {
     // run_spec) with the spec as the requester. Absent: no confirmation file.
     std::optional<orange::session::RecordingStartDeclaration> declaration;
     nlohmann::json declaration_requester = nullptr;
+    std::string declaration_spec_bytes;  // the spec file's bytes, sealed as run_spec/<sha256>.json
     orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
@@ -349,6 +350,7 @@ struct ExperimentSpec {
     orange::recording::SubjectReferencesConfig subject_references;
     std::optional<orange::session::RecordingStartDeclaration> declaration;
     nlohmann::json declaration_requester = nullptr;
+    std::string declaration_spec_bytes;
     orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
@@ -4578,7 +4580,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const orange::recording::SubjectReferencesConfig& subject_references = {},
     const orange::recording::ZebrobotLookupConfig& zebrobot = {},
     const orange::session::RecordingStartDeclaration* declaration = nullptr,
-    const nlohmann::json& declaration_requester = nullptr)
+    const nlohmann::json& declaration_requester = nullptr,
+    const std::string& declaration_spec_bytes = std::string())
 {
     std::cout << "start camera sthread..." << std::endl;
     try {
@@ -5248,6 +5251,20 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     out << confirmation.dump(2) << "\n";
                     out.close();
                     if (!out) throw std::runtime_error("failed to write " + path.string());
+                    // The spec bytes this recording was declared in, verbatim.
+                    const std::string copy_relative =
+                        declaration_requester.value("spec_copy_relative_path", std::string());
+                    if (copy_relative.empty() ||
+                        orange::outputs::sha256_hex(declaration_spec_bytes) !=
+                            declaration_requester.value("spec_sha256", std::string()))
+                        throw std::runtime_error("declared spec copy is inconsistent with its requester");
+                    const std::filesystem::path copy_path = std::filesystem::path(record_folder) / copy_relative;
+                    std::filesystem::create_directories(copy_path.parent_path());
+                    std::ofstream copy(copy_path, std::ios::out | std::ios::trunc | std::ios::binary);
+                    copy.write(declaration_spec_bytes.data(),
+                               static_cast<std::streamsize>(declaration_spec_bytes.size()));
+                    copy.close();
+                    if (!copy) throw std::runtime_error("failed to write " + copy_path.string());
                 }
             }
             if (enable_recording) {
@@ -8409,8 +8426,22 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         return false;
     }
 
-    nlohmann::json root;
-    if (!read_json_file(cli_options.experiment_spec_path, &root, error_out)) {
+    // Read the spec once: the bytes parsed are the bytes a declared recording
+    // hashes and seals (run_spec/<sha256>.json), so they can never differ.
+    std::string spec_bytes;
+    {
+        std::ifstream input(cli_options.experiment_spec_path, std::ios::binary);
+        if (!input) {
+            if (error_out) *error_out = "Failed to open " + cli_options.experiment_spec_path;
+            return false;
+        }
+        std::ostringstream contents;
+        contents << input.rdbuf();
+        spec_bytes = contents.str();
+    }
+    nlohmann::json root = nlohmann::json::parse(spec_bytes, nullptr, false);
+    if (root.is_discarded()) {
+        if (error_out) *error_out = "Failed to parse " + cli_options.experiment_spec_path;
         return false;
     }
     if (!root.is_object()) {
@@ -8542,10 +8573,8 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                 spec->recording_contexts.default_context->recording_intent = spec->declaration->recording_intent;
             for (auto& [serial, ctx] : spec->recording_contexts.cameras)
                 ctx.recording_intent = spec->declaration->recording_intent;
-            std::string spec_sha256;
-            std::string sha_error;
-            if (!orange::outputs::file_sha256_hex(cli_options.experiment_spec_path, &spec_sha256, &sha_error))
-                throw std::runtime_error("cannot hash the spec file: " + sha_error);
+            const std::string spec_sha256 = orange::outputs::sha256_hex(spec_bytes);
+            spec->declaration_spec_bytes = spec_bytes;
             std::error_code ec;
             const std::filesystem::path absolute_spec =
                 std::filesystem::absolute(cli_options.experiment_spec_path, ec).lexically_normal();
@@ -8556,6 +8585,9 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                 {"transport", "run_spec"},
                 {"spec_path", ec ? cli_options.experiment_spec_path : absolute_spec.string()},
                 {"spec_sha256", spec_sha256},
+                // The verbatim spec bytes, sealed in the recording (Jeremy,
+                // 2026-11-15: the copy is the authority; Palette #443 checks it).
+                {"spec_copy_relative_path", "run_spec/" + spec_sha256 + ".json"},
                 {"run_stamp", cli_options.run_stamp.empty() ? nlohmann::json(nullptr)
                                                             : nlohmann::json(cli_options.run_stamp)},
                 {"experiment_id", root.value("experiment_id", "")},
@@ -9344,6 +9376,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.subject_references = spec.subject_references;
                                                             run.options.declaration = spec.declaration;
                                                             run.options.declaration_requester = spec.declaration_requester;
+                                                            run.options.declaration_spec_bytes = spec.declaration_spec_bytes;
                                                             run.options.zebrobot = spec.zebrobot;
                                                             run.options.master_frame_journal = spec.master_frame_journal;
                                                             run.options.registered_scene_context = spec.registered_scene_context;
@@ -9548,6 +9581,13 @@ int validate_local_experiment_spec_plan(const HeadlessCliOptions& options)
               << " recording_profile="
               << (spec.has_recording_profile ? "fixed.recording_profile" : "legacy_matrix")
               << std::endl;
+    if (spec.declaration) {
+        std::cout << "[EXPERIMENT VALIDATION] declaration declared_by=" << spec.declaration->declared_by
+                  << " recording_intent=" << spec.declaration->recording_intent
+                  << " spec_sha256=" << spec.declaration_requester.value("spec_sha256", std::string())
+                  << " spec_copy=" << spec.declaration_requester.value("spec_copy_relative_path", std::string())
+                  << " spec_copy_bytes=" << spec.declaration_spec_bytes.size() << std::endl;
+    }
     for (const ExperimentRunPlan& run : runs) {
         std::cout << "[EXPERIMENT VALIDATION] run=" << run.run_id
                   << " target_bitrate_bps="
@@ -10286,7 +10326,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.crop_recording,
         options.master_frame_journal, options.registered_scene_context, &registered_context, options.media_products,
         options.recording_contexts, options.subject_references, options.zebrobot,
-        options.declaration ? &*options.declaration : nullptr, options.declaration_requester);
+        options.declaration ? &*options.declaration : nullptr, options.declaration_requester,
+        options.declaration_spec_bytes);
 
     if (!started) {
         stop_supervised_external_recorder();
