@@ -1,5 +1,7 @@
 #include "image_levels.h"
 
+#include "outputs/common/decimal_round.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -109,11 +111,11 @@ nlohmann::json DishRegionToJson(const DishRegion& d)
 }
 
 namespace {
-// Half away from zero, as the schema states (std::round's rule).
+// Half away from zero, as the schema states (std::round's rule), and exact
+// under the host build's fast math (src/outputs/common/decimal_round.h).
 double round_to(double value, int decimals)
 {
-    const double scale = std::pow(10.0, decimals);
-    return std::round(value * scale) / scale;
+    return orange::outputs::round_decimals(value, decimals);
 }
 }  // namespace
 

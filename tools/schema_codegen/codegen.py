@@ -726,7 +726,7 @@ def generate(schema_path: Path, namespace: str, refs: dict | None = None) -> str
         em.w(f'#include "{inc}"')
     for stem in sorted(builder.externals):
         em.w(f'#include "orange_outputs/{stem}.h"')
-    for inc in ("cmath", "cstdint", "initializer_list", "map", "optional", "regex", "set",
+    for inc in ("cmath", "cstdint", "cstdio", "cstdlib", "initializer_list", "map", "optional", "regex", "set",
                 "string", "variant", "vector"):
         em.w(f"#include <{inc}>")
     em.w()
@@ -734,11 +734,20 @@ def generate(schema_path: Path, namespace: str, refs: dict | None = None) -> str
     em.w()
     em.w("namespace detail {")
     em.w("inline bool fail(std::string* error, const std::string& message) { if (error) *error = message; return false; }")
+    # Same as src/outputs/common/decimal_round.h (round_decimals): the host build's fast math
+    # would turn a division by 10^d into a multiplication by an inexact reciprocal, so the
+    # decimal is read back from text with strtod (exact by contract) instead.
+    em.w("// Half away from zero, then the nearest double to that decimal (src/outputs/common/decimal_round.h:")
+    em.w("// under -ffast-math, x / 10^d becomes x * 10^-d, 1 ulp off; strtod of the text is exact).")
     em.w("inline double round_to(double value, int decimals) {")
-    em.w("    if (!std::isfinite(value)) return value;")
+    em.w("    if (!std::isfinite(value) || decimals < 0 || decimals > 17) return value;")
     em.w("    double scale = 1.0;")
     em.w("    for (int i = 0; i < decimals; ++i) scale *= 10.0;")
-    em.w("    return std::round(value * scale) / scale;")
+    em.w("    const double units = std::round(value * scale);")
+    em.w("    if (!std::isfinite(units) || std::fabs(units) >= 9007199254740992.0) return value;")
+    em.w("    char text[48];")
+    em.w("    std::snprintf(text, sizeof text, \"%.0fe-%d\", units, decimals);")
+    em.w("    return std::strtod(text, nullptr);")
     em.w("}")
     em.w("// The value at a property path, or nullptr where a step is absent or not an object.")
     em.w("inline const nlohmann::json* at_path(const nlohmann::json& in, std::initializer_list<const char*> keys) {")

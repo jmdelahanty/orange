@@ -14,6 +14,7 @@
 // line whose policy_generation the frame line names).
 
 #include "json.hpp"
+#include "outputs/common/decimal_round.h"
 
 #include <cmath>
 
@@ -28,14 +29,10 @@ inline constexpr int kCoordinateDecimals = 3;
 inline constexpr int kConfidenceDecimals = 4;
 inline constexpr int kLatencyDecimals = 3;
 
+// Exact under the host build's fast math (src/outputs/common/decimal_round.h).
 inline double round_to(double value, int decimals)
 {
-    if (!std::isfinite(value)) {
-        return value;
-    }
-    double scale = 1.0;
-    for (int i = 0; i < decimals; ++i) scale *= 10.0;
-    return std::round(value * scale) / scale;
+    return orange::outputs::round_decimals(value, decimals);
 }
 
 inline double round_px(double value) { return round_to(value, kCoordinateDecimals); }

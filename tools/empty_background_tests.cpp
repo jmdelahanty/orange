@@ -750,6 +750,36 @@ void test_version2() {
                   std::string::npos && !fs::exists(recordings / "r5" / "empty_background"),
           "the binding re-checks the requested sha256 at the copy (nothing written)");
 
+    // A stored descriptor keeps its bytes: one written before the rounding fix
+    // (src/outputs/common/decimal_round.h) carries e.g. "mean": 180.96200000000002.
+    // It still reads, attaches and is copied byte for byte; its sha256 is over the
+    // stored bytes, never a re-dump (Palette 2026-11-15).
+    {
+        const auto old_capture = make_capture_v2(store, "ulp", kGuiRequester);
+        std::string bytes = slurp(old_capture.descriptor_path);
+        const std::size_t at = bytes.find("\"mean\": ");
+        const std::size_t end = bytes.find_first_of(",\n", at);
+        check(at != std::string::npos && end != std::string::npos, "the descriptor has a mean to rewrite");
+        bytes.replace(at, end - at, "\"mean\": 180.96200000000002");
+        {
+            std::ofstream out(old_capture.descriptor_path, std::ios::binary | std::ios::trunc);
+            out << bytes;
+        }
+        const std::string stored_sha = orange::outputs::sha256_token(bytes);
+        const eb::StoredCapture read = eb::ReadCapture(old_capture.descriptor_path);
+        check(read.descriptor_bytes == bytes && read.descriptor_sha256 == stored_sha,
+              "a stored descriptor with a 1-ulp mean reads, and its sha256 is over the stored bytes");
+        fs::create_directories(recordings / "r6");
+        const json old_request = {{"capture_id", "ulp"}, {"descriptor_sha256", stored_sha},
+                                  {"scene_unchanged_confirmed", true}};
+        const auto bound_old = eb::BindToRecording(
+            recordings / "r6", eb::SelectionFromLocalControl(old_request, kLocalRequester, store, 2), cams);
+        check(slurp(recordings / "r6" / "empty_background" / "background.json") == bytes &&
+                  bound_old.block.at("descriptor").at("sha256") == stored_sha &&
+                  bytes.find("180.96200000000002") != std::string::npos,
+              "it attaches and is copied byte for byte (never re-serialized)");
+    }
+
     // capture_empty_background params.
     const json capture_params = {{"declared_by", "jeremy"}, {"dishes_empty", true}, {"note", "water, no fish"},
                                  {"stimulus_display", {{"state", "on"}, {"shown", {{"kind", "canvas"},

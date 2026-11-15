@@ -1288,6 +1288,15 @@ if(BUILD_TESTING)
 
     # Empty-dish background core (docs/empty_background_capture_design.md): median, levels, PNG,
     # capture writer, record-start binding; the samples it writes are validated in jsonschema.
+    # Rounded output numbers as their shortest decimal text. Built with the host fast-math
+    # flags on purpose (orange and orange_client use them; see src/outputs/common/decimal_round.h):
+    # without them the defect it guards against does not appear.
+    add_executable(decimal_rounding_tests "tools/decimal_rounding_tests.cpp" "${SRC_DIR}/image_levels.cpp")
+    target_include_directories(decimal_rounding_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(decimal_rounding_tests PRIVATE cxx_std_17)
+    target_compile_options(decimal_rounding_tests PRIVATE -Ofast -ffast-math)
+    add_test(NAME decimal_rounding_tests COMMAND decimal_rounding_tests)
+
     add_executable(empty_background_tests "tools/empty_background_tests.cpp"
                    "${SRC_DIR}/empty_background.cpp" "${SRC_DIR}/image_levels.cpp")
     target_include_directories(empty_background_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
