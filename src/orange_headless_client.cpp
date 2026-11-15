@@ -67,6 +67,8 @@
 #include "session/session_control_host.h"
 #include "session/recording_start_declaration.h"
 #include "session/recording_declaration_artifacts.h"
+#include "empty_background.h"
+#include "empty_background_camera.h"
 #include "outputs/common/digest.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
@@ -289,6 +291,10 @@ struct HeadlessCliOptions {
     orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
+    // fixed.empty_background_capture (docs/empty_background_capture_design.md):
+    // the capture whose medians are copied into the recording; unselected =
+    // every camera not_selected in session.empty_background.
+    orange::empty_background::BindingSelection empty_background;
     HeadlessMode mode = HeadlessMode::Remote;
     bool show_help = false;
     bool list_cameras = false;
@@ -359,6 +365,7 @@ struct ExperimentSpec {
     orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
+    orange::empty_background::BindingSelection empty_background;
     std::string source_path;
     nlohmann::json source_json = nlohmann::json::object();
     std::string experiment_id;
@@ -4600,7 +4607,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const orange::session::RecordingStartDeclaration* declaration = nullptr,
     const nlohmann::json& declaration_requester = nullptr,
     const std::string& declaration_spec_bytes = std::string(),
-    const std::vector<orange::session::RecordingDeclarationArtifacts::SealedFile>& declaration_files = {})
+    const std::vector<orange::session::RecordingDeclarationArtifacts::SealedFile>& declaration_files = {},
+    const orange::empty_background::BindingSelection& empty_background = {})
 {
     std::cout << "start camera sthread..." << std::endl;
     try {
@@ -5286,6 +5294,21 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 orange::session::WriteRecordingDeclarationArtifacts(
                     record_folder, artifacts, update_recording_snapshot_session_artifacts,
                     get_current_utc_timestamp());
+                // Empty-dish background: session.empty_background on every recording;
+                // the spec's capture (if any) copied into empty_background/ and checked
+                // against the live settings (a drift is copied and flagged). Before
+                // acquisition, on this control thread. An unusable selection refuses the run.
+                std::vector<orange::empty_background::RecordingCamera> background_cameras;
+                for (int idx : selected_indices)
+                    background_cameras.push_back({cameras_params[idx].camera_serial,
+                        orange::empty_background::CameraConfigurationFromCamera(cameras_params[idx])});
+                const auto background = orange::empty_background::WriteRecordingBinding(
+                    record_folder, empty_background, background_cameras, update_recording_snapshot_session_artifacts);
+                for (const auto& warning : background.warnings)
+                    std::cerr << "[headless] WARNING empty background " << warning << std::endl;
+                if (empty_background.selected)
+                    std::cout << "[headless] empty background: capture "
+                              << background.block.value("capture_id", std::string()) << " bound" << std::endl;
             }
             if (enable_recording) {
                 // Same per-camera model, crop-output and pose declarations the GUI
@@ -8731,6 +8754,16 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains(orange::empty_background::kHeadlessSpecKey)) {
+        // A missing key means no background; a present one must name a readable capture.
+        try {
+            spec->empty_background =
+                orange::empty_background::SelectionFromHeadlessSpec(fixed.at(orange::empty_background::kHeadlessSpecKey));
+        } catch (const std::exception& ex) {
+            if (error_out) *error_out = ex.what();
+            return false;
+        }
+    }
     if (fixed.contains("registered_scene_context")) {
         try {
             spec->registered_scene_context = orange::recording::RegisteredContextConfig::Parse(fixed.at("registered_scene_context"));
@@ -9525,6 +9558,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.zebrobot = spec.zebrobot;
                                                             run.options.master_frame_journal = spec.master_frame_journal;
                                                             run.options.registered_scene_context = spec.registered_scene_context;
+                                                            run.options.empty_background = spec.empty_background;
                                                             run.options.recording_control =
                                                                 spec.recording_control;
                                                             run.options.local_control =
@@ -10475,7 +10509,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.master_frame_journal, options.registered_scene_context, &registered_context, options.media_products,
         options.recording_contexts, options.subject_references, options.zebrobot,
         options.declaration ? &*options.declaration : nullptr, options.declaration_requester,
-        options.declaration_spec_bytes, options.declaration_files);
+        options.declaration_spec_bytes, options.declaration_files, options.empty_background);
 
     if (!started) {
         stop_supervised_external_recorder();

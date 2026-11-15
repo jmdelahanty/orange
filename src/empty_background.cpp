@@ -659,6 +659,21 @@ BindingResult BindToRecording(const fs::path& recording_folder, const BindingSel
     return result;
 }
 
+BindingSelection SelectionFromHeadlessSpec(const json& value) {
+    if (!value.is_string())
+        fail(std::string("fixed.") + kHeadlessSpecKey + " must be the absolute path of a capture's background.json");
+    const fs::path path(value.get<std::string>());
+    if (!path.is_absolute() || path.lexically_normal() != path)
+        fail(std::string("fixed.") + kHeadlessSpecKey + " must be an absolute, normal path: " + path.string());
+    ReadCapture(path);  // refuse an unreadable or invalid capture before any camera opens
+    BindingSelection selection;
+    selection.selected = true;
+    selection.selection_source = "headless_spec";
+    selection.scene_unchanged_confirmed = true;
+    selection.descriptor_path = path;
+    return selection;
+}
+
 BindingResult WriteRecordingBinding(const std::string& recording_folder, const BindingSelection& selection,
                                     const std::vector<RecordingCamera>& cameras,
                                     const SnapshotSessionUpdate& update_snapshot) {

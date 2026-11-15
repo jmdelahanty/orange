@@ -553,6 +553,27 @@ void test_binding(const fs::path& samples) {
         fs::permissions(rec, fs::perms::owner_all);
         fs::remove_all(rec);
     }
+    // Headless spec key: the absolute path of background.json; naming it is the confirmation.
+    {
+        const auto s = eb::SelectionFromHeadlessSpec(receipt.descriptor_path.string());
+        check(s.selected && s.selection_source == "headless_spec" && s.scene_unchanged_confirmed &&
+                  s.descriptor_path == receipt.descriptor_path,
+              "fixed.empty_background_capture selects the capture as headless_spec, confirmed");
+        const fs::path rec = new_recording("headless");
+        const auto r = eb::BindToRecording(rec, s, recording_cameras({"2010093"}));
+        check(r.block.at("selection_source") == "headless_spec" && r.block.at("cameras").at("2010093").at("status") == "attached",
+              "a headless selection binds like a GUI one");
+        fs::remove_all(rec);
+        check(!throws([] { eb::SelectionFromHeadlessSpec(nullptr); }).empty(), "a null spec value is refused");
+        check(!throws([] { eb::SelectionFromHeadlessSpec(json::object()); }).empty(), "an object spec value is refused");
+        check(!throws([] { eb::SelectionFromHeadlessSpec("backgrounds/cap/background.json"); }).empty(),
+              "a relative path is refused");
+        check(!throws([&] { eb::SelectionFromHeadlessSpec((source / ".." / "cap" / "background.json").string()); }).empty(),
+              "a non-normal path is refused");
+        check(!throws([&] { eb::SelectionFromHeadlessSpec(source.string()); }).empty(), "a directory instead of background.json is refused");
+        check(!throws([&] { eb::SelectionFromHeadlessSpec((store / "absent" / "background.json").string()); }).empty(),
+              "a missing capture is refused at spec load");
+    }
     fs::remove_all(store);
 }
 }  // namespace

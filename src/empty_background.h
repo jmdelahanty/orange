@@ -188,6 +188,14 @@ struct BindingResult {
 BindingResult BindToRecording(const std::filesystem::path& recording_folder, const BindingSelection& selection,
                               const std::vector<RecordingCamera>& cameras);
 
+// Headless experiment spec key fixed.empty_background_capture: the absolute
+// path of a capture's background.json. Naming the capture is the
+// confirmation (selection_source headless_spec). The capture is read and
+// validated here, at spec load; a missing key means no background, so a
+// caller only calls this when the key is present. Throws std::runtime_error.
+inline constexpr const char* kHeadlessSpecKey = "empty_background_capture";
+BindingSelection SelectionFromHeadlessSpec(const nlohmann::json& value);
+
 // Writes the block into the start snapshot (production:
 // update_recording_snapshot_session_artifacts). Same throw rules.
 using SnapshotSessionUpdate = std::function<bool(const std::string& folder, const nlohmann::json& session)>;

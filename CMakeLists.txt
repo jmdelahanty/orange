@@ -706,6 +706,10 @@ add_executable(orange ${ORANGE_SOURCES})
 target_link_libraries(orange PRIVATE orange_daily_registered_context orange_rig_config_pin)
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 target_link_libraries(orange_client PRIVATE orange_rig_config_pin)
+# Empty-dish background binding (fixed.empty_background_capture); kept out of
+# ORANGE_CLIENT_SOURCES, which the host tests reuse without zlib.
+target_sources(orange_client PRIVATE "${SRC_DIR}/empty_background.cpp")
+target_link_libraries(orange_client PRIVATE ZLIB::ZLIB)
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_force_reboot EXCLUDE_FROM_ALL ${EVT_FORCE_REBOOT_SOURCES})
@@ -2060,6 +2064,9 @@ if(BUILD_TESTING)
     add_test(
         NAME headless_declaration_spec_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/headless_declaration_spec_tests.py" $<TARGET_FILE:orange_client>)
+    add_test(
+        NAME headless_empty_background_spec_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/headless_empty_background_spec_tests.py" $<TARGET_FILE:orange_client>)
     add_test(
         NAME headless_run_stamp_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/headless_run_stamp_tests.py" $<TARGET_FILE:orange_client>)
