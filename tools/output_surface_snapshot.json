@@ -25,6 +25,19 @@
    ]
   ]
  },
+ "embedded /session/empty_background": {
+  "csv_headers": [],
+  "json_keys": [
+   "empty_background",
+   "session"
+  ],
+  "schemas": [
+   [
+    "orange_recording_empty_background_v1.schema.json",
+    "path"
+   ]
+  ]
+ },
  "src/FFmpegWriter.cpp": {
   "csv_headers": [],
   "json_keys": [

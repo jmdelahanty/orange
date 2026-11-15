@@ -216,6 +216,9 @@ set(ORANGE_GENERATED_SCHEMAS
     "orange_recording_detect_model_v1:recording_detect_model_v1"
     "orange_recording_pose_model_v2:recording_pose_model_v2"
     "orange_recording_model_artifacts_v2:recording_model_artifacts_v2"
+    "orange_image_levels_v1:image_levels_v1"
+    "orange_empty_background_capture_v1:empty_background_capture_v1"
+    "orange_recording_empty_background_v1:recording_empty_background_v1"
 )
 set(ORANGE_CODEGEN "${CMAKE_SOURCE_DIR}/tools/schema_codegen/codegen.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORANGE_CODEGEN}")
@@ -833,6 +836,15 @@ if(BUILD_TESTING)
     add_test(NAME palette_canonical_manifest_tests
              COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/palette_canonical_manifest_tests.py"
              "${CMAKE_SOURCE_DIR}/tools/fixtures/palette/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.v2.manifest.json")
+    # Empty-background v1 fixtures (agent-contracts orange-palette/empty_background_v1): the
+    # generated readers and jsonschema must agree on every valid and invalid document.
+    add_executable(empty_background_schema_fixture_tests "tools/empty_background_schema_fixture_tests.cpp")
+    target_include_directories(empty_background_schema_fixture_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(empty_background_schema_fixture_tests PRIVATE cxx_std_17)
+    add_test(NAME empty_background_schema_fixture_tests COMMAND empty_background_schema_fixture_tests
+             "${CMAKE_SOURCE_DIR}/tools/fixtures/empty_background_v1" "${CMAKE_SOURCE_DIR}/docs/schemas/examples")
+    add_test(NAME empty_background_schema_fixture_jsonschema_tests
+             COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/empty_background_schema_fixture_tests.py")
     add_executable(outputs_common_tests "tools/outputs_common_tests.cpp")
     target_include_directories(outputs_common_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_link_libraries(outputs_common_tests PRIVATE Threads::Threads)

@@ -21,6 +21,7 @@ from pathlib import Path
 EMBEDDED = (
     ("recording_snapshot*.json", "/models/<serial>/detect", "orange_recording_detect_model_v1.schema.json"),
     ("recording_snapshot*.json", "/models/<serial>/pose", "orange_recording_pose_model_v2.schema.json"),
+    ("recording_snapshot*.json", "/session/empty_background", "orange_recording_empty_background_v1.schema.json"),
 )
 
 
