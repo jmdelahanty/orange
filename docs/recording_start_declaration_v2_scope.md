@@ -124,6 +124,30 @@ and keep meaning what they mean today.
   `declare.py --out`, Orange's merge step, orange_client with the merged spec,
   Citrus's values.
 
+## Palette's position (2026-11-15, draft, nothing agreed until Jeremy says)
+
+- The follow-up after #442/#443 pins `declaration.schema_id` =
+  orange.recording_start_declaration with `schema_version` 1 or 2; anything
+  else refuses. `declared_by` stays a top-level string in v2 (confirmed).
+- `declared_blank` needs no Palette code change: the pinned subject reference
+  schemas only require a non-empty reason, and Palette records it verbatim
+  (`subject_lookup_reason`), so it stays distinct from `no_dish_declared`.
+  No reference schema v3 unless the entry shape changes.
+- `source` recorded verbatim in `orange_subject_reference_origin`; `kind`
+  must agree with `confirmed_by` (below), a mismatch refuses. `plan_sha256`
+  is verified only if the plan bytes are sealed in the recording; otherwise
+  it is a recorded claim. Sign-off is recorded, never a review gate.
+- `subject_type` from Orange: no. Citrus's H5 subject is the authority;
+  Orange's dish and count are the cross-check.
+
+`source.kind` and `confirmed_by` (Orange's mapping, for Palette's check):
+
+| source.kind | confirmed_by |
+| --- | --- |
+| `orange_run_spec` | `run_spec` |
+| `orchard_run_plan` | `run_spec` (merged run spec, orange_client) or `local_control` (orchestrator GUI start) |
+| `operator` | `gui_operator` or `local_control` |
+
 ## Open questions
 
 1. Plan bytes in the recording: copy (e.g. `run_plan/<file_sha256>.yaml`) or
@@ -131,9 +155,7 @@ and keep meaning what they mean today.
    copy for run specs.
 2. Should Orange refuse an `orchard_run_plan` declaration whose
    `plan_hash_rule` it does not recognise, or record it as given?
-3. Groups: Orange declares the source dish and the count (decided). Does
-   Palette need the subject_type (individual/group) from Orange too, or only
-   from Citrus?
+3. (Answered: no subject_type from Orange; Palette and experiment-spec agree.)
 4. The merge step: where the template's identity is recorded in the merged
    spec (proposal: `fixed.declaration_template` {repo, commit, path,
    sha256}), and whether the template must be committed and clean (proposal:
