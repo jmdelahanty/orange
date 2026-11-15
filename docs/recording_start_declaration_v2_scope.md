@@ -87,12 +87,14 @@ and keep meaning what they mean today.
 ## What each owner would need to change
 
 - **Orange**: parser and writer for v2 next to v1 (v1 keeps working), the
-  confirmation and spec-copy paths unchanged, subject reference schema
-  version bump for `declared_blank`, tests; the orchestrator and the run spec
+  confirmation and spec-copy paths unchanged, the new reason value
+  `declared_blank` in the existing subject reference (NO schema version bump:
+  Palette accepts reference versions 1 and 2 only, so a v3 would refuse every
+  recording at intake until Palette pins it), tests; the orchestrator and the run spec
   path take v2 as they take v1.
 - **Palette**: accept declaration v2 inside `subject_confirmation.json`
-  (#442/#443 follow-up), the `declared_blank` reason in the subject reference
-  (a pinned schema), and decide what of `source` it records or checks.
+  (#442/#443 follow-up) and the `source` checks; `declared_blank` needs no
+  Palette change (an optional doc-only listing in agent-contracts).
 - **orchard (experiment-spec)**: `tools/declare.py` emits v2 with `source`
   and `blank` for blank arenas (today it omits them).
 - **pancake-plate**: whether the plan bytes travel with the recording (a copy
