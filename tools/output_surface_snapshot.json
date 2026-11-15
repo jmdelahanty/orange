@@ -5127,6 +5127,7 @@
    "max_bytes",
    "max_inflight_gops",
    "max_packets",
+   "media_products",
    "metadata",
    "minor",
    "mode",

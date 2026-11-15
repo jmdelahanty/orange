@@ -20,6 +20,21 @@ struct RecordingMediaSelection {
     bool RequiresContext() const;
 };
 
+// The product choice lives in each camera configuration (camera JSON
+// recording.media_products; Jeremy 2026-11-15), so the preset folder a run
+// names decides it. One camera's entry, as the camera JSON wrote it (compact
+// JSON text; absent when the key is not there).
+struct CameraConfigMediaProducts {
+    std::string serial;
+    std::optional<std::string> media_products_json;
+};
+// The selection for a stream or run from its cameras' configurations: absent
+// on every camera -> mode unset (the existing per-camera choices); present on
+// every camera with one identical value -> that selection. Anything else (an
+// invalid or null value, set on some cameras and missing on others, or two
+// different values) throws, naming the cameras. No fallback to another source.
+RecordingMediaSelection ResolveCameraConfigMediaSelection(const std::vector<CameraConfigMediaProducts>&);
+
 struct RecordingMediaCameraInput {
     std::string serial;
     bool participates = false; // logical recording membership, not an encoder switch

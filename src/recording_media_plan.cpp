@@ -35,6 +35,46 @@ bool RecordingMediaSelection::MovingCrops(bool existing) const {
     return mode ? *mode != RecordingMediaMode::FullFrame : existing;
 }
 bool RecordingMediaSelection::RequiresContext() const { return !FullFrame(); }
+RecordingMediaSelection ResolveCameraConfigMediaSelection(const std::vector<CameraConfigMediaProducts>& cameras) {
+    auto names = [](const std::vector<std::string>& serials) {
+        std::string out;
+        for (const auto& s : serials) out += (out.empty() ? "" : ", ") + s;
+        return out;
+    };
+    std::vector<std::string> missing;
+    std::vector<std::pair<std::string, std::vector<std::string>>> values;  // canonical value -> cameras
+    std::optional<RecordingMediaSelection> chosen;
+    for (const auto& camera : cameras) {
+        if (!camera.media_products_json) { missing.push_back(camera.serial); continue; }
+        RecordingMediaSelection selection;
+        try {
+            const json j = json::parse(*camera.media_products_json);
+            if (j.is_null()) throw std::runtime_error("must be a versioned selection, not null");
+            selection = RecordingMediaSelection::Parse(j);
+        } catch (const std::exception& ex) {
+            throw std::runtime_error("camera " + camera.serial + " configuration recording.media_products: " + ex.what());
+        }
+        const std::string key = selection.ToJson().dump();
+        auto it = std::find_if(values.begin(), values.end(), [&](const auto& v) { return v.first == key; });
+        if (it == values.end()) values.push_back({key, {camera.serial}});
+        else it->second.push_back(camera.serial);
+        chosen = selection;
+    }
+    if (values.empty()) return {};
+    if (!missing.empty()) {
+        std::vector<std::string> set;
+        for (const auto& v : values) set.insert(set.end(), v.second.begin(), v.second.end());
+        throw std::runtime_error("recording.media_products must be in every streaming camera's configuration or in "
+                                 "none: set on " + names(set) + ", missing on " + names(missing));
+    }
+    if (values.size() > 1) {
+        std::string detail;
+        for (const auto& v : values)
+            detail += (detail.empty() ? "" : "; ") + json::parse(v.first).at("mode").get<std::string>() + " on " + names(v.second);
+        throw std::runtime_error("the cameras' configurations disagree on recording.media_products: " + detail);
+    }
+    return *chosen;
+}
 bool RecordingMediaCameraPlan::FullFrame() const { return mode != RecordingMediaMode::RegisteredContextAndMovingCrops; }
 bool RecordingMediaCameraPlan::MovingCrops() const { return mode != RecordingMediaMode::FullFrame; }
 RecordingMediaPlan RecordingMediaPlan::Resolve(const RecordingMediaSelection& selection,

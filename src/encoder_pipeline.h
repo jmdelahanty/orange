@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 #include <cuda_runtime.h> // Add this include for cudaEvent_t
@@ -129,6 +130,11 @@ struct CameraRecordingConfig {
     // Opt-in: when true, a dropped frame during an active recording marks the
     // recording failed and stops it cleanly instead of silently continuing.
     bool fail_on_drop = false;
+    // recording.media_products exactly as the camera JSON wrote it (compact
+    // JSON text; absent when the key is not there). Not parsed here: the GUI
+    // stream start and the headless run resolve it across their cameras
+    // (orange::recording::ResolveCameraConfigMediaSelection).
+    std::optional<std::string> media_products_json;
     CameraRecordingEncodeConfig encode;
     CameraRecordingOutputConfig output;
     RecordingStrategyConfig strategy;

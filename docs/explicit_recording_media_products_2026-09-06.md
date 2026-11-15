@@ -32,23 +32,35 @@ changes after startup are rejected before a recording folder is claimed.
 
 ## Configuration and metadata
 
-GUI app configuration: `recording.media_products`. Headless experiment spec:
-`fixed.media_products`. Both use the same closed selection:
+Since 2026-11-15 the selection lives in the camera configuration:
+`recording.media_products` in each camera JSON of the preset folder a GUI
+stream or a headless spec uses (Jeremy: "This would be a camera configuration
+component"). The preset therefore decides the media products, and an
+experiment spec sets them by naming its `config_folder`. The app config
+`recording.media_products` and the spec's `fixed.media_products` are gone: a
+file that still has either is refused with a message saying where the key
+moved (no alias, no fallback), and `fixed.recording` /
+`fixed.recording_by_camera` overrides may not carry it either. The value is
+the same closed selection:
 
 ```json
 {"schema_version": 1, "mode": "full_frame_and_moving_crops"}
 ```
 
-Omitting the field retains existing per-camera choices. This is compatibility
-behavior, not a fourth media product. Explicit null, misspellings, extra switches,
-and unsupported versions are rejected. The GUI's “Existing per-camera choices”
-removes the explicit selection only when the user saves it.
+Every streaming camera (GUI) or selected camera (headless) must carry the same
+value, or none of them may: a camera without the key next to one with it, or
+two different values, refuses the stream start or the spec, naming the
+cameras. Omitting the key on every camera retains the existing per-camera
+choices; this is compatibility behavior, not a fourth media product. Explicit
+null, misspellings, extra switches, and unsupported versions are rejected.
+The headless run checks the opened cameras' configurations against what the
+spec load read before any worker starts.
 
-In the GUI, use **Recording media products** before starting streaming. An
-explicit choice sets crop-recording participation for selected recording cameras
+In the GUI, **Recording media products** shows the resolved choice read-only
+(edit the camera JSONs to change it, then restart streaming). An explicit
+choice sets crop-recording participation for selected recording cameras
 before workers are created. `Record`, YOLO, pose, and encoder settings retain
-their separate meanings. Save is deliberate and preserves context/encoder and
-unrelated app settings. Merely making a selection does not edit the app file.
+their separate meanings.
 
 Headless also requires an explicit matching `fixed.crop_recording` backend when
 moving crops are selected. A full-frame-only choice with a configured active crop

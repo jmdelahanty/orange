@@ -1583,6 +1583,12 @@ bool parse_experiment_recording_overrides(const nlohmann::json& fixed,
             }
             return false;
         }
+        if (fixed["recording"].contains("media_products")) {
+            if (error_out) {
+                *error_out = "Experiment spec fixed.recording.media_products is not accepted: media products are set per camera configuration (recording.media_products in each camera JSON of the config_folder)";
+            }
+            return false;
+        }
         CameraRecordingConfig recording_config;
         if (!parse_camera_recording_json(
                 fixed["recording"],
@@ -1619,6 +1625,13 @@ bool parse_experiment_recording_overrides(const nlohmann::json& fixed,
             if (error_out) {
                 *error_out = "Experiment spec fixed.recording_by_camera." + item.key() +
                              " must be a JSON object";
+            }
+            return false;
+        }
+        if (item.value().contains("media_products")) {
+            if (error_out) {
+                *error_out = "Experiment spec fixed.recording_by_camera." + item.key() +
+                             ".media_products is not accepted: media products are set per camera configuration (recording.media_products in each camera JSON of the config_folder)";
             }
             return false;
         }
@@ -4658,6 +4671,17 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             required_gpu_ids);
         if (selected_indices.empty()) {
             throw std::runtime_error("No cameras selected for headless run.");
+        }
+        {
+            // The opened cameras' configurations must still say what the spec
+            // load read from the config folder.
+            std::vector<orange::recording::CameraConfigMediaProducts> camera_media;
+            for (int idx : selected_indices)
+                camera_media.push_back({cameras_params[idx].camera_serial,
+                                        cameras_params[idx].recording.media_products_json});
+            if (orange::recording::ResolveCameraConfigMediaSelection(camera_media).ToJson() != media_products.ToJson())
+                throw std::runtime_error("the opened cameras' recording.media_products differs from the one the spec "
+                                         "load read from the config folder");
         }
         for (int idx : selected_indices) {
             const size_t current_size =
@@ -8411,6 +8435,55 @@ bool validate_external_stream_recording_profile(
     return true;
 }
 
+// The spec's media products come from its camera configuration (2026-11-15):
+// recording.media_products in each camera JSON of config_folder, for the
+// selected serials (every camera JSON when the spec selects none). The run
+// checks the opened cameras against this again before any worker starts.
+bool resolve_spec_camera_media_products(const std::string& config_folder,
+                                        const std::vector<std::string>& selected_serials,
+                                        orange::recording::RecordingMediaSelection* out,
+                                        std::string* error_out)
+{
+    *out = {};
+    if (config_folder.empty()) return true;  // no camera JSONs: nothing declares media products
+    std::error_code ec;
+    if (!std::filesystem::is_directory(config_folder, ec)) {
+        if (error_out) *error_out = "Experiment spec config_folder does not exist: " + config_folder;
+        return false;
+    }
+    std::vector<std::string> files;
+    update_camera_configs(files, config_folder);
+    std::set<std::string> wanted;
+    for (const auto& serial : selected_serials) wanted.insert(canonicalize_headless_camera_serial(serial));
+    std::vector<orange::recording::CameraConfigMediaProducts> cameras;
+    std::sort(files.begin(), files.end());
+    for (const auto& file : files) {
+        std::ifstream input(file);
+        const nlohmann::json camera = nlohmann::json::parse(input, nullptr, false);
+        if (camera.is_discarded() || !camera.is_object()) {
+            if (error_out) *error_out = "Camera configuration is not a JSON object: " + file;
+            return false;
+        }
+        std::string serial = std::filesystem::path(file).stem().string();
+        if (camera.contains("device_serial_number") && camera.at("device_serial_number").is_string())
+            serial = camera.at("device_serial_number").get<std::string>();
+        serial = canonicalize_headless_camera_serial(serial);
+        if (!wanted.empty() && !wanted.count(serial)) continue;
+        orange::recording::CameraConfigMediaProducts entry{serial, std::nullopt};
+        if (camera.contains("recording") && camera.at("recording").is_object() &&
+            camera.at("recording").contains("media_products"))
+            entry.media_products_json = camera.at("recording").at("media_products").dump();
+        cameras.push_back(std::move(entry));
+    }
+    try {
+        *out = orange::recording::ResolveCameraConfigMediaSelection(cameras);
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = std::string("Experiment spec camera configuration: ") + ex.what();
+        return false;
+    }
+    return true;
+}
+
 bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                           ExperimentSpec* spec,
                           std::string* error_out)
@@ -8498,14 +8571,10 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     const nlohmann::json matrix = root.value("matrix", nlohmann::json::object());
     const nlohmann::json policy = root.value("policy", nlohmann::json::object());
     if (fixed.contains("media_products")) {
-        try {
-            if (fixed.at("media_products").is_null())
-                throw std::runtime_error("media_products must be a versioned selection, not null");
-            spec->media_products = orange::recording::RecordingMediaSelection::Parse(fixed.at("media_products"));
-        } catch (const std::exception& ex) {
-            if (error_out) *error_out = ex.what();
-            return false;
+        if (error_out) {
+            *error_out = "Experiment spec fixed.media_products is no longer read: media products are set per camera configuration (recording.media_products in each camera JSON of the config_folder); move it there";
         }
+        return false;
     }
     if (fixed.contains("citrus_recording_canvas_config_path")) {
         const auto& node = fixed.at("citrus_recording_canvas_config_path");
@@ -8687,6 +8756,10 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->config_folder = cli_options.config_folder.empty()
         ? fixed.value("config_folder", "")
         : cli_options.config_folder;
+    if (!resolve_spec_camera_media_products(spec->config_folder, spec->selection.camera_serials,
+                                            &spec->media_products, error_out)) {
+        return false;
+    }
     spec->stream_only = fixed.value("stream_only", false);
     spec->ptp_gate_acquisition_mode = fixed.value("ptp_gate_acquisition_mode", "");
     spec->acquisition_buffer_mode = fixed.value("acquisition_buffer_mode", "auto");

@@ -54,24 +54,46 @@ int main() {
         refuses([&] { RecordingMediaPlan::Resolve(full, {{"a", true, false}, {"a", true, false}}); });
         check(RecordingMediaPlan::Resolve(full, {}).cameras.empty(), "preview-only membership invented");
 
+        // The camera configuration carries the choice (recording.media_products
+        // in each camera JSON); the streaming cameras must agree.
+        using Cameras = std::vector<CameraConfigMediaProducts>;
+        check(!ResolveCameraConfigMediaSelection({}).mode, "no cameras opted in");
+        check(!ResolveCameraConfigMediaSelection(Cameras{{"1", std::nullopt}, {"2", std::nullopt}}).mode,
+              "cameras without the key opted in");
+        check(ResolveCameraConfigMediaSelection(Cameras{{"1", both.ToJson().dump()}, {"2", both.ToJson().dump()}}).ToJson() ==
+              both.ToJson(), "agreeing cameras lost their choice");
+        for (const Cameras& bad : std::vector<Cameras>{
+                {{"1", both.ToJson().dump()}, {"2", std::nullopt}},
+                {{"1", both.ToJson().dump()}, {"2", full.ToJson().dump()}},
+                {{"1", "null"}},
+                {{"1", json({{"schema_version", 1}, {"mode", "croponly"}}).dump()}},
+                {{"1", json({{"schema_version", true}, {"mode", "full_frame"}}).dump()}}})
+            refuses([&] { ResolveCameraConfigMediaSelection(bad); });
+        try {
+            ResolveCameraConfigMediaSelection(Cameras{{"2010093", both.ToJson().dump()}, {"2010094", std::nullopt}});
+        } catch (const std::exception& ex) {
+            const std::string what = ex.what();
+            check(what.find("2010093") != std::string::npos && what.find("2010094") != std::string::npos,
+                  "refusal does not name the cameras");
+        }
+
+        // The app config no longer carries the choice: the old key is refused.
         const auto path = root / "app.json";
         const json original = {{"unrelated", 17}, {"recording", {{"sink_mode", "external_ipc"},
             {"registered_context_recording", {{"schema_version", 1}, {"enabled", false}}}}}};
         { std::ofstream out(path); out << original; }
-        check(!ReadGuiRecordingMediaSelection(path).mode, "old app config opted in");
-        SaveGuiRecordingMediaSelection(path, both);
-        check(ReadGuiRecordingMediaSelection(path).ToJson() == both.ToJson(), "saved media selection lost");
+        RefuseAppConfigMediaProducts(path);
         SaveGuiRecordingEvidenceConfig(path, {});
-        check(ReadGuiRecordingMediaSelection(path).ToJson() == both.ToJson(), "context save overwrote media choice");
         json saved; { std::ifstream in(path); in >> saved; }
         check(saved.at("unrelated") == 17 && saved.at("recording").at("sink_mode") == "external_ipc", "save altered encoder or unrelated config");
-        SaveGuiRecordingMediaSelection(path, {});
-        check(!ReadGuiRecordingMediaSelection(path).mode, "explicit return to per-camera selection failed");
+        check(!saved.at("recording").contains("media_products"), "context save wrote media_products");
+        { std::ofstream out(path); out << json{{"recording", {{"media_products", both.ToJson()}}}}; }
+        refuses([&] { RefuseAppConfigMediaProducts(path); });
         { std::ofstream out(path); out << json{{"recording", {{"media_products", nullptr}}}}; }
-        refuses([&] { ReadGuiRecordingMediaSelection(path); });
+        refuses([&] { RefuseAppConfigMediaProducts(path); });
         const auto link = root / "linked.json";
         std::filesystem::create_symlink(path, link);
-        refuses([&] { SaveGuiRecordingMediaSelection(link, full); });
+        refuses([&] { SaveGuiRecordingEvidenceConfig(link, {}); });
         check(std::filesystem::is_symlink(link), "save replaced user symlink");
         std::cout << "Recording media plan, construction selection, admission and persistence tests passed\n";
     } catch (const std::exception& ex) { std::cerr << ex.what() << '\n'; result = 1; }

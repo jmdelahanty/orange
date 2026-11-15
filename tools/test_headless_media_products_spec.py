@@ -34,7 +34,12 @@ def main():
              ("crop_tool", both, crops, True),
              ("crop_tool_relative", both, crops, False),
              ("crop_tool_empty", both, crops, False),
-             ("crop_tool_type", both, crops, False)]
+             ("crop_tool_type", both, crops, False),
+             # One source: the old spec keys are refused, and the cameras must agree.
+             ("legacy_spec_key", full, base, False),
+             ("recording_override_key", full, base, False),
+             ("partial_cameras", both, crops, False),
+             ("disagreeing_cameras", both, crops, False)]
     crop_only = {"schema_version": 1, "mode": "registered_context_and_moving_crops"}
     crop_source = copy.deepcopy(crops)
     crop_source["fixed"].pop("pose_worker", None)
@@ -88,8 +93,26 @@ def main():
                 spec["fixed"]["crop_recording"]["recorder_tool_path"] = {
                     "crop_tool": "/tmp/not-executed/external_recorder_ipc_probe",
                     "crop_tool_relative": "relative", "crop_tool_empty": "", "crop_tool_type": 3}[name]
-            if name != "absent":
+            # Media products come from the camera configuration: every selected
+            # camera's JSON in the spec's config_folder (2026-11-15).
+            serials = spec.get("selection", {}).get("camera_serials") or ["2010096"]
+            per_camera = {serial: selection for serial in serials}
+            if name == "partial_cameras":
+                per_camera[serials[-1]] = "absent"
+            if name == "disagreeing_cameras":
+                per_camera[serials[-1]] = full
+            cameras = directory / f"{name}_cameras"
+            cameras.mkdir()
+            for serial, value in per_camera.items():
+                camera = {"device_serial_number": serial, "recording": {}}
+                if name != "absent" and value != "absent":
+                    camera["recording"]["media_products"] = value
+                (cameras / f"{serial}.json").write_text(json.dumps(camera))
+            spec["fixed"]["config_folder"] = str(cameras)
+            if name == "legacy_spec_key":
                 spec["fixed"]["media_products"] = selection
+            if name == "recording_override_key":
+                spec["fixed"]["recording"] = {"media_products": selection}
             path = directory / f"{name}.json"
             path.write_text(json.dumps(spec))
             result = subprocess.run([str(args.orange_client.resolve()), "--mode", "local",

@@ -19,14 +19,32 @@ int main() {
     int result = 0;
     try {
         using namespace orange::gui;
+        using Cameras = std::vector<orange::recording::CameraConfigMediaProducts>;
+        auto cameras = [](const nlohmann::json& media) {
+            return Cameras{{"2010093", media.dump()}, {"2010094", media.dump()}};
+        };
         LoadRegisteredContextRecordingSettings(path);
-        check(!RecordingMediaSelectionForStream().mode, "old GUI configuration opted into a product plan");
+        check(!RecordingMediaSelectionForStream({}).mode, "old GUI configuration opted into a product plan");
+        check(!RecordingMediaSelectionForStream(Cameras{{"2010093", std::nullopt}}).mode,
+              "camera configs without media_products opted into a product plan");
         check(!RegisteredContextRecordingConfigForArm().enabled, "missing config is not opt-in");
         const auto crop_only = orange::recording::RecordingMediaSelection::Parse(
             {{"schema_version", 1}, {"mode", "registered_context_and_moving_crops"}});
-        orange::recording::SaveGuiRecordingMediaSelection(path, crop_only);
-        LoadRegisteredContextRecordingSettings(path);
+        // The camera configuration decides; crop-only needs the registered context.
+        check(RecordingMediaSelectionForStream(cameras(crop_only.ToJson())).RequiresContext(), "camera crop-only lost");
         refuses([&] { RegisteredContextRecordingConfigForArm(); });
+        // Cameras that disagree, or set it on some cameras only, refuse the stream start.
+        refuses([&] { RecordingMediaSelectionForStream(Cameras{{"2010093", crop_only.ToJson().dump()},
+            {"2010094", json({{"schema_version", 1}, {"mode", "full_frame"}}).dump()}}); });
+        refuses([&] { RecordingMediaSelectionForStream(Cameras{{"2010093", crop_only.ToJson().dump()},
+            {"2010094", std::nullopt}}); });
+        refuses([&] { RecordingMediaSelectionForStream(Cameras{{"2010093", "null"}}); });
+        refuses([&] { RecordingMediaSelectionForStream(Cameras{{"2010093", json({{"schema_version", 1}, {"mode", "croponly"}}).dump()}}); });
+        // The app config's old key is refused, not read.
+        { std::ofstream out(path); out << json{{"recording", {{"media_products", crop_only.ToJson()}}}}; }
+        LoadRegisteredContextRecordingSettings(path);
+        refuses([&] { RecordingMediaSelectionForStream(cameras(crop_only.ToJson())); });
+        refuses([&] { RecordingMediaSelectionForStream({}); });
         std::filesystem::remove(path); // unique fixture preference file
         LoadRegisteredContextRecordingSettings(path);
         const json context = {
@@ -45,15 +63,15 @@ int main() {
         check(!std::filesystem::exists(path), "selecting context silently saved global config");
         const auto media = orange::recording::RecordingMediaSelection::Parse(
             {{"schema_version", 1}, {"mode", "full_frame_and_moving_crops"}});
-        orange::recording::SaveGuiRecordingMediaSelection(path, media);
         orange::recording::SaveGuiRecordingEvidenceConfig(path, config);
         ConsumeRegisteredContextRecordingConfirmation();
         refuses([&] { RegisteredContextRecordingConfigForArm(); });
         LoadRegisteredContextRecordingSettings(path);
-        check(RecordingMediaSelectionForStream().ToJson() == media.ToJson(), "GUI did not restore explicit media choice");
-        orange::recording::SaveGuiRecordingMediaSelection(path, {});
+        check(RecordingMediaSelectionForStream(cameras(media.ToJson())).ToJson() == media.ToJson(),
+              "GUI did not take the cameras' media choice");
         LoadRegisteredContextRecordingSettings(path, false);
-        check(RecordingMediaSelectionForStream().ToJson() == media.ToJson(), "context reload changed frozen media choice");
+        check(RecordingMediaSelectionForStream(cameras(media.ToJson())).ToJson() == media.ToJson(),
+              "context reload changed the cameras' media choice");
         refuses([&] { RegisteredContextRecordingConfigForArm(); });
         SelectDailyContextForGuiRecording(context);
         check(RegisteredContextRecordingConfigForArm().enabled, "new confirmation did not allow another arm");

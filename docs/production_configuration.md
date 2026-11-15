@@ -70,6 +70,14 @@ were 59-77 % of a recording's bytes); the production QP is chosen from the
 offline comparison on real fish crops. Crop-only media products still require
 lossless crops.
 
+**Media products (crop video or not).** Set per preset, in the camera
+configuration: `recording.media_products` `{schema_version 1, mode}` in every
+camera JSON of the folder (since 2026-11-15; the app config key and the
+headless `fixed.media_products` are refused). Absent on every camera keeps the
+per-camera Record/Crop choices; the cameras must agree, or the stream start is
+refused. `full_frame` writes no crop video and keeps YOLO (the grouped-fish
+`30_cam4_ptp_fourcam` sessions). Rules: `docs/explicit_recording_media_products_2026-09-06.md`.
+
 **Owner-push chunk size.** The 30-minute headless endurance pushed each
 20 MB frame as one 64 MiB-bounded chunk; every GUI soak pushed 2 MiB chunks
 (the client default, since the wrapper allow-list cannot set the variable).

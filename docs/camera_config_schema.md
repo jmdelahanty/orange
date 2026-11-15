@@ -368,6 +368,25 @@ Notes:
   profiles where process-isolated recording is the normal performance path,
   including single-camera profiles such as `Cam2012632 @ 250 fps`.
 
+### `recording.media_products`
+
+```json
+"recording": {
+  "media_products": {"schema_version": 1, "mode": "full_frame"}
+}
+```
+
+Optional (added 2026-11-15 within schema version 4, like `image_levels`):
+which media a recording writes, `full_frame`, `full_frame_and_moving_crops`
+or `registered_context_and_moving_crops`
+(`docs/schemas/orange_recording_media_products_v1.schema.json`). It is the
+only place the choice is made: the app config `recording.media_products` and
+the headless `fixed.media_products` are refused. Every streaming camera (GUI)
+or selected camera (headless) of a folder must carry the same value, or none
+of them may; otherwise the stream start or the spec is refused. Absent on
+every camera keeps the per-camera Record/Crop choices. Rules:
+`docs/explicit_recording_media_products_2026-09-06.md`.
+
 ## `crop_pipeline`
 
 ```json

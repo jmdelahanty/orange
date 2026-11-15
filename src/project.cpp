@@ -3136,6 +3136,10 @@ bool parse_camera_recording_json_impl(const nlohmann::json& recording_json,
         }
     }
 
+    if (recording_json.contains("media_products")) {
+        recording.media_products_json = recording_json["media_products"].dump();
+    }
+
     if (recording_json.contains("encode") && recording_json["encode"].is_object()) {
         const nlohmann::json& encode = recording_json["encode"];
         recording.encode.codec =
@@ -3282,6 +3286,9 @@ nlohmann::json build_camera_recording_json_impl(const CameraRecordingConfig& rec
     recording_json["fail_on_drop"] = recording.fail_on_drop;
     if (!recording.preferred_sink_mode.empty()) {
         recording_json["preferred_sink_mode"] = recording.preferred_sink_mode;
+    }
+    if (recording.media_products_json) {
+        recording_json["media_products"] = nlohmann::json::parse(*recording.media_products_json);
     }
     recording_json["encode"] = {
         {"codec", recording.encode.codec},

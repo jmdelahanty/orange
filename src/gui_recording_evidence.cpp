@@ -80,15 +80,13 @@ void save_recording_field(const std::filesystem::path& path, const char* field, 
 void SaveGuiRecordingEvidenceConfig(const std::filesystem::path& path, const GuiRecordingEvidenceConfig& config) {
     save_recording_field(path, "registered_context_recording", GuiRecordingEvidenceConfig::Parse(config.ToJson()).ToJson());
 }
-RecordingMediaSelection ReadGuiRecordingMediaSelection(const std::filesystem::path& path) {
+void RefuseAppConfigMediaProducts(const std::filesystem::path& path) {
     ScopedFsuid filesystem_identity;
     const auto root = read_app_config(path);
-    if (root.contains("recording") && root.at("recording").contains("media_products")) {
-        if (root.at("recording").at("media_products").is_null())
-            throw std::runtime_error("recording.media_products must be a versioned selection, not null");
-        return RecordingMediaSelection::Parse(root.at("recording").at("media_products"));
-    }
-    return {};
+    if (root.contains("recording") && root.at("recording").is_object() && root.at("recording").contains("media_products"))
+        throw std::runtime_error("app config recording.media_products is no longer read: media products are set per "
+                                 "camera configuration (recording.media_products in each camera JSON of the preset "
+                                 "folder); move it there and remove it from the app config");
 }
 RecordingContextsConfig ReadGuiRecordingContexts(const std::filesystem::path& path) {
     ScopedFsuid filesystem_identity;
@@ -125,9 +123,6 @@ ZebrobotLookupConfig ReadGuiZebrobotLookup(const std::filesystem::path& path) {
         return ZebrobotLookupConfig::Parse(root.at("recording").at("zebrobot"));
     }
     return {};
-}
-void SaveGuiRecordingMediaSelection(const std::filesystem::path& path, const RecordingMediaSelection& selection) {
-    save_recording_field(path, "media_products", RecordingMediaSelection::Parse(selection.ToJson()).ToJson());
 }
 GuiRecordingEvidenceConfig GuiRecordingEvidenceConfig::Parse(const json& j) {
     if (!j.is_object() || !j.contains("schema_version") || j.at("schema_version").is_boolean() ||

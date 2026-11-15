@@ -58,7 +58,7 @@ void LoadRegisteredContextRecordingSettings(const std::string& path, bool load_m
     } catch (const std::exception& ex) { error = ex.what(); }
     if (load_media) {
         media_selection = {}; media_error.clear();
-        try { media_selection = recording::ReadGuiRecordingMediaSelection(path); }
+        try { recording::RefuseAppConfigMediaProducts(path); }
         catch (const std::exception& ex) { media_error = ex.what(); }
         recording_contexts = {}; contexts_error.clear();
         try { recording_contexts = recording::ReadGuiRecordingContexts(path); }
@@ -71,8 +71,10 @@ void LoadRegisteredContextRecordingSettings(const std::string& path, bool load_m
         } catch (const std::exception& ex) { subject_error = ex.what(); }
     }
 }
-recording::RecordingMediaSelection RecordingMediaSelectionForStream() {
+recording::RecordingMediaSelection RecordingMediaSelectionForStream(
+        const std::vector<recording::CameraConfigMediaProducts>& cameras) {
     if (!media_error.empty()) throw std::runtime_error("GUI media selection: " + media_error);
+    media_selection = recording::ResolveCameraConfigMediaSelection(cameras);
     return media_selection;
 }
 recording::RecordingContextsConfig RecordingContextsForStream() {
@@ -434,43 +436,26 @@ void RenderRecordingContextSelection(bool locked) {
     if (!contexts_error.empty()) ImGui::TextWrapped("Record start blocked: %s", contexts_error.c_str());
     if (!contexts_status.empty()) ImGui::TextWrapped("%s", contexts_status.c_str());
 }
-void RenderRecordingMediaSelection(bool stream_locked) {
+void RenderRecordingMediaSelection(const std::vector<recording::CameraConfigMediaProducts>& cameras) {
     if (!ImGui::CollapsingHeader("Recording media products")) return;
-    ImGui::BeginDisabled(stream_locked);
-    int selected = !media_selection.mode ? 0 :
-        (*media_selection.mode == recording::RecordingMediaMode::FullFrame ? 1 :
-         *media_selection.mode == recording::RecordingMediaMode::FullFrameAndMovingCrops ? 2 : 3);
-    const char* choices[] = {"Existing per-camera choices", "Full-frame video",
-        "Full-frame video + moving crops", "Registered context + moving crops"};
-    bool changed = false;
-    if (ImGui::BeginCombo("Media products", choices[selected])) {
-        for (int i = 0; i < 4; ++i) {
-            if (ImGui::Selectable(choices[i], selected == i)) { selected = i; changed = true; }
-        }
-        ImGui::EndCombo();
-    }
-    if (changed) {
-        media_selection.mode.reset();
-        if (selected == 1) media_selection.mode = recording::RecordingMediaMode::FullFrame;
-        if (selected == 2) media_selection.mode = recording::RecordingMediaMode::FullFrameAndMovingCrops;
-        if (selected == 3) media_selection.mode = recording::RecordingMediaMode::RegisteredContextAndMovingCrops;
-        media_error.clear(); media_status = "Selection applies at the next stream startup; not saved yet.";
-    }
-    if (ImGui::Button("Save media product selection")) {
+    // Read-only: the camera configuration decides (recording.media_products in
+    // each camera JSON of the loaded preset folder), resolved at stream start.
+    std::string shown, problem;
+    if (!media_error.empty()) problem = media_error;
+    else {
         try {
-            recording::SaveGuiRecordingMediaSelection(config_path, media_selection);
-            media_error.clear(); media_status = "Saved recording.media_products; encoder settings are unchanged.";
-        } catch (const std::exception& ex) { media_error = ex.what(); }
+            const auto selection = recording::ResolveCameraConfigMediaSelection(cameras);
+            shown = selection.mode ? recording::RecordingMediaModeName(*selection.mode)
+                                   : "not set (existing per-camera Record/Crop choices)";
+            if (selection.RequiresContext())
+                shown += ": requires a selected daily context, a master frame journal, full-rate YOLO/event logging "
+                         "and external moving crops; no continuous full-frame video. Live rig acceptance pending.";
+        } catch (const std::exception& ex) { problem = ex.what(); }
     }
-    ImGui::EndDisabled();
-    ImGui::TextWrapped("Choose before streaming. Record still controls session membership. "
-        "An explicit product choice determines moving-crop recording for each participating camera. "
-        "Native and split-GOP full-frame recording remain supported.");
-    if (media_selection.RequiresContext())
-        ImGui::TextWrapped("Requires a selected daily context, a master frame journal, full-rate YOLO/event logging and external moving crops. "
-            "Confirm the scene before each recording. No continuous full-frame video is encoded. Live rig acceptance remains pending.");
-    if (!media_error.empty()) ImGui::TextWrapped("Startup blocked: %s", media_error.c_str());
-    if (!media_status.empty()) ImGui::TextWrapped("%s", media_status.c_str());
+    ImGui::TextWrapped("Media products: %s", problem.empty() ? shown.c_str() : "unresolved");
+    ImGui::TextWrapped("Set by recording.media_products in each streaming camera's configuration (the preset "
+        "folder), the same value on every camera or on none; it applies at stream start.");
+    if (!problem.empty()) ImGui::TextWrapped("Stream start blocked: %s", problem.c_str());
 }
 void SelectDailyContextForGuiRecording(const json& context) {
     auto c = recording::RegisteredContextConfig::Parse(context);

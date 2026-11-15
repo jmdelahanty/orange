@@ -925,6 +925,24 @@ std::vector<std::string> gui_camera_serials_for_selection(
     return serials;
 }
 
+// Each streaming camera's recording.media_products as its camera JSON wrote
+// it: the camera configuration decides the media products (2026-11-15).
+std::vector<orange::recording::CameraConfigMediaProducts> gui_stream_camera_media_products(
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras)
+{
+    std::vector<orange::recording::CameraConfigMediaProducts> cameras;
+    for (int i = 0; cameras_params && i < num_cameras; ++i) {
+        if (cameras_select && !cameras_select[i].stream_on) continue;
+        cameras.push_back({cameras_params[i].camera_serial.empty()
+                               ? std::to_string(cameras_params[i].camera_id)
+                               : cameras_params[i].camera_serial,
+                           cameras_params[i].recording.media_products_json});
+    }
+    return cameras;
+}
+
 orange::control::RecorderReadinessSnapshot gui_control_recorder_readiness(
     const orange::external_recorder::SupervisedRecorderLifecycleState& lifecycle,
     const bool external_ipc_enabled)
@@ -4061,7 +4079,8 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     orange::recording::GuiRecordingEvidenceConfig evidence_config;
     std::vector<orange::recording::RegisteredContextCamera> evidence_cameras;
     try {
-        if (orange::gui::RecordingMediaSelectionForStream().ToJson() !=
+        if (orange::gui::RecordingMediaSelectionForStream(
+                gui_stream_camera_media_products(cameras_params, cameras_select, num_cameras)).ToJson() !=
             recording_session->media_selection.ToJson())
             throw std::runtime_error("recording media selection changed since stream startup; stop and restart streaming");
         evidence_config = orange::gui::RegisteredContextRecordingConfigForArm();
@@ -7057,9 +7076,7 @@ int main(int /*argc*/, char ** /*args*/) {
 
             const auto recording_panel_draw_start = std::chrono::steady_clock::now();
             orange::gui::RenderRecordingMediaSelection(
-                camera_control->subscribe || gui_camera_startup.busy() ||
-                camera_control->record_video || camera_control->recording_draining ||
-                gui_async_recording_start.active);
+                gui_stream_camera_media_products(cameras_params, cameras_select, num_cameras));
             // Editable between recordings (also while streaming): the choice is
             // resolved and frozen at record start, not at stream start.
             orange::gui::RenderRecordingContextSelection(
@@ -8018,7 +8035,8 @@ int main(int /*argc*/, char ** /*args*/) {
 
                         std::string start_error;
                         try {
-                            const auto selection = orange::gui::RecordingMediaSelectionForStream();
+                            const auto selection = orange::gui::RecordingMediaSelectionForStream(
+                                gui_stream_camera_media_products(cameras_params, cameras_select, num_cameras));
                             recording_session.media_selection = selection;
                             recording_session.recording_contexts = orange::gui::RecordingContextsForStream();
                             recording_session.subject_references = orange::gui::SubjectReferencesForStream();

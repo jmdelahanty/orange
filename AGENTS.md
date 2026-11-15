@@ -93,7 +93,10 @@ exist" then "Failed to open cameras", exit in 2 s):
 `SRC=~/orange_data/config/local/100_cam4_ptp_fourcam; cp -r $SRC
 /tmp/orange_recorder_config_a16` (crop 384 as the GUI saved it) and
 `cp -r $SRC /tmp/orange_device_crop_config_a16` with
-`crop_pipeline.crop_size_px` set to 256 in its four JSONs.
+`crop_pipeline.crop_size_px` set to 256 in its four JSONs. The four-camera
+crop-only specs use `cp -r $SRC /tmp/orange_crop_only_config_a16` with
+`recording.media_products` `{"schema_version": 1, "mode":
+"registered_context_and_moving_crops"}` added to its four JSONs.
 
 ```bash
 make -C <tree>/targets/release orange_client   # EXCLUDE_FROM_ALL: plain make skips it
@@ -300,7 +303,7 @@ Orange/Citrus commissioning) are in git history of this file and in
   at every record start. Restarting ptp4l drops camera PTP lock:
   only with no `orange` or `orange_client` running
   (`sudo ~/pancakebatter/install_ptp_units.sh --restart`, which checks).
-- Crop-only (`media_products.mode = registered_context_and_moving_crops`):
+- Crop-only (camera config `recording.media_products.mode = registered_context_and_moving_crops`; the app-config and `fixed.` keys are gone since 2026-11-15):
   in the code since 2026-09-23, never run on the rig. It needs an accepted
   per-camera registration (Orange physical or selected daily). Cam2010093 has
   an accepted physical registration since 2026-10-09

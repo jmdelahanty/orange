@@ -18,7 +18,10 @@ struct GuiRecordingEvidenceConfig {
 GuiRecordingEvidenceConfig ReadGuiRecordingEvidenceConfig(const std::filesystem::path& app_config);
 void SaveGuiRecordingEvidenceConfig(const std::filesystem::path& app_config,
                                     const GuiRecordingEvidenceConfig&);
-RecordingMediaSelection ReadGuiRecordingMediaSelection(const std::filesystem::path& app_config);
+// Media products moved to the camera configuration (camera JSON
+// recording.media_products, 2026-11-15): an app config that still has
+// recording.media_products is refused (throws), never read.
+void RefuseAppConfigMediaProducts(const std::filesystem::path& app_config);
 // recording.contexts: parent recording contexts (Citrus transfer-v2); absent ->
 // unconfigured (no block emitted; validators report it).
 RecordingContextsConfig ReadGuiRecordingContexts(const std::filesystem::path& app_config);
@@ -28,8 +31,6 @@ void SaveGuiRecordingContexts(const std::filesystem::path& app_config, const Rec
 SubjectReferencesConfig ReadGuiSubjectReferences(const std::filesystem::path& app_config);
 void SaveGuiSubjectReferences(const std::filesystem::path& app_config, const SubjectReferencesConfig&);
 ZebrobotLookupConfig ReadGuiZebrobotLookup(const std::filesystem::path& app_config);
-void SaveGuiRecordingMediaSelection(const std::filesystem::path& app_config,
-                                   const RecordingMediaSelection&);
 
 // CPU-only prearm service. Inputs are frozen value snapshots, never live camera
 // objects. Called on the existing GUI start worker before sealing start evidence.

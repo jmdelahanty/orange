@@ -147,11 +147,29 @@ class CropRunnerTests(unittest.TestCase):
     def test_gui_profile_waits_for_operator(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "app.json"
-            recording = {"media_products": {"schema_version": 1, "mode": crop.PRODUCT}, "registered_context_recording": {
+            recording = {"registered_context_recording": {
                 "enabled": True, "master_frame_journal": {"enabled": True}, "registered_scene_context": self.context()}}
             path.write_text(json.dumps({"recording": recording}))
-            result = gui_profile.run_profile(["--crop-only", "--app-config", str(path), "--print-exec-env-only"])
+            # Media products come from the camera configuration (every camera JSON).
+            cameras = Path(tmp) / "cameras"; cameras.mkdir()
+            media = {"schema_version": 1, "mode": crop.PRODUCT}
+            def camera(serial, gpu, media_products):
+                gui_profile.write_camera_config(cameras, serial, gpu)
+                payload = json.loads((cameras / f"{serial}.json").read_text())
+                if media_products is not None: payload["recording"]["media_products"] = media_products
+                (cameras / f"{serial}.json").write_text(json.dumps(payload))
+            for serial, gpu in (("2010093", 3), ("2010094", 1), ("2010095", 7), ("2010096", 5)): camera(serial, gpu, media)
+            env = {"ORANGE_GUI_CONFIG_DIR": str(cameras)}
+            result = gui_profile.run_profile(["--crop-only", "--app-config", str(path), "--print-exec-env-only"], env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            camera("2010094", 1, None)
+            missing = gui_profile.run_profile(["--crop-only", "--app-config", str(path), "--print-exec-env-only"], env)
+            self.assertNotEqual(missing.returncode, 0, "a camera without media_products was accepted")
+            camera("2010094", 1, media)
+            path.write_text(json.dumps({"recording": dict(recording, media_products=media)}))
+            old_key = gui_profile.run_profile(["--crop-only", "--app-config", str(path), "--print-exec-env-only"], env)
+            self.assertNotEqual(old_key.returncode, 0, "app config recording.media_products was accepted")
+            path.write_text(json.dumps({"recording": recording}))
             self.assertIn("ORANGE_GUI_AUTORUN_START_RECORDING=0", result.stdout)
             self.assertIn("ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1", result.stdout)
             self.assertEqual(json.loads(path.read_text())["recording"], recording)

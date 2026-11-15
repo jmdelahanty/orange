@@ -13,8 +13,13 @@ void SelectDailyContextForGuiRecording(const nlohmann::json& context);
 void RenderRegisteredContextRecordingSettings(bool locked);
 recording::GuiRecordingEvidenceConfig RegisteredContextRecordingConfigForArm();
 void ConsumeRegisteredContextRecordingConfirmation();
-void RenderRecordingMediaSelection(bool stream_locked);
-recording::RecordingMediaSelection RecordingMediaSelectionForStream();
+// Read-only view of the streaming cameras' recording.media_products.
+void RenderRecordingMediaSelection(const std::vector<recording::CameraConfigMediaProducts>& cameras);
+// Resolves the streaming cameras' recording.media_products (throws on a
+// mismatch, or when the app config still holds recording.media_products) and
+// keeps it as this stream's selection for the registered-context controls.
+recording::RecordingMediaSelection RecordingMediaSelectionForStream(
+    const std::vector<recording::CameraConfigMediaProducts>& cameras);
 // Parent recording contexts from app config recording.contexts (throws on a parse error).
 recording::RecordingContextsConfig RecordingContextsForStream();
 // A start that carries its own declaration (local-control start_recording

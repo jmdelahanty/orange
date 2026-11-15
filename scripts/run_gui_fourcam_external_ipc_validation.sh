@@ -364,13 +364,20 @@ if (( CROP_ONLY )); then
     echo "--crop-only requires --app-config and cannot combine with manual stop-only profiles." >&2
     exit 2
   }
-  python3 - "${ORANGE_APP_CONFIG_PATH}" <<'PY'
+  python3 - "${ORANGE_APP_CONFIG_PATH}" "${ORANGE_GUI_CONFIG_DIR}" <<'PY'
 import json, sys
 from pathlib import Path
 recording = json.loads(Path(sys.argv[1]).read_text()).get("recording", {})
-selection = recording.get("media_products", {})
-if type(selection.get("schema_version")) is not int or selection != {"schema_version": 1, "mode": "registered_context_and_moving_crops"}:
-    raise SystemExit("Explicit app config must select registered_context_and_moving_crops")
+if "media_products" in recording:
+    raise SystemExit("App config recording.media_products is no longer read: set it in each camera config")
+# Media products come from the camera configuration (recording.media_products in every camera JSON).
+cameras = sorted(Path(sys.argv[2]).glob("*.json"))
+want = {"schema_version": 1, "mode": "registered_context_and_moving_crops"}
+bad = [p.name for p in cameras if json.loads(p.read_text()).get("recording", {}).get("media_products") != want
+       or type(json.loads(p.read_text())["recording"]["media_products"]["schema_version"]) is not int]
+if not cameras or bad:
+    raise SystemExit("Every camera config in " + sys.argv[2] + " must select registered_context_and_moving_crops"
+                     + (": " + ", ".join(bad) if bad else " (no camera configs)"))
 evidence = recording.get("registered_context_recording", {})
 if (evidence.get("enabled") is not True or evidence.get("master_frame_journal", {}).get("enabled") is not True or
         evidence.get("registered_scene_context", {}).get("enabled") is not True):

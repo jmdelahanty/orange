@@ -23,7 +23,7 @@
     "stream_only": false,
     "sync_mode": "ptp_gate",
     "recording_sink_mode": "external_ipc",
-    "config_folder": "/tmp/orange_recorder_config_a16",
+    "config_folder": "/tmp/orange_crop_only_config_a16",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "ptp_register_read_decimate": 100,
     "yolo_worker": {
@@ -73,10 +73,6 @@
     "analytics_fused_frame": true,
     "acq_ring_release_log": true,
     "acq_cadence_probe_all": true,
-    "media_products": {
-      "schema_version": 1,
-      "mode": "registered_context_and_moving_crops"
-    },
     "master_frame_journal": {
       "schema_version": 1,
       "enabled": true,
