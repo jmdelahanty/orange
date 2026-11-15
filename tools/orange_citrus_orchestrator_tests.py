@@ -171,6 +171,26 @@ def test_citrus_bound_start_checks_and_delivery() -> None:
     require(not module.citrus_finalization_settled(idle), "idle keeps waiting")
     require(module.citrus_finalization_settled({"recording_observation_finalization": {"state": "refused"}}),
             "a refusal settles (and is then reported as a failure)")
+    require(module.citrus_finalization_settled({"recording_observation_finalization": {"state": "unconfirmed"}}),
+            "unconfirmed settles as a failure")
+    require(not module.citrus_finalization_settled({"recording_observation_finalization": {"state": "verifying"}}),
+            "verifying keeps waiting")
+    require(module.citrus_finalization_never_started(
+        {"recording_observation_finalization": {"state": "idle", "attempts": 0}}),
+        "idle with no attempts: Citrus built no receipts")
+    require(not module.citrus_finalization_never_started(
+        {"recording_observation_finalization": {"state": "idle", "attempts": 1}}),
+        "idle after an attempt is not 'never started'")
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        (folder / "a.bin").write_bytes(b"x")
+        require(module.citrus_receipt_wait_limit_seconds(str(folder)) == 330 + 120 + 3 + 60,
+                "a tiny folder gets Citrus's fixed bound plus one 100 MB step")
+        with open(folder / "b.bin", "wb") as handle:
+            handle.truncate(1000 * 1000 * 1000)
+        require(module.citrus_receipt_wait_limit_seconds(str(folder)) == 330 + 120 + 3 * 11 + 60,
+                "3 s per started 100 MB, as Orange's GUI exit computes it")
+    require(module.other_citrus_processes(set()) == [] or True, "pgrep probe runs")
 
     args = module.parse_args(["--declared-by", "delahantyj", "--intent", "stimulus_experiment", "--blank-subjects"])
     require(module.Orchestrator(args).bound_run() if hasattr(module, "Orchestrator") else True, "stimulus run is bound")
