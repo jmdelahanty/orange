@@ -299,6 +299,16 @@ they are.
 - [x] Tests: median correctness, statistics, settings-drift flag per setting,
       missing camera, copy failure, a recording that never selects one
       (`empty_background_tests`, `empty_background_schema_tests`).
-- [ ] Rig check: capture at 4512 x 4512 and 4512 x 1792, then a recording with
-      the background attached, with 0 camera frame-id gaps and unchanged NIC
-      counters.
+- [x] Rig check (orange, 2026-11-15, production 60340307), both through
+      local control:
+      - 4512 x 4512 at 30 Hz: staging 366,446,600 B per camera, burst 536 ms,
+        median 28-40 ms, min free entries 62 of 64, max queue depth 1;
+        recording `2026_11_15_12_04_35` attached v2 on all 4 cameras,
+        539/539 frames each, 0 drops, NIC counters unchanged.
+      - 4512 x 1792 at 250 Hz: staging 145,539,080 B, burst 66 ms, median
+        8-11 ms; recording `2026_11_15_12_15_15` attached on all 4,
+        4725/4725 frames, 0 drops, NIC unchanged. Validator PASS on both.
+      - GPU memory while recording (landing / paired die): 5.0 / 0.77 GB at
+        full frame, 3.3 / 0.39 GB at 1792 rows, of 15.3 GB.
+- [ ] Rig: press the GUI panel once (capture, attach with the confirmation,
+      record; attach without it is refused). Needs a person at the rig.
