@@ -8124,6 +8124,16 @@ int main(int /*argc*/, char ** /*args*/) {
                                 for (int i = 0; i < num_cameras; ++i) {
                                     cameras_select[i].crop_and_encode =
                                         cameras_select[i].record && selection.MovingCrops(false);
+                                    // The GUI pose stage runs on the moving crops, so a
+                                    // selection without them (full_frame) has no pose
+                                    // either; YOLO and its live boxes keep running
+                                    // (Jeremy 2026-11-15: positions only, no crop video).
+                                    if (!cameras_select[i].crop_and_encode && cameras_select[i].pose) {
+                                        cameras_select[i].pose = false;
+                                        std::cout << "[GUI][media] Cam" << cameras_params[i].camera_serial
+                                                  << ": media_products records no moving crops; pose is off "
+                                                     "for this stream (YOLO stays on)" << std::endl;
+                                    }
                                 }
                             }
                         } catch (const std::exception& ex) { start_error = ex.what(); }
