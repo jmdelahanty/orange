@@ -220,6 +220,29 @@ def test_citrus_completion_under_its_own_experiment_id() -> None:
     require(any("operation id mismatch" in f for f in failures), "a foreign completion id still fails")
 
 
+def test_clean_orange_exit_during_receipt_wait_is_expected() -> None:
+    module = load_module()
+    args = module.parse_args(["--declared-by", "delahantyj", "--intent", "stimulus_experiment", "--blank-subjects"])
+    orchestrator = module.Orchestrator(args)
+    orchestrator.refresh_started_processes = lambda: None
+    orchestrator.started_processes = [{"label": "orange", "pid": 1, "returncode": 0, "log_path": "x"}]
+    raised = False
+    try:
+        orchestrator.raise_if_started_process_exited("waiting")
+    except module.OrchestratorError:
+        raised = True
+    require(raised, "before the receipt wait an Orange exit is a failure")
+    orchestrator.orange_exit_expected = True
+    orchestrator.raise_if_started_process_exited("waiting for citrus receipts_delivered")
+    orchestrator.started_processes = [{"label": "orange", "pid": 1, "returncode": 3, "log_path": "x"}]
+    raised = False
+    try:
+        orchestrator.raise_if_started_process_exited("waiting")
+    except module.OrchestratorError:
+        raised = True
+    require(raised, "a non-zero Orange exit still fails")
+
+
 def test_orange_start_carries_declaration() -> None:
     module = load_module()
     plain = module.build_orange_start_request("op-1", "req", "test")
@@ -4031,6 +4054,7 @@ def main() -> int:
     tests = [
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
+        test_clean_orange_exit_during_receipt_wait_is_expected,
         test_citrus_completion_under_its_own_experiment_id,
         test_citrus_bound_start_checks_and_delivery,
         test_dry_run_default_does_not_open_sockets,

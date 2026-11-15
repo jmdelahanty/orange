@@ -2538,6 +2538,11 @@ class Orchestrator:
             label = info.get("label", "<unknown>")
             if label == "citrus" and self.citrus_control_complete:
                 continue
+            if label == "orange" and returncode == 0 and getattr(self, "orange_exit_expected", False):
+                # A bound run's Orange GUI exits by itself once it has stored
+                # Citrus's receipts, often before Citrus's status says
+                # "delivered" (2026-11-15, 2026_11_14_23_28_06).
+                continue
             pid = info.get("pid", "<unknown>")
             log_path = info.get("log_path", "")
             raise OrchestratorError(
@@ -2730,6 +2735,8 @@ class Orchestrator:
         # H5s and delivers the receipts; Orange's GUI stays up for them.
         # Set before waiting: the failure path must not wait a second time.
         self.bound_receipts_settled = True
+        # From here a clean Orange exit is the expected end, not a failure.
+        self.orange_exit_expected = True
         final_citrus_status: dict[str, Any] = {}
         folder = orange_recording_folder(final_orange_status)
         limit = self.args.citrus_receipt_timeout_seconds or (
