@@ -38,7 +38,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from published_schemas import EMBEDDED, published  # noqa: E402
+from published_schemas import EMBEDDED, embedded_schema_for, published  # noqa: E402
 
 try:
     from jsonschema import Draft202012Validator
@@ -79,7 +79,7 @@ def embedded_blocks(value, file_name: str, path: str = ""):
         normalized = SERIAL_SEGMENT.sub("/<serial>", path)
         for pattern, block_path, schema_file in EMBEDDED:
             if normalized == block_path and fnmatch.fnmatch(file_name, pattern):
-                yield normalized, path, value, schema_file
+                yield normalized, path, value, embedded_schema_for(schema_file, value)
         for key, child in value.items():
             yield from embedded_blocks(child, file_name, f"{path}/{key}")
 

@@ -8759,6 +8759,20 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         try {
             spec->empty_background =
                 orange::empty_background::SelectionFromHeadlessSpec(fixed.at(orange::empty_background::kHeadlessSpecKey));
+            if (spec->empty_background.block_version >= 2) {
+                // Version 2 names who selected the capture: this run spec, by its bytes.
+                std::error_code spec_ec;
+                const std::filesystem::path absolute_spec =
+                    std::filesystem::absolute(cli_options.experiment_spec_path, spec_ec).lexically_normal();
+                std::string user;
+                if (const char* sudo_user = std::getenv("SUDO_USER"); sudo_user && *sudo_user) user = sudo_user;
+                else if (const passwd* pw = ::getpwuid(::getuid()); pw && pw->pw_name) user = pw->pw_name;
+                spec->empty_background.requester = {
+                    {"transport", "run_spec"},
+                    {"spec_path", spec_ec ? cli_options.experiment_spec_path : absolute_spec.string()},
+                    {"spec_sha256", orange::outputs::sha256_hex(spec_bytes)},
+                    {"user", user.empty() ? nlohmann::json(nullptr) : nlohmann::json(user)}};
+            }
         } catch (const std::exception& ex) {
             if (error_out) *error_out = ex.what();
             return false;

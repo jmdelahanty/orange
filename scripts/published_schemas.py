@@ -17,12 +17,29 @@ import json
 from pathlib import Path
 
 
-# (file pattern, normalized JSON path, schema file) for published blocks without a schema_id.
+# (file pattern, normalized JSON path, schema file or {schema_version: file}) for published blocks
+# without a schema_id.
 EMBEDDED = (
     ("recording_snapshot*.json", "/models/<serial>/detect", "orange_recording_detect_model_v1.schema.json"),
     ("recording_snapshot*.json", "/models/<serial>/pose", "orange_recording_pose_model_v2.schema.json"),
-    ("recording_snapshot*.json", "/session/empty_background", "orange_recording_empty_background_v1.schema.json"),
+    # The block names its grammar from version 2 on (schema_version 2); absent means version 1.
+    ("recording_snapshot*.json", "/session/empty_background",
+     {1: "orange_recording_empty_background_v1.schema.json", 2: "orange_recording_empty_background_v2.schema.json"}),
 )
+
+
+def embedded_schema_for(schema, block) -> str:
+    """The schema file for one EMBEDDED block: a plain file name, or {version: file} chosen by the
+    block's own schema_version (absent means 1). An unknown version names no published file."""
+    if isinstance(schema, str):
+        return schema
+    version = block.get("schema_version", 1) if isinstance(block, dict) else 1
+    return schema.get(version, f"<no published schema for schema_version {version!r}>")
+
+
+def embedded_schema_files(schema) -> list[str]:
+    """Every schema file an EMBEDDED entry may use."""
+    return [schema] if isinstance(schema, str) else [schema[v] for v in sorted(schema)]
 
 
 def _identity(node) -> tuple[str, int] | None:

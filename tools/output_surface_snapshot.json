@@ -35,6 +35,10 @@
    [
     "orange_recording_empty_background_v1.schema.json",
     "path"
+   ],
+   [
+    "orange_recording_empty_background_v2.schema.json",
+    "path"
    ]
   ]
  },

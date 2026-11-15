@@ -42,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_output_names import producer_files, strip_comments  # noqa: E402
-from published_schemas import EMBEDDED, published  # noqa: E402
+from published_schemas import EMBEDDED, embedded_schema_files, published  # noqa: E402
 
 # ORANGE_RATCHET_ROOT points the checks at another tree (used by their tests).
 REPO = Path(os.environ.get("ORANGE_RATCHET_ROOT") or Path(__file__).resolve().parents[1])
@@ -166,7 +166,8 @@ def extract() -> dict[str, dict[str, list]]:
             }
     for _pattern, path, schema_file in EMBEDDED:
         keys = sorted(k for k in path.strip("/").split("/") if not k.startswith("<"))
-        surface[f"embedded {path}"] = {"csv_headers": [], "json_keys": keys, "schemas": [[schema_file, "path"]]}
+        surface[f"embedded {path}"] = {"csv_headers": [], "json_keys": keys,
+                                       "schemas": [[f, "path"] for f in embedded_schema_files(schema_file)]}
     return dict(sorted(surface.items()))
 
 

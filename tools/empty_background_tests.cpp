@@ -141,6 +141,7 @@ eb::CaptureReceipt make_capture(const fs::path& store, const std::string& id, co
     failed.failure_reason = "burst timeout after 2000 ms (9 of 17 frames)";
     bursts.push_back(std::move(failed));
     eb::CapturePlan plan;
+    plan.schema_version = 1;
     plan.store_root = store;
     plan.capture_id = id;
     plan.captured_at_utc = at;
@@ -154,8 +155,16 @@ std::vector<eb::RecordingCamera> recording_cameras(std::initializer_list<const c
     return out;
 }
 
+// The version 1 tests pin version 1, whatever Orange writes (kWriteSchemaVersion).
+eb::BindingSelection v1_none() {
+    eb::BindingSelection s;
+    s.block_version = 1;
+    return s;
+}
+
 eb::BindingSelection selected(const eb::CaptureReceipt& receipt) {
     eb::BindingSelection s;
+    s.block_version = 1;
     s.selected = true;
     s.selection_source = "gui_operator";
     s.scene_unchanged_confirmed = true;
@@ -324,6 +333,8 @@ void test_capture(const fs::path& samples) {
         bursts[1].source_frames[9].stream_frame_id += 1;
         bursts[1].source_frames[9].camera_frame_id += 1;
         eb::CapturePlan plan;
+        plan.schema_version = 1;
+    plan.schema_version = 1;
         plan.store_root = store;
         plan.capture_id = "gap";
         plan.captured_at_utc = "2026-11-02T23:05:00.000Z";
@@ -340,6 +351,8 @@ void test_capture(const fs::path& samples) {
         bursts[0].camera_serial = "Cam93";
         bursts[0].configuration = config(kW, kH);
         eb::CapturePlan plan;
+        plan.schema_version = 1;
+    plan.schema_version = 1;
         plan.store_root = store;
         plan.capture_id = "bad_serial";
         plan.captured_at_utc = "2026-11-02T23:05:00.000Z";
@@ -374,7 +387,7 @@ void test_binding(const fs::path& samples) {
     // Never selected: every camera not_selected, nothing written.
     {
         const fs::path rec = new_recording("none");
-        const auto r = eb::BindToRecording(rec, {}, recording_cameras({"2010093", "2010094"}));
+        const auto r = eb::BindToRecording(rec, v1_none(), recording_cameras({"2010093", "2010094"}));
         check(r.block == json({{"capture_selected", false},
                                {"cameras", {{"2010093", {{"status", "not_selected"}}}, {"2010094", {{"status", "not_selected"}}}}}}),
               "never selected: capture_selected false, every camera not_selected");
@@ -382,18 +395,18 @@ void test_binding(const fs::path& samples) {
         check(!fs::exists(rec / "empty_background"), "never selected: no empty_background directory");
         write_snapshot_sample(samples, "recording_snapshot_none.json", r.block);
         json written;
-        const auto w = eb::WriteRecordingBinding(rec.string(), {}, recording_cameras({"2010093"}),
+        const auto w = eb::WriteRecordingBinding(rec.string(), v1_none(), recording_cameras({"2010093"}),
                                                  [&](const std::string&, const json& session) {
                                                      written = session;
                                                      return true;
                                                  });
         check(written == json({{"empty_background", w.block}}), "WriteRecordingBinding writes session.empty_background");
         check(!throws([&] {
-                  eb::WriteRecordingBinding(rec.string(), {}, recording_cameras({"2010093"}),
+                  eb::WriteRecordingBinding(rec.string(), v1_none(), recording_cameras({"2010093"}),
                                             [](const std::string&, const json&) { return false; });
               }).empty(),
               "a failed snapshot update throws");
-        check(!throws([&] { eb::BindToRecording(rec, {}, {}); }).empty(), "a recording without cameras is refused");
+        check(!throws([&] { eb::BindToRecording(rec, v1_none(), {}); }).empty(), "a recording without cameras is refused");
         fs::remove_all(rec);
     }
     // Attached: exact copies, descriptor digest.
@@ -557,7 +570,8 @@ void test_binding(const fs::path& samples) {
     }
     // Headless spec key: the absolute path of background.json; naming it is the confirmation.
     {
-        const auto s = eb::SelectionFromHeadlessSpec(receipt.descriptor_path.string());
+        auto s = eb::SelectionFromHeadlessSpec(receipt.descriptor_path.string());
+        s.block_version = 1;
         check(s.selected && s.selection_source == "headless_spec" && s.scene_unchanged_confirmed &&
                   s.descriptor_path == receipt.descriptor_path,
               "fixed.empty_background_capture selects the capture as headless_spec, confirmed");

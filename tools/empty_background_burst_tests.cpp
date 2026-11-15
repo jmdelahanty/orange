@@ -284,6 +284,7 @@ void write_case(std::mt19937& rng)
     const fs::path store = fs::temp_directory_path() / ("orange_eb_burst_test_" + std::to_string(::getpid()));
     fs::remove_all(store);
     eb::CapturePlan plan;
+    plan.schema_version = 1;
     plan.store_root = store;
     plan.capture_id = "burst_test";
     plan.captured_at_utc = "2026-11-15T12:00:00.000Z";
