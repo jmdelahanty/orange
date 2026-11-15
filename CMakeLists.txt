@@ -125,6 +125,7 @@ set(OPENGL_GL_PREFERENCE GLVND)
 find_package(OpenGL REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)  # empty-background PNG (src/empty_background.cpp)
 pkg_check_modules(GLFW3 REQUIRED glfw3)
 
 if(EXISTS "${ORANGE_OPENCV_ROOT}/lib/cmake/opencv4")
@@ -1268,6 +1269,17 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/recording_subject_reference_tests.py"
                 "${CMAKE_BINARY_DIR}/recording_subject_reference_tests")
 
+    # Empty-dish background core (docs/empty_background_capture_design.md): median, levels, PNG,
+    # capture writer, record-start binding; the samples it writes are validated in jsonschema.
+    add_executable(empty_background_tests "tools/empty_background_tests.cpp"
+                   "${SRC_DIR}/empty_background.cpp" "${SRC_DIR}/image_levels.cpp")
+    target_include_directories(empty_background_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(empty_background_tests PRIVATE cxx_std_17)
+    target_link_libraries(empty_background_tests PRIVATE ZLIB::ZLIB)
+    add_test(NAME empty_background_tests COMMAND empty_background_tests)
+    add_test(NAME empty_background_schema_tests
+             COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/empty_background_schema_tests.py"
+                     "${CMAKE_BINARY_DIR}/empty_background_tests")
     add_executable(image_levels_tests "tools/image_levels_tests.cpp" "${SRC_DIR}/image_levels.cpp")
     target_include_directories(image_levels_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(image_levels_tests PRIVATE cxx_std_17)
