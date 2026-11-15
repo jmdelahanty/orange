@@ -4594,7 +4594,6 @@
    "stream_only",
    "stream_start_delay_s",
    "streams",
-   "subject_references",
    "submitted_frames_final",
    "summary_json",
    "supervise_processes",
@@ -6388,6 +6387,13 @@
    ]
   ]
  },
+ "src/session/recording_declaration_artifacts.cpp": {
+  "csv_headers": [],
+  "json_keys": [
+   "subject_references"
+  ],
+  "schemas": []
+ },
  "src/session/recording_observation_binding.cpp": {
   "csv_headers": [],
   "json_keys": [
@@ -6846,7 +6852,6 @@
    "stream_kind",
    "stream_start_delay_seconds",
    "streams",
-   "subject_references",
    "sum_clip_actual_duration_s",
    "summary",
    "summary_json",

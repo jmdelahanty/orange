@@ -1,6 +1,7 @@
 #include "runtime_paths.h"
 #include "timing/phase_timer.h"
 #include "session/recording_session.h"
+#include "session/recording_declaration_artifacts.h"
 #include "outputs/common/csv.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
@@ -3445,22 +3446,14 @@ PreparedRecordingRunStart prepare_recording_run(
             for (int i = 0; i < num_cameras; ++i) {
                 if (!cameras_select || cameras_select[i].record) recording_serials.push_back(cameras_params[i].camera_serial);
             }
-            const auto block = orange::recording::BuildSubjectReferences(
-                state->subject_references.Resolve(recording_serials), state->zebrobot, get_current_utc_timestamp());
-            if (!update_recording_snapshot_session_artifacts(recording_folder, {{"subject_references", block}})) {
-                throw std::runtime_error("failed to persist subject references");
-            }
-            if (state->subject_confirmation.is_object()) {
-                orange::ScopedFsuid fsuid_guard;
-                const std::filesystem::path path =
-                    std::filesystem::path(recording_folder) / "subject_confirmation.json";
-                std::ofstream out(path, std::ios::out | std::ios::trunc);
-                out << state->subject_confirmation.dump(2) << "\n";
-                out.close();
-                if (!out) {
-                    throw std::runtime_error("failed to write " + path.string());
-                }
-            }
+            RecordingDeclarationArtifacts artifacts;
+            artifacts.recording_serials = recording_serials;
+            artifacts.subject_references = state->subject_references;
+            artifacts.zebrobot = state->zebrobot;
+            artifacts.subject_confirmation = state->subject_confirmation;
+            WriteRecordingDeclarationArtifacts(recording_folder, artifacts,
+                                               update_recording_snapshot_session_artifacts,
+                                               get_current_utc_timestamp());
         } catch (const std::exception& ex) {
             prepared.error_message = std::string("subject references: ") + ex.what();
             cleanup_failed_recording_run_start(state, camera_control, recording_folder);

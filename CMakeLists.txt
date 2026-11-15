@@ -457,6 +457,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/session/recording_observation_prearm.cpp"
     "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
+    "${SRC_DIR}/session/recording_declaration_artifacts.cpp"
     "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
@@ -505,6 +506,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/recording_observation_prearm.cpp"
     "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
+    "${SRC_DIR}/session/recording_declaration_artifacts.cpp"
     "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
@@ -1994,6 +1996,15 @@ if(BUILD_TESTING)
     target_compile_features(orange_local_control_tests PRIVATE cxx_std_17)
     target_link_libraries(orange_local_control_tests PRIVATE Threads::Threads)
     add_test(NAME orange_local_control_tests COMMAND orange_local_control_tests)
+
+    add_executable(recording_declaration_artifacts_tests
+        "tools/recording_declaration_artifacts_tests.cpp"
+        "${SRC_DIR}/session/recording_declaration_artifacts.cpp"
+        "${SRC_DIR}/recording_subject_reference.cpp"
+    )
+    target_include_directories(recording_declaration_artifacts_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_declaration_artifacts_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_declaration_artifacts_tests COMMAND recording_declaration_artifacts_tests)
 
     add_executable(session_control_host_tests
         "tools/session_control_host_tests.cpp"

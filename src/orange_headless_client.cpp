@@ -66,6 +66,7 @@
 #include "session/recording_observation_request_artifacts.h"
 #include "session/session_control_host.h"
 #include "session/recording_start_declaration.h"
+#include "session/recording_declaration_artifacts.h"
 #include "outputs/common/digest.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
@@ -5235,37 +5236,24 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 // (bounded) and frozen before the seal; lookup failures are declared.
                 std::vector<std::string> recording_serials;
                 for (int idx : selected_indices) recording_serials.push_back(cameras_params[idx].camera_serial);
-                const auto block = orange::recording::BuildSubjectReferences(
-                    subject_references.Resolve(recording_serials), zebrobot, get_current_utc_timestamp());
-                if (!update_recording_snapshot_session_artifacts(record_folder, {{"subject_references", block}}))
-                    throw std::runtime_error("failed to persist headless subject references");
+                orange::session::RecordingDeclarationArtifacts artifacts;
+                artifacts.recording_serials = recording_serials;
+                artifacts.subject_references = subject_references;
+                artifacts.zebrobot = zebrobot;
                 if (declaration) {
-                    // The same file a GUI start writes (one writer), before the seal.
-                    const nlohmann::json confirmation = orange::session::BuildSubjectConfirmation(
+                    // The same file a GUI start writes (one writer), and the
+                    // exact spec bytes this run was declared in.
+                    artifacts.subject_confirmation = orange::session::BuildSubjectConfirmation(
                         declaration->subject_references, recording_serials, orange::session::kConfirmedByRunSpec,
                         declaration->ToJson(), declaration_requester, get_current_utc_timestamp());
-                    orange::ScopedFsuid fsuid_guard;
-                    const std::filesystem::path path =
-                        std::filesystem::path(record_folder) / "subject_confirmation.json";
-                    std::ofstream out(path, std::ios::out | std::ios::trunc);
-                    out << confirmation.dump(2) << "\n";
-                    out.close();
-                    if (!out) throw std::runtime_error("failed to write " + path.string());
-                    // The spec bytes this recording was declared in, verbatim.
-                    const std::string copy_relative =
+                    artifacts.spec_bytes = declaration_spec_bytes;
+                    artifacts.spec_sha256 = declaration_requester.value("spec_sha256", std::string());
+                    artifacts.spec_copy_relative_path =
                         declaration_requester.value("spec_copy_relative_path", std::string());
-                    if (copy_relative.empty() ||
-                        orange::outputs::sha256_hex(declaration_spec_bytes) !=
-                            declaration_requester.value("spec_sha256", std::string()))
-                        throw std::runtime_error("declared spec copy is inconsistent with its requester");
-                    const std::filesystem::path copy_path = std::filesystem::path(record_folder) / copy_relative;
-                    std::filesystem::create_directories(copy_path.parent_path());
-                    std::ofstream copy(copy_path, std::ios::out | std::ios::trunc | std::ios::binary);
-                    copy.write(declaration_spec_bytes.data(),
-                               static_cast<std::streamsize>(declaration_spec_bytes.size()));
-                    copy.close();
-                    if (!copy) throw std::runtime_error("failed to write " + copy_path.string());
                 }
+                orange::session::WriteRecordingDeclarationArtifacts(
+                    record_folder, artifacts, update_recording_snapshot_session_artifacts,
+                    get_current_utc_timestamp());
             }
             if (enable_recording) {
                 // Same per-camera model, crop-output and pose declarations the GUI
