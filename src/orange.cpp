@@ -1375,8 +1375,11 @@ void gui_drain_local_control_commands(
                 // The server refused a malformed declaration already; parse it
                 // again here so the GUI thread never trusts an unchecked copy.
                 try {
+                    auto declaration =
+                        orange::session::ParseRecordingStartDeclaration(command.params.at("declaration"));
+                    orange::session::CheckDeclarationRoute(declaration, orange::session::kConfirmedByLocalControl);
                     remote = orange::gui::RemoteRecordStart{
-                        orange::session::ParseRecordingStartDeclaration(command.params.at("declaration")),
+                        std::move(declaration),
                         {{"transport", "local_control_socket"},
                          {"peer", command.peer},
                          {"request_id", command.request_id},

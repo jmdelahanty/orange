@@ -2005,7 +2005,11 @@ if(BUILD_TESTING)
     )
     target_include_directories(recording_declaration_artifacts_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_declaration_artifacts_tests PRIVATE cxx_std_17)
+    target_compile_definitions(recording_declaration_artifacts_tests PRIVATE ORANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_test(NAME recording_declaration_artifacts_tests COMMAND recording_declaration_artifacts_tests)
+    add_test(
+        NAME declaration_v2_merge_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/declaration_v2_merge_tests.py" $<TARGET_FILE:orange_client>)
 
     add_executable(session_control_host_tests
         "tools/session_control_host_tests.cpp"

@@ -1,7 +1,16 @@
 # orange.recording_start_declaration v2: scope (draft)
 
-Status: scoping draft for review by experiment-spec (orchard), Palette,
-pancake-plate, citrus-agent and gui-headless-unifier. Nothing here is built.
+Status: BUILT on the Orange dish branch (2026-11-15, Jeremy's go), not
+promoted; agreed with experiment-spec (orchard PR #6 emits it), Palette and
+pancake-plate. Nothing emits v2 in production until Palette's follow-up after
+#442/#443 is deployed and Jeremy says so. First build: a plan reaches Orange
+only as a run spec (merge step `scripts/apply_declaration_to_template.py`);
+the socket accepts v2 only with kind `operator`.
+Field changes since the draft below: `source.session_id` is
+`plan_session_id`; `plan_hash_rule` is exactly
+`orchard_run_plan_v1_plan_sha256`; the plan copy is always `.yaml`;
+subject_references.schema_version 2 is the declaration block's own version,
+not orange.recording_subject_reference v2.
 Jeremy, 2026-11-15: "Lets start trying to scope v2"; he is working with
 experiment-spec on run plans Orange can consume. Field names follow orchard
 run plan v1 and run record v0 (orchard PR #4, branch

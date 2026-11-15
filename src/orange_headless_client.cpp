@@ -283,6 +283,9 @@ struct HeadlessCliOptions {
     std::optional<orange::session::RecordingStartDeclaration> declaration;
     nlohmann::json declaration_requester = nullptr;
     std::string declaration_spec_bytes;  // the spec file's bytes, sealed as run_spec/<sha256>.json
+    // Declaration v2 from an orchard plan: the run_plan/ files, read and
+    // hash-checked at spec load, sealed verbatim at record start.
+    std::vector<orange::session::RecordingDeclarationArtifacts::SealedFile> declaration_files;
     orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
@@ -352,6 +355,7 @@ struct ExperimentSpec {
     std::optional<orange::session::RecordingStartDeclaration> declaration;
     nlohmann::json declaration_requester = nullptr;
     std::string declaration_spec_bytes;
+    std::vector<orange::session::RecordingDeclarationArtifacts::SealedFile> declaration_files;
     orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
@@ -4582,7 +4586,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const orange::recording::ZebrobotLookupConfig& zebrobot = {},
     const orange::session::RecordingStartDeclaration* declaration = nullptr,
     const nlohmann::json& declaration_requester = nullptr,
-    const std::string& declaration_spec_bytes = std::string())
+    const std::string& declaration_spec_bytes = std::string(),
+    const std::vector<orange::session::RecordingDeclarationArtifacts::SealedFile>& declaration_files = {})
 {
     std::cout << "start camera sthread..." << std::endl;
     try {
@@ -5241,6 +5246,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 artifacts.subject_references = subject_references;
                 artifacts.zebrobot = zebrobot;
                 if (declaration) {
+                    // An orchard plan names every recording camera (or refuses).
+                    orange::session::CheckDeclarationCoversCameras(*declaration, recording_serials);
+                    artifacts.declaration_files = declaration_files;
                     // The same file a GUI start writes (one writer), and the
                     // exact spec bytes this run was declared in.
                     artifacts.subject_confirmation = orange::session::BuildSubjectConfirmation(
@@ -8556,6 +8564,57 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                 throw std::runtime_error("fixed.declaration needs fixed.recording_contexts to apply its "
                                          "recording_intent to");
             spec->declaration = orange::session::ParseRecordingStartDeclaration(fixed.at("declaration"));
+            orange::session::CheckDeclarationRoute(*spec->declaration, orange::session::kConfirmedByRunSpec);
+            const auto copies = orange::session::DeclarationFileCopies(*spec->declaration);
+            if (copies.empty()) {
+                if (fixed.contains("declaration_files_root"))
+                    throw std::runtime_error("fixed.declaration_files_root is only for an orchard_run_plan declaration");
+            } else {
+                // The merge step (scripts/apply_declaration_to_template.py) names
+                // the generator's output folder and the committed template.
+                if (!fixed.contains("declaration_files_root") || !fixed.at("declaration_files_root").is_string())
+                    throw std::runtime_error("an orchard_run_plan declaration needs fixed.declaration_files_root");
+                const std::filesystem::path files_root(fixed.at("declaration_files_root").get<std::string>());
+                if (!files_root.is_absolute())
+                    throw std::runtime_error("fixed.declaration_files_root must be an absolute path");
+                if (!fixed.contains("declaration_template") || !fixed.at("declaration_template").is_object())
+                    throw std::runtime_error("an orchard_run_plan declaration needs fixed.declaration_template");
+                const nlohmann::json& tmpl = fixed.at("declaration_template");
+                static const std::regex kHex40("^[0-9a-f]{40}$"), kHex64("^[0-9a-f]{64}$"),
+                    kRepo("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$");
+                const bool template_ok = tmpl.size() == 4 && tmpl.contains("repo") && tmpl.at("repo").is_string() &&
+                    std::regex_match(tmpl.at("repo").get<std::string>(), kRepo) && tmpl.contains("commit") &&
+                    tmpl.at("commit").is_string() && std::regex_match(tmpl.at("commit").get<std::string>(), kHex40) &&
+                    tmpl.contains("path") && tmpl.at("path").is_string() && !tmpl.at("path").get<std::string>().empty() &&
+                    tmpl.at("path").get<std::string>().front() != '/' &&
+                    tmpl.at("path").get<std::string>().find("..") == std::string::npos && tmpl.contains("sha256") &&
+                    tmpl.at("sha256").is_string() && std::regex_match(tmpl.at("sha256").get<std::string>(), kHex64);
+                if (!template_ok)
+                    throw std::runtime_error("fixed.declaration_template must be {repo owner/name, commit 40 hex, "
+                                             "path repo-relative, sha256 64 hex}");
+                std::set<std::string> named;
+                for (const auto& copy : copies) named.insert(copy.relative_path);
+                std::error_code walk_ec;
+                for (std::filesystem::recursive_directory_iterator it(files_root / "run_plan", walk_ec), end;
+                     !walk_ec && it != end; it.increment(walk_ec)) {
+                    if (!it->is_regular_file()) continue;
+                    const std::string relative =
+                        std::filesystem::relative(it->path(), files_root).generic_string();
+                    if (!named.count(relative))
+                        throw std::runtime_error("run_plan file not named by the declaration: " + relative);
+                }
+                for (const auto& copy : copies) {
+                    std::ifstream input(files_root / copy.relative_path, std::ios::binary);
+                    if (!input) throw std::runtime_error("missing declaration file " + copy.relative_path);
+                    std::ostringstream contents;
+                    contents << input.rdbuf();
+                    const std::string bytes = contents.str();
+                    if (orange::outputs::sha256_hex(bytes) != copy.sha256)
+                        throw std::runtime_error("declaration file " + copy.relative_path +
+                                                 " does not hash to the sha256 the declaration names");
+                    spec->declaration_files.push_back({copy.relative_path, bytes, copy.sha256});
+                }
+            }
             spec->subject_references = spec->declaration->subject_references;
             if (spec->recording_contexts.default_context)
                 spec->recording_contexts.default_context->recording_intent = spec->declaration->recording_intent;
@@ -9365,6 +9424,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.declaration = spec.declaration;
                                                             run.options.declaration_requester = spec.declaration_requester;
                                                             run.options.declaration_spec_bytes = spec.declaration_spec_bytes;
+                                                            run.options.declaration_files = spec.declaration_files;
                                                             run.options.zebrobot = spec.zebrobot;
                                                             run.options.master_frame_journal = spec.master_frame_journal;
                                                             run.options.registered_scene_context = spec.registered_scene_context;
@@ -9574,7 +9634,10 @@ int validate_local_experiment_spec_plan(const HeadlessCliOptions& options)
                   << " recording_intent=" << spec.declaration->recording_intent
                   << " spec_sha256=" << spec.declaration_requester.value("spec_sha256", std::string())
                   << " spec_copy=" << spec.declaration_requester.value("spec_copy_relative_path", std::string())
-                  << " spec_copy_bytes=" << spec.declaration_spec_bytes.size() << std::endl;
+                  << " spec_copy_bytes=" << spec.declaration_spec_bytes.size()
+                  << " schema_version=" << spec.declaration->schema_version
+                  << " source_kind=" << (spec.declaration->source_kind().empty() ? "none" : spec.declaration->source_kind())
+                  << " declaration_files=" << spec.declaration_files.size() << std::endl;
     }
     for (const ExperimentRunPlan& run : runs) {
         std::cout << "[EXPERIMENT VALIDATION] run=" << run.run_id
@@ -10315,7 +10378,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.master_frame_journal, options.registered_scene_context, &registered_context, options.media_products,
         options.recording_contexts, options.subject_references, options.zebrobot,
         options.declaration ? &*options.declaration : nullptr, options.declaration_requester,
-        options.declaration_spec_bytes);
+        options.declaration_spec_bytes, options.declaration_files);
 
     if (!started) {
         stop_supervised_external_recorder();

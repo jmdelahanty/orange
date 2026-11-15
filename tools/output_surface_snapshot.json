@@ -6078,6 +6078,7 @@
    "api_schema_version",
    "arm_refused",
    "base_url",
+   "blank",
    "cameras",
    "checked_at_utc",
    "citrus_subject_declaration",
@@ -6920,6 +6921,7 @@
  "src/session/recording_start_declaration.h": {
   "csv_headers": [],
   "json_keys": [
+   "blank",
    "cameras",
    "config",
    "confirmed_at_utc",
@@ -6927,17 +6929,21 @@
    "declaration",
    "declared_by",
    "dish_id",
+   "entry_id",
+   "kind",
    "recording_intent",
+   "repo",
    "requester",
    "schema_id",
    "schema_version",
+   "source",
    "subject_count",
    "subject_references"
   ],
   "schemas": [
    [
     "orange.recording_start_declaration",
-    "1"
+    "schema_version"
    ],
    [
     "orange.recording_subject_confirmation",

@@ -76,10 +76,20 @@ struct ZebrobotLookupConfig {
 struct SubjectDeclaration {
     std::optional<std::string> dish_id;
     std::optional<int> subject_count;   // >= 1 when declared
-    bool empty() const { return !dish_id && !subject_count; }
-    bool operator==(const SubjectDeclaration& o) const { return dish_id == o.dish_id && subject_count == o.subject_count; }
+    // A stated blank (schema_version 2 only, camera entries only): this camera
+    // records no subject on purpose. Exclusive with dish_id and subject_count;
+    // emitted as not_collected / declared_blank.
+    bool blank = false;
+    bool empty() const { return !dish_id && !subject_count && !blank; }
+    bool operator==(const SubjectDeclaration& o) const {
+        return dish_id == o.dish_id && subject_count == o.subject_count && blank == o.blank;
+    }
 };
 struct SubjectReferencesConfig {
+    // 1: dish_id / subject_count. 2 (a start declaration v2's own block, not
+    // orange.recording_subject_reference v2): camera entries may be
+    // {"blank": true}.
+    int schema_version = 1;
     std::optional<SubjectDeclaration> default_declaration;
     std::map<std::string, SubjectDeclaration> cameras;
     bool configured() const { return default_declaration.has_value() || !cameras.empty(); }

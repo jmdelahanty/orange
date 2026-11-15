@@ -101,7 +101,26 @@ void test_configs()
     EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", {{"dish_id", "a b"}}}}); }, "whitespace"));
     EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", {{"dish_id", "a/b"}}}}); }, "delimiter"));
     EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", nullptr}}); }, "null"));
-    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 2}}); }, "schema_version"));
+    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 3}}); }, "schema_version"));
+    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", true}}); }, "schema_version"));
+
+    // v2 (a start declaration v2's own block): a stated blank per camera.
+    const auto v2 = SubjectReferencesConfig::Parse(
+        {{"schema_version", 2}, {"default", {{"dish_id", "19220_1"}, {"subject_count", 3}}},
+         {"cameras", {{"2010096", {{"blank", true}}}, {"2010094", {{"subject_count", 1}}}}}});
+    const auto r2 = v2.Resolve({"2010093", "2010094", "2010096"});
+    EXPECT(r2.at("2010096").blank && !r2.at("2010096").dish_id && !r2.at("2010096").subject_count);  // replaces default
+    EXPECT(!r2.at("2010093").blank && r2.at("2010093").dish_id == "19220_1");
+    EXPECT(r2.at("2010094").dish_id == "19220_1" && r2.at("2010094").subject_count == 1);
+    EXPECT(SubjectReferencesConfig::Parse(v2.ToJson()).ToJson() == v2.ToJson() && v2.ToJson()["schema_version"] == 2);
+    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 1}, {"cameras", {{"x", {{"blank", true}}}}}}); }, "unknown"));
+    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 2}, {"cameras", {{"x", {{"blank", true}, {"subject_count", 1}}}}}}); }, "alone"));
+    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 2}, {"cameras", {{"x", {{"blank", false}}}}}}); }, "blank"));
+    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 2}, {"default", {{"blank", true}}}}); }, "unknown"));
+    const json blank_ref = BuildSubjectReference(r2.at("2010096"), ZebrobotLookupConfig{}, "2026-11-15T00:00:00Z");
+    EXPECT(blank_ref["status"] == "not_collected" && blank_ref["reason"] == "declared_blank" && blank_ref["subject_count"].is_null());
+    SubjectDeclaration undeclared;
+    EXPECT(BuildSubjectReference(undeclared, ZebrobotLookupConfig{}, "t")["reason"] == "no_dish_declared");
 }
 
 void test_builder_outcomes()

@@ -42,6 +42,16 @@ void WriteRecordingDeclarationArtifacts(const std::string& recording_folder,
         }
     }
 
+    for (const auto& file : artifacts.declaration_files) {
+        // Each must be a run_plan/ path named by the sha256 of its bytes.
+        const std::string name = std::filesystem::path(file.relative_path).stem().string();
+        if (file.relative_path.rfind("run_plan/", 0) != 0 || file.relative_path.find("..") != std::string::npos ||
+            name != file.sha256 || outputs::sha256_hex(file.bytes) != file.sha256) {
+            throw std::runtime_error("declaration file " + file.relative_path +
+                                     " is not run_plan/<sha256 of its bytes>");
+        }
+    }
+
     const nlohmann::json block = recording::BuildSubjectReferences(
         artifacts.subject_references.Resolve(artifacts.recording_serials), artifacts.zebrobot, queried_at_utc,
         http_get);
@@ -55,6 +65,9 @@ void WriteRecordingDeclarationArtifacts(const std::string& recording_folder,
     }
     if (spec_copy) {
         write_bytes(root / artifacts.spec_copy_relative_path, artifacts.spec_bytes);
+    }
+    for (const auto& file : artifacts.declaration_files) {
+        write_bytes(root / file.relative_path, file.bytes);
     }
 }
 

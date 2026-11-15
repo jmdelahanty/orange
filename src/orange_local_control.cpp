@@ -785,7 +785,9 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
         // A remote start's declaration is refused here, before it is queued,
         // so the caller learns of a malformed one in the response.
         try {
-            orange::session::ParseRecordingStartDeclaration(parsed.params.at("declaration"));
+            orange::session::CheckDeclarationRoute(
+                orange::session::ParseRecordingStartDeclaration(parsed.params.at("declaration")),
+                orange::session::kConfirmedByLocalControl);
         } catch (const std::exception& ex) {
             set_error(error_out, std::string("start_recording params.declaration: ") + ex.what());
             return false;

@@ -7,6 +7,7 @@
 #include "outputs/common/digest.h"
 
 #include <cstdio>
+#include <functional>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -145,6 +146,100 @@ void test_inconsistent_spec_copy_writes_nothing(const fs::path& dir)
     EXPECT(refused && fs::is_empty(folder), "a copy path other than run_spec/<sha256>.json is refused");
 }
 
+json load_fixture_declaration()
+{
+    const fs::path dir = fs::path(ORANGE_SOURCE_DIR) / "tools/fixtures/declaration_v2/orchard_v2";
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (entry.path().string().size() > 25 &&
+            entry.path().string().rfind(".orange_declaration.json") == entry.path().string().size() - 24) {
+            return json::parse(read_file(entry.path()));
+        }
+    }
+    throw std::runtime_error("fixture declaration not found");
+}
+
+bool refuses(const std::function<void()>& f)
+{
+    try {
+        f();
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
+
+void test_v2_routes_and_coverage()
+{
+    const auto plan = ParseRecordingStartDeclaration(load_fixture_declaration());
+    EXPECT(plan.schema_version == 2 && plan.source_kind() == kSourceKindOrchardRunPlan, "the fixture is a v2 plan");
+    EXPECT(plan.subject_references.cameras.at("2010096").blank, "the fixture states a blank camera");
+    EXPECT(!refuses([&] { CheckDeclarationRoute(plan, kConfirmedByRunSpec); }), "a plan reaches Orange as a run spec");
+    EXPECT(refuses([&] { CheckDeclarationRoute(plan, kConfirmedByLocalControl); }),
+           "a plan over the socket is refused in the first build");
+    EXPECT(refuses([&] { CheckDeclarationRoute(plan, kConfirmedByGuiOperator); }), "never from the panel");
+    EXPECT(!refuses([&] { CheckDeclarationCoversCameras(plan, {"2010093", "2010094", "2010095", "2010096"}); }),
+           "all four cameras listed");
+    EXPECT(refuses([&] { CheckDeclarationCoversCameras(plan, {"2010093", "2010097"}); }),
+           "a recording camera the plan leaves out is refused");
+    EXPECT(DeclarationFileCopies(plan).size() == 3, "three run_plan copies");
+    EXPECT(plan.ToJson() == load_fixture_declaration(), "v2 round-trips unchanged");
+
+    json op = load_fixture_declaration();
+    op["source"] = {{"kind", "operator"}};
+    for (auto& [serial, entry] : op["subject_references"]["cameras"].items()) entry = {{"blank", true}};
+    const auto operator_decl = ParseRecordingStartDeclaration(op);
+    EXPECT(!refuses([&] { CheckDeclarationRoute(operator_decl, kConfirmedByLocalControl); }), "operator over the socket");
+    EXPECT(refuses([&] { CheckDeclarationRoute(operator_decl, kConfirmedByRunSpec); }), "operator is not a run spec");
+    EXPECT(DeclarationFileCopies(operator_decl).empty(), "only a plan names copies");
+    json op_extra = op;
+    op_extra["source"]["repo"] = "a/b";
+    EXPECT(refuses([&] { ParseRecordingStartDeclaration(op_extra); }), "operator source has no other keys");
+    json v2_no_source = op;
+    v2_no_source.erase("source");
+    EXPECT(refuses([&] { ParseRecordingStartDeclaration(v2_no_source); }), "v2 requires source");
+    json bad_ext = load_fixture_declaration();
+    std::string path = bad_ext["source"]["plan_copy_relative_path"];
+    bad_ext["source"]["plan_copy_relative_path"] = path.substr(0, path.size() - 5) + ".yml";
+    EXPECT(refuses([&] { ParseRecordingStartDeclaration(bad_ext); }), "the plan copy is .yaml, exactly");
+    json dotdot = load_fixture_declaration();
+    dotdot["source"]["path"] = "specs/../secret.yaml";
+    EXPECT(refuses([&] { ParseRecordingStartDeclaration(dotdot); }), "no .. in paths");
+
+    const json v1 = {{"schema_id", "orange.recording_start_declaration"}, {"schema_version", 1},
+                     {"declared_by", "delahantyj"}, {"recording_intent", "recording_only"},
+                     {"subject_references", {{"schema_version", 1}}}};
+    const auto v1_decl = ParseRecordingStartDeclaration(v1);
+    EXPECT(v1_decl.ToJson() == v1, "v1 is unchanged byte for byte");
+    EXPECT(!refuses([&] { CheckDeclarationRoute(v1_decl, kConfirmedByLocalControl); }) &&
+               !refuses([&] { CheckDeclarationRoute(v1_decl, kConfirmedByRunSpec); }),
+           "v1 has no source and any route, as before");
+}
+
+void test_writer_seals_run_plan_copies(const fs::path& dir)
+{
+    const fs::path folder = dir / "plan_run";
+    fs::create_directories(folder);
+    const auto plan = ParseRecordingStartDeclaration(load_fixture_declaration());
+    const fs::path fixture_root = fs::path(ORANGE_SOURCE_DIR) / "tools/fixtures/declaration_v2/orchard_v2";
+    RecordingDeclarationArtifacts a = base_artifacts();
+    for (const auto& copy : DeclarationFileCopies(plan)) {
+        a.declaration_files.push_back({copy.relative_path, read_file(fixture_root / copy.relative_path), copy.sha256});
+    }
+    WriteRecordingDeclarationArtifacts(folder.string(), a, fake_snapshot_update(), "t");
+    for (const auto& copy : DeclarationFileCopies(plan)) {
+        EXPECT(read_file(folder / copy.relative_path) == read_file(fixture_root / copy.relative_path),
+               "each run_plan copy is sealed byte for byte");
+    }
+
+    const fs::path bad_folder = dir / "bad_plan_run";
+    fs::create_directories(bad_folder);
+    RecordingDeclarationArtifacts bad = base_artifacts();
+    bad.declaration_files.push_back({"run_plan/" + std::string(64, 'a') + ".json", "{}", std::string(64, 'a')});
+    EXPECT(refuses([&] { WriteRecordingDeclarationArtifacts(bad_folder.string(), bad, fake_snapshot_update(), "t"); }) &&
+               fs::is_empty(bad_folder),
+           "a copy not named by its bytes' sha256 is refused before any write");
+}
+
 }  // namespace
 
 int main()
@@ -156,6 +251,8 @@ int main()
     test_gui_start_writes_no_spec_copy(dir);
     test_undeclared_run_writes_only_the_references(dir);
     test_inconsistent_spec_copy_writes_nothing(dir);
+    test_v2_routes_and_coverage();
+    test_writer_seals_run_plan_copies(dir);
     std::error_code ec;
     fs::remove_all(dir, ec);
     if (g_failures) {

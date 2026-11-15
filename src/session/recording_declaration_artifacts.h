@@ -11,6 +11,8 @@
 //                            BuildSubjectConfirmation), when one exists
 //   run_spec/<sha256>.json   the exact experiment-spec bytes a spec-declared
 //                            run read (requester.spec_copy_relative_path)
+//   run_plan/...             an orchard plan's sealed copies (declaration v2
+//                            source.*_copy_relative_path)
 //
 // No camera, GPU or process state is touched, so tests run it on a
 // temporary folder.
@@ -35,6 +37,15 @@ struct RecordingDeclarationArtifacts {
     std::string spec_bytes;
     std::string spec_sha256;
     std::string spec_copy_relative_path;
+    // Declaration v2 from an orchard plan: the run_plan/ files (plan, canonical
+    // plan JSON, sign-off), each sealed verbatim at its relative path, named by
+    // the sha256 of its bytes.
+    struct SealedFile {
+        std::string relative_path;
+        std::string bytes;
+        std::string sha256;
+    };
+    std::vector<SealedFile> declaration_files;
 };
 
 // Merges a block into the folder's mutable start snapshot (production:

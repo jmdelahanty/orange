@@ -254,13 +254,20 @@ json ZebrobotLookupConfig::ToJson() const
 }
 
 namespace {
-SubjectDeclaration parse_declaration(const json& entry, const std::string& what)
+SubjectDeclaration parse_declaration(const json& entry, const std::string& what, bool blank_allowed = false)
 {
     require(entry.is_object(), what + " must be an object");
     for (auto it = entry.begin(); it != entry.end(); ++it) {
-        require(it.key() == "dish_id" || it.key() == "subject_count", "unknown " + what + " field: " + it.key());
+        require(it.key() == "dish_id" || it.key() == "subject_count" || (blank_allowed && it.key() == "blank"),
+                "unknown " + what + " field: " + it.key());
     }
     SubjectDeclaration d;
+    if (entry.contains("blank")) {
+        require(entry.at("blank").is_boolean() && entry.at("blank").get<bool>() && entry.size() == 1,
+                what + " blank must be true and alone (a stated blank has no dish_id or subject_count)");
+        d.blank = true;
+        return d;
+    }
     if (entry.contains("dish_id")) {
         require(entry.at("dish_id").is_string(), what + " dish_id must be a string (omit the key for no dish)");
         const std::string id = entry.at("dish_id").get<std::string>();
@@ -283,6 +290,7 @@ SubjectDeclaration parse_declaration(const json& entry, const std::string& what)
 }
 json declaration_json(const SubjectDeclaration& d)
 {
+    if (d.blank) return {{"blank", true}};
     json j = json::object();
     if (d.dish_id) j["dish_id"] = *d.dish_id;
     if (d.subject_count) j["subject_count"] = *d.subject_count;
@@ -299,8 +307,10 @@ SubjectReferencesConfig SubjectReferencesConfig::Parse(const json& config)
                 "unknown subject_references config field: " + it.key());
     }
     require(config.contains("schema_version") && config.at("schema_version").is_number_integer() &&
-                config.at("schema_version") == 1,
-            "subject_references config schema_version must be 1");
+                !config.at("schema_version").is_boolean() &&
+                (config.at("schema_version") == 1 || config.at("schema_version") == 2),
+            "subject_references config schema_version must be 1 or 2");
+    c.schema_version = config.at("schema_version").get<int>();
     if (config.contains("default")) {
         require(!config.at("default").is_null(), "subject_references default must be an object or absent, not null");
         c.default_declaration = parse_declaration(config.at("default"), "subject_references default");
@@ -309,7 +319,8 @@ SubjectReferencesConfig SubjectReferencesConfig::Parse(const json& config)
         require(config.at("cameras").is_object(), "subject_references cameras must be an object keyed by serial");
         for (auto it = config.at("cameras").begin(); it != config.at("cameras").end(); ++it) {
             require(!it.key().empty(), "subject_references cameras has an empty serial key");
-            c.cameras[it.key()] = parse_declaration(it.value(), "subject_references camera " + it.key());
+            c.cameras[it.key()] = parse_declaration(it.value(), "subject_references camera " + it.key(),
+                                                    c.schema_version >= 2);
         }
     }
     return c;
@@ -317,7 +328,7 @@ SubjectReferencesConfig SubjectReferencesConfig::Parse(const json& config)
 
 json SubjectReferencesConfig::ToJson() const
 {
-    json j = {{"schema_version", 1}};
+    json j = {{"schema_version", schema_version}};
     if (default_declaration) j["default"] = declaration_json(*default_declaration);
     if (!cameras.empty()) {
         json cams = json::object();
@@ -335,7 +346,9 @@ std::map<std::string, SubjectDeclaration> SubjectReferencesConfig::Resolve(
         SubjectDeclaration d;
         if (default_declaration) d = *default_declaration;
         const auto it = cameras.find(serial);
-        if (it != cameras.end()) {  // field-wise override
+        if (it != cameras.end() && it->second.blank) {
+            d = it->second;  // a stated blank replaces the default entirely
+        } else if (it != cameras.end()) {  // field-wise override
             if (it->second.dish_id) d.dish_id = it->second.dish_id;
             if (it->second.subject_count) d.subject_count = it->second.subject_count;
         }
@@ -454,6 +467,8 @@ json BuildSubjectReference(const SubjectDeclaration& declaration,
 {
     require(!declaration.subject_count || *declaration.subject_count >= 1, "subject_count must be >= 1 when declared");
     const json subject_count = declaration.subject_count ? json(*declaration.subject_count) : json(nullptr);
+    // A stated blank (declaration v2) is not the same absence as "nobody said".
+    if (declaration.blank) return NotCollectedSubjectReference("declared_blank");
     if (!declaration.dish_id) return NotCollectedSubjectReference("no_dish_declared", declaration.subject_count);
     const std::string& dish_id_value = *declaration.dish_id;
     const std::optional<std::string> dish_id = dish_id_value;

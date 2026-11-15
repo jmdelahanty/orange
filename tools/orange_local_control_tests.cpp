@@ -1383,6 +1383,12 @@ void test_start_recording_carries_declaration_and_peer()
     const nlohmann::json refused_identity = send_request(
         socket_path,
         request_json("start_recording", "decl-noid", "decl-op-noid", {{"declaration", no_identity}}));
+    nlohmann::json plan_v2 = blank_recording_only_declaration();
+    plan_v2["schema_version"] = 2;
+    plan_v2["subject_references"]["schema_version"] = 2;
+    plan_v2["source"] = {{"kind", "orange_run_spec"}};
+    const nlohmann::json refused_route = send_request(
+        socket_path, request_json("start_recording", "decl-route", "decl-op-route", {{"declaration", plan_v2}}));
     const nlohmann::json accepted = send_request(
         socket_path, request_json("start_recording", "decl-ok", "decl-op-ok",
                                   {{"declaration", blank_recording_only_declaration()}}));
@@ -1394,6 +1400,10 @@ void test_start_recording_carries_declaration_and_peer()
     require(refused["error"]["message"].get<std::string>().find("recording_intent") != std::string::npos,
             "the refusal names the bad field");
     require(!refused_identity["ok"].get<bool>(), "a declaration without declared_by is refused");
+    require(!refused_route["ok"].get<bool>() &&
+                refused_route["error"]["message"].get<std::string>().find("cannot be declared through") !=
+                    std::string::npos,
+            "a v2 declaration whose kind is not for the socket is refused in the response");
     require(accepted["ok"].get<bool>() && accepted["queued_for_gui_thread"].get<bool>(),
             "a well-formed declaration is queued");
     require(pending.size() == 1, "only the well-formed start is queued");
