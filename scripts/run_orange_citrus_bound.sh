@@ -17,6 +17,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CITRUS_ROOT="${CITRUS_ROOT:-/home/jeremy/citrus}"
+CITRUS_BIN=""
 RIG="omnifin0"
 CANVAS="shadow"
 PROTOCOL=""
@@ -40,6 +41,9 @@ Options:
   --canvas <name>          Citrus canvas (default shadow); Orange uses
                            <citrus>/targets/rigs/<rig>/<canvas>/<canvas>.json
   --expected-arenas <n>    Arenas Citrus must have selected (default 4; Citrus selects all)
+  --citrus-bin <path>      Citrus executable to launch (default <citrus root>/targets/citrus).
+                           The canvas and working directory stay on the citrus root
+                           (CITRUS_ROOT, default ~/citrus); e.g. a branch build for a test.
   --camera-config-dir <d>  Orange camera preset folder (default 100_cam4_ptp_fourcam);
                            e.g. ~/orange_data/config/local/30_cam4_ptp_fourcam
   --camera-config-sha256 <sha256:...>
@@ -64,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --rig) RIG="${2:?}"; shift 2 ;;
     --canvas) CANVAS="${2:?}"; shift 2 ;;
     --expected-arenas) EXPECTED_ARENAS="${2:?}"; shift 2 ;;
+    --citrus-bin) CITRUS_BIN="${2:?--citrus-bin needs a path}"; shift 2 ;;
     --camera-config-dir) CAMERA_CONFIG_DIR="${2:?--camera-config-dir needs a folder}"; shift 2 ;;
     --camera-config-sha256) CAMERA_CONFIG_EXPECTED_SHA256="${2:?--camera-config-sha256 needs a digest}"; shift 2 ;;
     --clip-seconds) CLIP_SECONDS="${2:?--clip-seconds needs a value}"; shift 2 ;;
@@ -78,7 +83,9 @@ done
 PROTOCOL="$(realpath -e "$PROTOCOL")" || { echo "protocol not found" >&2; exit 2; }
 CANVAS_CONFIG="$CITRUS_ROOT/targets/rigs/$RIG/$CANVAS/$CANVAS.json"
 [[ -f "$CANVAS_CONFIG" ]] || { echo "canvas config not found: $CANVAS_CONFIG" >&2; exit 2; }
-[[ -x "$CITRUS_ROOT/targets/citrus" ]] || { echo "Citrus binary not found: $CITRUS_ROOT/targets/citrus" >&2; exit 2; }
+CITRUS_BIN="${CITRUS_BIN:-$CITRUS_ROOT/targets/citrus}"
+CITRUS_BIN="$(realpath -e "$CITRUS_BIN")" || { echo "Citrus binary not found" >&2; exit 2; }
+[[ -x "$CITRUS_BIN" ]] || { echo "Citrus binary not executable: $CITRUS_BIN" >&2; exit 2; }
 [[ -z "$CLIP_SECONDS" || "$CLIP_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "--clip-seconds must be a positive integer: $CLIP_SECONDS" >&2; exit 2; }
 CAMERA_CONFIG_DIR="$(realpath -e "$CAMERA_CONFIG_DIR")" || { echo "camera config folder not found" >&2; exit 2; }
 compgen -G "$CAMERA_CONFIG_DIR/*.json" >/dev/null || { echo "no camera JSONs in $CAMERA_CONFIG_DIR" >&2; exit 2; }
@@ -104,7 +111,7 @@ ARGS=(
   --camera-config-json "$OUT_DIR/camera_config.json"
   --orange-env "ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH=$CANVAS_CONFIG"
   --orange-env "ORANGE_GUI_CONFIG_DIR=$CAMERA_CONFIG_DIR"
-  --citrus-command "env -C $CITRUS_ROOT ./targets/citrus"
+  --citrus-command "env -C $CITRUS_ROOT $CITRUS_BIN"
   --citrus-env XDG_RUNTIME_DIR=/run/user/1000
   --citrus-env ORANGE_UPDATE_TIMING_LOG=1 --citrus-env ORANGE_UPDATE_MANAGER_LOG=1
   --citrus-env CITRUS_GUI_AUTORUN=1
