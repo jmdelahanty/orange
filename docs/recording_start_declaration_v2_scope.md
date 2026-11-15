@@ -207,7 +207,6 @@ is local and proves the copy is the declared plan, without fetching git.
 2. Should Orange refuse an `orchard_run_plan` declaration whose
    `plan_hash_rule` it does not recognise, or record it as given?
 3. (Answered: no subject_type from Orange; Palette and experiment-spec agree.)
-4. The merge step: where the template's identity is recorded in the merged
-   spec (proposal: `fixed.declaration_template` {repo, commit, path,
-   sha256}), and whether the template must be committed and clean (proposal:
-   yes, refused otherwise, as for the plan).
+4. (Decided, Jeremy 2026-11-15) The merge step records the template as
+   `fixed.declaration_template` {repo, commit, path, sha256} and refuses a
+   template that is not committed and clean, as for the plan.
