@@ -4192,6 +4192,7 @@
    "last_mean",
    "last_sample_stream_s",
    "lens_watch",
+   "limit_s",
    "mailbox_publishes",
    "mailbox_torn_reads",
    "main_preview",
@@ -4216,6 +4217,7 @@
    "reads",
    "reason",
    "received_at_utc",
+   "recording_folder",
    "relative_path",
    "request_id",
    "required",
@@ -4237,6 +4239,7 @@
    "timing_windows",
    "transport",
    "valid",
+   "waited_s",
    "yolo_spatial_mask_runtime"
   ],
   "schemas": []

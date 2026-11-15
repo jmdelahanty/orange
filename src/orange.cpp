@@ -5843,6 +5843,18 @@ int main(int /*argc*/, char ** /*args*/) {
     const bool gui_local_control_exit_after_finalize =
         gui_local_control_exit_after_finalize_enabled(&app_storage_config);
     bool gui_local_control_exit_pending_after_finalize = false;
+    // Set with exit_pending_after_finalize when Citrus's receipts are due
+    // (session::CitrusReceiptsExpected): the GUI may stop streaming, but closes
+    // only once they are stored, Citrus has stopped listening for 15 s, or
+    // the limit passes.
+    struct GuiExitReceiptWait {
+        bool active = false;
+        std::string folder;
+        std::chrono::steady_clock::time_point started{};
+        std::chrono::seconds limit{0};
+        std::chrono::steady_clock::time_point last_probe{};
+        std::optional<std::chrono::steady_clock::time_point> citrus_not_listening_since;
+    } gui_exit_receipt_wait;
     bool gui_local_control_exit_stream_stop_requested = false;
     bool gui_signal_exit_pending = false;
     bool gui_signal_recording_stop_requested = false;
@@ -6681,6 +6693,45 @@ int main(int /*argc*/, char ** /*args*/) {
                             {"command_source", gui_local_control_stop_scheduler.source},
                         });
                 }
+            } else if (gui_exit_receipt_wait.active && [&]() {
+                           // true while the exit must keep waiting
+                           const auto now = std::chrono::steady_clock::now();
+                           std::string outcome;
+                           if (gui_control_host.ReceiptsFinalized(gui_exit_receipt_wait.folder)) {
+                               outcome = "finalized";
+                           } else if (now - gui_exit_receipt_wait.started >= gui_exit_receipt_wait.limit) {
+                               outcome = "timeout";
+                           } else if (now - gui_exit_receipt_wait.last_probe >= std::chrono::seconds(1)) {
+                               gui_exit_receipt_wait.last_probe = now;
+                               if (orange::session::probe_citrus_local_control() !=
+                                   orange::session::CitrusLocalControlProbe::kNotListening) {
+                                   gui_exit_receipt_wait.citrus_not_listening_since.reset();
+                               } else if (!gui_exit_receipt_wait.citrus_not_listening_since) {
+                                   gui_exit_receipt_wait.citrus_not_listening_since = now;
+                               } else if (now - *gui_exit_receipt_wait.citrus_not_listening_since >=
+                                          std::chrono::seconds(15)) {
+                                   outcome = "citrus_exited";
+                               }
+                           }
+                           if (outcome.empty()) return true;
+                           const double waited =
+                               std::chrono::duration<double>(now - gui_exit_receipt_wait.started).count();
+                           std::cout << "[GUI][local_control] Citrus's receipts " << outcome << " after "
+                                     << waited << " s; GUI exit proceeds folder="
+                                     << gui_exit_receipt_wait.folder << std::endl;
+                           gui_log_local_control_event(
+                               gui_local_control_event_log_path,
+                               {
+                                   {"event", outcome == "finalized" ? "citrus_receipts_finalized"
+                                                                    : "citrus_receipts_not_received"},
+                                   {"recording_folder", gui_exit_receipt_wait.folder},
+                                   {"reason", outcome},
+                                   {"waited_s", waited},
+                               });
+                           gui_exit_receipt_wait.active = false;
+                           return false;
+                       }()) {
+                // Streaming is stopped; the GUI stays up for Citrus.
             } else {
                 gui_note_local_control_stop_event(
                     &gui_local_control_stop_scheduler,
@@ -8205,6 +8256,26 @@ int main(int /*argc*/, char ** /*args*/) {
                     gui_local_control_stop_scheduler.stop_triggered) {
                     gui_local_control_exit_pending_after_finalize = true;
                     gui_local_control_exit_stream_stop_requested = false;
+                    gui_exit_receipt_wait = {};
+                    if (orange::session::CitrusReceiptsExpected(gui_recording_run.recording_folder)) {
+                        gui_exit_receipt_wait.active = true;
+                        gui_exit_receipt_wait.folder = gui_recording_run.recording_folder;
+                        gui_exit_receipt_wait.started = std::chrono::steady_clock::now();
+                        gui_exit_receipt_wait.last_probe = gui_exit_receipt_wait.started;
+                        gui_exit_receipt_wait.limit =
+                            orange::session::CitrusReceiptWaitLimit(gui_recording_run.recording_folder);
+                        std::cout << "[GUI][local_control] GUI exit waits up to "
+                                  << gui_exit_receipt_wait.limit.count()
+                                  << " s for Citrus's receipts folder=" << gui_exit_receipt_wait.folder
+                                  << std::endl;
+                        gui_log_local_control_event(
+                            gui_local_control_event_log_path,
+                            {
+                                {"event", "exit_waiting_for_citrus_receipts"},
+                                {"recording_folder", gui_exit_receipt_wait.folder},
+                                {"limit_s", gui_exit_receipt_wait.limit.count()},
+                            });
+                    }
                     gui_note_local_control_stop_event(
                         &gui_local_control_stop_scheduler,
                         camera_control->subscribe

@@ -29,6 +29,20 @@
 
 namespace orange::session {
 
+// Whether Citrus's receipts are due for a finished recording: its binding is
+// required (recording_intent stimulus_experiment) and the pre-arm decision is
+// accepted_pending_finalization. A process that exits after such a recording
+// waits for them (ReceiptsFinalized) first; the GUI that exited straight
+// after finalize on 2026-11-14 (2026_11_14_22_18_52) left Citrus's arenas 3/4
+// sealed FAILED and no receipts.
+bool CitrusReceiptsExpected(const std::string& recording_folder);
+
+// The longest such a wait should take, from Citrus's own budget (citrus main
+// be2cd47): up to 330 s per arena for the final recording_session.json, then
+// delivery within 120 s + 3 s per 100 MB of the bytes its receipts cover. The
+// recording folder's size bounds those bytes; 60 s of margin.
+std::chrono::seconds CitrusReceiptWaitLimit(const std::string& recording_folder);
+
 // ORANGE_GUI_LOCAL_CONTROL_SOCKET, else ORANGE_LOCAL_CONTROL_SOCKET, else
 // /tmp/orange_local_control.sock.
 std::string LocalControlSocketPathFromEnvironment();

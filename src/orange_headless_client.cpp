@@ -12315,7 +12315,7 @@ bool wait_for_headless_citrus_receipts(
     const std::string lifecycle =
         decision.is_object() ? decision.value("lifecycle_status", std::string()) : std::string();
     nlohmann::json receipts = {{"binding_mode", mode}, {"pre_arm_lifecycle_status", lifecycle}};
-    if (mode != "required" || lifecycle != "accepted_pending_finalization") {
+    if (!orange::session::CitrusReceiptsExpected(recording_folder)) {
         receipts["status"] = "not_expected";
         if (run_entry) (*run_entry)["citrus_receipts"] = receipts;
         return true;

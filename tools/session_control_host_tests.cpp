@@ -7,6 +7,8 @@
 // verification. No camera, Citrus or recording.
 
 #include "session/session_control_host.h"
+#include "recording_context.h"
+#include "session/recording_observation_prearm.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -257,6 +259,50 @@ void TestHostOverSocket()
     fs::remove_all(dir, ec);
 }
 
+void TestCitrusReceiptsExpected()
+{
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("orange_receipts_expected_" + std::to_string(::getpid()));
+    fs::remove_all(dir);
+    auto folder_with = [&](const std::string& name, const std::string& intent, const char* lifecycle) {
+        const fs::path folder = dir / name;
+        fs::create_directories(folder);
+        const auto contexts = orange::recording::RecordingContextsConfig::Parse(
+            {{"schema_version", 1},
+             {"default", {{"behavior_mode", "free"}, {"data_origin", "acquired"},
+                          {"recording_intent", intent}, {"recording_type", "behavior"}}}});
+        std::ofstream(folder / "recording_snapshot_start.json")
+            << json{{"session", {{"recording_contexts", orange::recording::EmittedRecordingContextsJson(
+                                                            contexts.Resolve({"2010093"}))}}}}.dump();
+        if (lifecycle) {
+            const fs::path decision = folder / recording_observation_pre_arm_decision_relative_path(
+                intent == "stimulus_experiment" ? "required" : "not_applicable");
+            fs::create_directories(decision.parent_path());
+            std::ofstream(decision) << json{{"lifecycle_status", lifecycle}}.dump();
+        }
+        return folder.string();
+    };
+    EXPECT(CitrusReceiptsExpected(folder_with("bound", "stimulus_experiment", "accepted_pending_finalization")),
+           "a bound stimulus experiment waits for receipts");
+    EXPECT(!CitrusReceiptsExpected(folder_with("refused", "stimulus_experiment", "refused")),
+           "a refused pre-arm expects none");
+    EXPECT(!CitrusReceiptsExpected(folder_with("no_decision", "stimulus_experiment", nullptr)),
+           "no pre-arm decision expects none");
+    EXPECT(!CitrusReceiptsExpected(folder_with("recording_only", "recording_only", "accepted_pending_finalization")),
+           "a recording_only recording never waits");
+    EXPECT(!CitrusReceiptsExpected((dir / "missing").string()), "a missing folder expects none");
+
+    const std::string sized = folder_with("sized", "stimulus_experiment", "accepted_pending_finalization");
+    const auto base = CitrusReceiptWaitLimit(sized).count();
+    EXPECT(base == 330 + 120 + 3 + 60, "a tiny folder gets Citrus's fixed budget plus one 100 MB step");
+    std::ofstream(fs::path(sized) / "big.bin").close();
+    fs::resize_file(fs::path(sized) / "big.bin", 1000ULL * 1000ULL * 1000ULL);  // sparse 1 GB
+    EXPECT(CitrusReceiptWaitLimit(sized).count() == 330 + 120 + 3 * 11 + 60,
+           "3 s per started 100 MB of the folder");
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 }  // namespace
 
 int main()
@@ -264,6 +310,7 @@ int main()
     TestDecideStop();
     TestNaming();
     TestHostOverSocket();
+    TestCitrusReceiptsExpected();
     if (g_failures) {
         std::fprintf(stderr, "session_control_host_tests: %d failure(s)\n", g_failures);
         return 1;

@@ -1,8 +1,11 @@
 #include "session/session_control_host.h"
+#include "recording_context.h"
+#include "session/recording_observation_prearm.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <utility>
 
@@ -234,6 +237,36 @@ bool SessionControlHost::AfterFinalized(
     }
     receipts_changed_.notify_all();
     return true;
+}
+
+bool CitrusReceiptsExpected(const std::string& recording_folder)
+{
+    std::string mode_error;
+    const std::string mode = orange::recording::BindingModeFromRecordingIntent(recording_folder, &mode_error);
+    if (mode != "required") return false;
+    std::ifstream in(std::filesystem::path(recording_folder) /
+                     recording_observation_pre_arm_decision_relative_path(mode));
+    if (!in) return false;
+    const nlohmann::json decision = nlohmann::json::parse(in, nullptr, false);
+    return decision.is_object() &&
+           decision.value("lifecycle_status", std::string()) == "accepted_pending_finalization";
+}
+
+std::chrono::seconds CitrusReceiptWaitLimit(const std::string& recording_folder)
+{
+    std::uintmax_t bytes = 0;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(recording_folder, ec), end; !ec && it != end;
+         it.increment(ec)) {
+        std::error_code size_ec;
+        if (it->is_regular_file(size_ec)) {
+            const std::uintmax_t size = it->file_size(size_ec);
+            if (!size_ec) bytes += size;
+        }
+    }
+    constexpr std::uintmax_t kHundredMb = 100ULL * 1000ULL * 1000ULL;
+    const std::uintmax_t per_100mb = (bytes + kHundredMb - 1) / kHundredMb;
+    return std::chrono::seconds(330 + 120 + 3 * static_cast<long long>(per_100mb) + 60);
 }
 
 bool SessionControlHost::ReceiptsFinalized(const std::string& recording_folder) const
