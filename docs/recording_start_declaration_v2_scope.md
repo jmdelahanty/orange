@@ -180,6 +180,18 @@ Palette's requirements (2026-11-15):
   gate. A cryptographic signature (pinned key and algorithm) would be a
   separate decision for Jeremy.
 
+pancake-plate (2026-11-15): the copies are written as the exact bytes
+received, never re-serialized by Orange (Palette re-canonicalizes and
+compares). A third copy is proposed, not decided:
+`plan_canonical_copy_relative_path` = `run_plan/<plan_sha256>.json`, the
+canonical JSON `plan_sha256` is computed over, so Palette can verify it
+without parsing YAML.
+
+Orange's rule, so it holds whatever files the generator adds: Orange copies
+the generator's `run_plan/` folder as is and refuses unless every file in it
+is named `<sha256 of its bytes>.<ext>` and every `*_copy_relative_path` in
+`source` names one of them.
+
 How the bytes reach Orange (proposal): Orange never reads orchard. The
 generator writes both files beside its `orange_declaration.json` (`--out`
 DIR); the merge step names them in the merged run spec; orange_client reads
