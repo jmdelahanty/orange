@@ -362,6 +362,9 @@ void materializes_contract_and_supervisor_plan()
             "materialized contract should require returned-NVENC frame identity proof");
     require(contract.value("preserve_shard_mp4s", true) == false,
             "materialized contract should delete shard MP4s by default after merge");
+    require(contract.value("require_video_sanity", true) == false,
+            "a GUI contract must not require Cam*_external_video_sanity.json: the GUI checks its "
+            "videos after the seal, outside the folder");
     require(contract.contains("storage_budget") && contract["storage_budget"].is_object(),
             "materialized contract should persist the duration-aware storage policy");
     require(contract["storage_budget"].value("reserved_free_bytes", 0ULL) ==

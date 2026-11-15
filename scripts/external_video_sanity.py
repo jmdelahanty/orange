@@ -7,58 +7,47 @@ import argparse
 import json
 import math
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 DEFAULT_FFMPEG = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffmpeg")
+DEFAULT_MAX_BLACK_FRACTION = 0.98
+DEFAULT_MIN_STDDEV = 5.0
 
 
 def default_tool(path: Path, fallback: str) -> str:
     return str(path) if path.exists() else fallback
 
 
-def write_result(path: Path, result: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+def _integer(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
 
 
-def fail(summary_path: Path, mp4_path: Path, status: str, detail: str) -> None:
-    write_result(
-        summary_path,
-        {
-            "schema_version": 1,
-            "video_path": str(mp4_path),
-            "content_checked": True,
-            "content_valid": False,
-            "status": status,
-            "detail": detail,
-            "sampled_frames": [],
-        },
-    )
-    raise SystemExit(f"{status}: {detail}")
+def video_content_sanity(
+    mp4_path: Path,
+    ffprobe: str,
+    ffmpeg: str,
+    max_black_fraction: float = DEFAULT_MAX_BLACK_FRACTION,
+    min_stddev: float = DEFAULT_MIN_STDDEV,
+) -> dict[str, Any]:
+    """Probe the MP4 and decode five sampled frames; the one video check.
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mp4", type=Path, help="MP4 file to inspect.")
-    parser.add_argument("summary_json", type=Path, help="Output video sanity JSON.")
-    parser.add_argument("--ffprobe", default=default_tool(DEFAULT_FFPROBE, "ffprobe"))
-    parser.add_argument("--ffmpeg", default=default_tool(DEFAULT_FFMPEG, "ffmpeg"))
-    return parser.parse_args()
-
-
-def main() -> int:
-    args = parse_args()
-    mp4_path = args.mp4
-    summary_path = args.summary_json
-
+    Used by this script (headless recordings: Cam*_external_video_sanity.json
+    next to the recorder outputs) and by validate_gui_ptp_recording.py (GUI
+    recordings, after the folder is sealed). Never raises for a bad video: the
+    result's status says what failed and content_valid is False.
+    """
     if not mp4_path.exists() or mp4_path.stat().st_size == 0:
-        fail(summary_path, mp4_path, "missing_video", "MP4 output is missing or empty")
+        return {"status": "missing_video", "content_valid": False, "detail": "MP4 is missing or empty"}
 
     probe_cmd = [
-        args.ffprobe,
+        ffprobe,
         "-v",
         "error",
         "-select_streams",
@@ -78,41 +67,41 @@ def main() -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            timeout=30,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        fail(summary_path, mp4_path, "ffprobe_failed", str(exc))
-
-    metadata = json.loads(probe.stdout)
-    streams = metadata.get("streams") or []
-    if not streams:
-        fail(summary_path, mp4_path, "no_video_stream", "ffprobe found no video stream")
-
-    stream = streams[0]
-    width = int(stream.get("width") or 0)
-    height = int(stream.get("height") or 0)
-    if width <= 0 or height <= 0:
-        fail(summary_path, mp4_path, "invalid_dimensions", f"width={width} height={height}")
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return {"status": "ffprobe_failed", "content_valid": False, "detail": str(exc)}
 
     try:
-        frame_count = int(stream.get("nb_frames") or 0)
-    except (TypeError, ValueError):
-        frame_count = 0
+        metadata = json.loads(probe.stdout)
+    except json.JSONDecodeError as exc:
+        return {"status": "ffprobe_json_failed", "content_valid": False, "detail": str(exc)}
 
+    streams = metadata.get("streams") or []
+    if not streams:
+        return {"status": "no_video_stream", "content_valid": False, "detail": "ffprobe found no video stream"}
+    stream = streams[0]
+    width = _integer(stream.get("width"))
+    height = _integer(stream.get("height"))
+    if width <= 0 or height <= 0:
+        return {
+            "status": "invalid_dimensions",
+            "content_valid": False,
+            "detail": f"width={width} height={height}",
+            "width": width,
+            "height": height,
+        }
+
+    frame_count = _integer(stream.get("nb_frames"))
     if frame_count > 0:
-        sample_indices = sorted(
-            {
-                0,
-                max(0, frame_count // 4),
-                max(0, frame_count // 2),
-                max(0, (3 * frame_count) // 4),
-                max(0, frame_count - 1),
-            }
-        )
+        sample_indices = sorted({0, frame_count // 4, frame_count // 2, (3 * frame_count) // 4, frame_count - 1})
     else:
         sample_indices = [0]
 
-    # Seek to each sample instead of decoding the whole file through a select
-    # filter, which does not scale to long recordings (2026-09-21).
+    # Seek to each sample instead of decoding the whole file through a
+    # select filter: a 10 min 4512x4512 HEVC recording took longer than the
+    # 120 s budget to decode linearly (2026-09-21). The seek lands on the
+    # preceding keyframe and decodes forward to the requested frame.
     frame_rate_text = str(stream.get("r_frame_rate") or "100/1")
     try:
         num, den = frame_rate_text.split("/")
@@ -122,7 +111,7 @@ def main() -> int:
     decoded = b""
     for index in sample_indices:
         decode_cmd = [
-            args.ffmpeg,
+            ffmpeg,
             "-v",
             "error",
             "-ss",
@@ -143,18 +132,19 @@ def main() -> int:
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                timeout=120,
             ).stdout
-        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-            fail(summary_path, mp4_path, "decode_failed", f"frame {index}: {exc}")
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            return {"status": "decode_failed", "content_valid": False, "detail": f"frame {index}: {exc}"}
 
     frame_bytes = width * height
     decoded_frames = len(decoded) // frame_bytes if frame_bytes else 0
     if decoded_frames == 0:
-        fail(summary_path, mp4_path, "decode_empty", "ffmpeg returned no decoded sample frames")
+        return {"status": "decode_empty", "content_valid": False, "detail": "ffmpeg returned no sample frames"}
 
     measurements: list[dict[str, Any]] = []
-    for i in range(decoded_frames):
-        frame = decoded[i * frame_bytes : (i + 1) * frame_bytes]
+    for index in range(decoded_frames):
+        frame = decoded[index * frame_bytes : (index + 1) * frame_bytes]
         hist = [0] * 256
         for value in frame:
             hist[value] += 1
@@ -163,38 +153,31 @@ def main() -> int:
         total_sq = sum(value * value * count for value, count in enumerate(hist))
         mean = total / pixel_count
         variance = max(0.0, total_sq / pixel_count - mean * mean)
-        min_value = next(value for value, count in enumerate(hist) if count)
-        max_value = 255 - next(value for value, count in enumerate(reversed(hist)) if count)
         measurements.append(
             {
-                "requested_frame_index": sample_indices[min(i, len(sample_indices) - 1)],
+                "requested_frame_index": sample_indices[min(index, len(sample_indices) - 1)],
                 "mean": mean,
                 "stddev": math.sqrt(variance),
-                "min": min_value,
-                "max": max_value,
+                "min": next(value for value, count in enumerate(hist) if count),
+                "max": 255 - next(value for value, count in enumerate(reversed(hist)) if count),
                 "black_fraction_lt8": sum(hist[:8]) / pixel_count,
                 "white_fraction_gt247": sum(hist[248:]) / pixel_count,
                 "decoded_bytes": pixel_count,
             }
         )
 
-    max_black_fraction = max(item["black_fraction_lt8"] for item in measurements)
+    max_black = max(item["black_fraction_lt8"] for item in measurements)
     max_stddev = max(item["stddev"] for item in measurements)
     mean_luma = sum(item["mean"] for item in measurements) / len(measurements)
-    content_valid = max_black_fraction < 0.98 and max_stddev >= 5.0
-    if max_black_fraction >= 0.98:
+    if max_black >= max_black_fraction:
         status = "black_frame"
-    elif max_stddev < 5.0:
+    elif max_stddev < min_stddev:
         status = "flat_frame"
     else:
         status = "pass"
-
-    result = {
-        "schema_version": 1,
-        "video_path": str(mp4_path),
-        "content_checked": True,
-        "content_valid": content_valid,
+    return {
         "status": status,
+        "content_valid": status == "pass",
         "width": width,
         "height": height,
         "nb_frames": frame_count,
@@ -202,21 +185,50 @@ def main() -> int:
         "sampled_frame_count": len(measurements),
         "mean_luma": mean_luma,
         "max_stddev": max_stddev,
-        "max_black_fraction_lt8": max_black_fraction,
+        "max_black_fraction_lt8": max_black,
         "thresholds": {
-            "max_black_fraction_lt8": 0.98,
-            "min_max_stddev": 5.0,
+            "max_black_fraction_lt8": max_black_fraction,
+            "min_max_stddev": min_stddev,
         },
         "sampled_frames": measurements,
     }
-    write_result(summary_path, result)
+
+
+def write_result(path: Path, result: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mp4", type=Path, help="MP4 file to inspect.")
+    parser.add_argument("summary_json", type=Path, help="Output video sanity JSON.")
+    parser.add_argument("--ffprobe", default=default_tool(DEFAULT_FFPROBE, "ffprobe"))
+    parser.add_argument("--ffmpeg", default=default_tool(DEFAULT_FFMPEG, "ffmpeg"))
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    sanity = video_content_sanity(args.mp4, args.ffprobe, args.ffmpeg)
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "video_path": str(args.mp4),
+        "content_checked": True,
+        **sanity,
+    }
+    result.setdefault("sampled_frames", [])
+    write_result(args.summary_json, result)
+    if "detail" in sanity:
+        print(f"{sanity['status']}: {sanity['detail']}", file=sys.stderr)
+        return 1
     print(
         "external_video_sanity "
-        f"status={status} frames={frame_count} samples={len(measurements)} "
-        f"mean_luma={mean_luma:.3f} max_stddev={max_stddev:.3f} "
-        f"max_black_fraction_lt8={max_black_fraction:.6f}"
+        f"status={sanity['status']} frames={sanity['nb_frames']} samples={sanity['sampled_frame_count']} "
+        f"mean_luma={sanity['mean_luma']:.3f} max_stddev={sanity['max_stddev']:.3f} "
+        f"max_black_fraction_lt8={sanity['max_black_fraction_lt8']:.6f}"
     )
-    return 0 if content_valid else 1
+    return 0 if sanity["content_valid"] else 1
 
 
 if __name__ == "__main__":

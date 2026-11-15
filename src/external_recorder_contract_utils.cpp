@@ -254,7 +254,13 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         "artifact_root",
         (std::filesystem::path(input.recording_folder) / "external_recorder").string());
     set_json_default(&contract, "require_summary", true);
-    set_json_default(&contract, "require_video_sanity", true);
+    // The GUI checks its videos after the folder is sealed, in the background
+    // validator (scripts/validate_gui_ptp_recording.py, result outside the
+    // folder), with the same function headless runs before its seal
+    // (scripts/external_video_sanity.py video_content_sanity). No
+    // Cam*_external_video_sanity.json is written into a GUI folder, so the
+    // contract must not require one.
+    set_json_default(&contract, "require_video_sanity", false);
     bool rolling_requested = input.recording_control.rolling_requested();
     if (!input.recording_control.enabled() &&
         contract.contains("recording_control") &&
