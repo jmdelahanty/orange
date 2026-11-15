@@ -144,8 +144,19 @@ Jeremy, 2026-11-15:
 - The model radius is R + ec·cos2t + es·sin2t, because the rim is a slight
   ellipse in the image (2-10 px: lens distortion or a small tilt).
 - A robust free-radius fit decides which points belong to the rim. Its band
-  is 3 × 1.4826 × MAD, clamped to 3-12 px: the IR rim edge wanders ±8-12 px
-  around a circle, and the floor edge is 16-32 px inside.
+  is set once, from the provisional fit over every edge point, and held while
+  the fit is refined: clamp(max(4 × median |residual|, 8 px), 8 px, 12 px).
+  The floor edge is 16-32 px inside, so the 12 px cap keeps it out.
+- Why that rule (fixed 2026-11-15 after the rig trial `20261115T211404Z`):
+  the first rule recomputed 3 × 1.4826 × MAD from the trimmed points every
+  round, so it shrank with them. On 2010093 it fell to 4.37 px. The wall-top
+  edge has coherent arcs 5-10 px off the ellipse model (not random scatter:
+  2010093's 21° right arc sits +5..+10 px, median +7.7). The fit dropped that
+  arc and was refused at coverage 0.892, although its centre was good (fixed −
+  free 0.20 px). The coordinator's first proposal (2.5 × median, 6 px floor)
+  is tighter than the old rule on most frames and makes things worse. On the
+  11-15 gray frame of 2010093 it gives coverage 0.900 with a 33° gap, and on
+  the trial's 2010095 0.856. The 8 px floor is what covers the coherent arcs.
 - The **primary fit** fixes R at the known value and fits the centre (and
   ellipticity) on those inliers.
 - Reported: centre σ from σ²(JᵀJ)⁻¹, the free fit, |fixed − free centre|, arc
@@ -174,6 +185,51 @@ Jeremy, 2026-11-15:
 - **Against the 11-04 operator-accepted centres:** 2-12 px. Their radii were
   8-30 px larger than the known radius.
 
+**Tolerance rule, all twelve fits** (four rig-trial fits recomputed from their
+saved edge points, the eight frames above rerun with the CLI). "Before" is
+the first rule; "after" is the provisional-once rule with k 4, floor 8, cap
+12. Centre shift is fixed centre after minus before.
+
+| Fit | Camera | Provisional median px | Tolerance px before → after | Coverage before → after | Largest gap before → after | Centre shift px |
+|---|---|---|---|---|---|---|
+| rig trial 11-15 21:14Z | 2010093 | 1.72 | 4.37 → 8.00 | **0.892 (refused) → 0.961** | 21° → 7° | 0.16 |
+| | 2010094 | 1.45 | 5.46 → 8.00 | 0.969 → 0.972 | 5° → 5° | 0.14 |
+| | 2010095 | 2.94 | 12.0 → 11.8 | 0.994 → 0.994 | 2° → 2° | 0.00 |
+| | 2010096 | 1.23 | 4.75 → 8.00 | 0.939 → 0.986 | 11° → 1° | 0.16 |
+| 11-04 IR | 2010093 | 4.99 | 12.0 → 12.0 | 0.914 → 0.914 | 5° → 5° | 0.00 |
+| | 2010094 | 5.20 | 12.0 → 12.0 | 0.947 → 0.947 | 2° → 2° | 0.00 |
+| | 2010095 | 1.06 | 3.85 → 8.00 | 0.989 → 0.992 | 1° → 1° | 0.06 |
+| | 2010096 | 2.18 | 9.82 → 8.74 | 0.961 → 0.953 | 3° → 3° | 0.23 |
+| 11-15 gray 64 | 2010093 | 2.06 | 9.18 → 8.25 | 1.000 → 0.997 | 0° → 1° | 0.09 |
+| | 2010094 | 1.87 | 7.08 → 8.00 | 0.931 → 0.933 | 13° → 13° (bottom, frame) | 0.09 |
+| | 2010095 | 1.77 | 7.49 → 8.00 | 0.983 → 0.981 | 2° → 3° | 0.03 |
+| | 2010096 | 2.42 | 10.3 → 9.68 | 0.983 → 0.967 | 2° → 2° | 0.10 |
+
+Every fit passes, with a lowest coverage of 0.914 (11-04 IR 2010093, at the
+cap and unchanged). The fixed − free centre is ≤ 0.27 px everywhere, and no
+centre moves by more than 0.23 px. The other guards are unchanged.
+
+**Review images** (`src/daily_rim_fit_images.{h,cpp}`) sit beside each
+`daily_rim_fit.json`, refused fits included:
+- `daily_rim_frame.png`: the grey frame the fit ran on, native and lossless.
+- `daily_rim_fit_overlay.png`: the view at 1/4 with:
+  - the fixed fit (white) and the free fit (magenta);
+  - inlier points (green) and rejected points (red);
+  - every uncovered arc (orange), labelled with side, width and reason;
+  - a summary strip.
+- `daily_rim_fit_zoom.png`: 320 × 320 native-px crops at the top, right,
+  bottom and left, shown ×2, in the accuracy tool's layout.
+
+The autorun writes them on worker threads in stage `saving_rim_images`
+(about 1 s per camera). Their paths are listed in:
+- the pending-confirmation file (v2, `targets[].images`);
+- `awaiting.rim_images` in the status;
+- the launcher's AWAITING block;
+- the result's `rim_fits.<serial>.images`.
+
+A fit is not offered for confirmation if its images failed
+(`rim_images_write_failed`). The CLI takes `--images <dir>`.
+
 **Refusal limits** (recorded in each fit's output):
 - inliers ≥ 180;
 - coverage ≥ 0.90;
@@ -193,7 +249,15 @@ Synthetic tests (`tools/daily_rim_fit_tests.cpp`, ctest `daily_rim_fit_tests`):
 - a short arc (refused);
 - a floor-edge decoy 28 px inside (the wall top is chosen);
 - a known radius 30 px off (refused, with the radius disagreement named);
-- a filters-off step edge.
+- a filters-off step edge;
+- a coherent +7 px arc over 25° on a sharp edge (the rig-trial case): kept by
+  the rule, and lost with a 3 px band, which reproduces the refusal.
+
+`tools/daily_rim_fit_images_tests.cpp` (ctest `daily_rim_fit_images_tests`):
+- the frame PNG is byte-identical;
+- the overlay and zoom have the expected sizes;
+- a refused fit still gets its frame and overlay;
+- a size mismatch writes nothing.
 
 ## 4. The autorun: design and recommendation
 
@@ -229,11 +293,13 @@ Sequence (`ORANGE_GUI_DAILY_REGISTRATION_AUTORUN=1`, launcher
 4. **Fit:** the rim fit runs per camera, and any refusal aborts the
    transaction (Citrus abort, restore). Otherwise each target's accepted
    circle becomes (fixed-radius centre, known radius). Writes
-   `targets/<serial>_<arena>/daily_rim_fit.json` and
-   `autorun_pending_confirmation.json` in the transaction dir, then
+   `targets/<serial>_<arena>/daily_rim_fit.json` and the three review
+   images (off the GUI thread; refused fits too), then
+   `autorun_pending_confirmation.json` in the transaction dir, and then
    **waits**. Status: `status.local_control.daily_registration_autorun`, stage
    `awaiting_operator_confirmation`.
-5. **Confirm:** the person reads the summary and the transaction overlays,
+5. **Confirm:** the person reads the summary and looks at each camera's
+   overlay and zoom images (paths printed by the launcher),
    then sends `confirm_daily_registration` (local control) with
    `{transaction_id, step: "rims_and_acceptance", declared_by}`:
    - it is mutating and needs the GUI start permission;

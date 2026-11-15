@@ -2,9 +2,13 @@
 
 #include "gui/spatial_layout/state.h"
 #include "gui/daily_registration_autorun.h"
+#include "daily_rim_fit_images.h"
 #include "json.hpp"
 
+#include <future>
 #include <string>
+#include <utility>
+#include <vector>
 
 class SpatialSnapshotWorker;
 
@@ -52,6 +56,10 @@ struct DailyRegistrationAutorunState {
     nlohmann::json fit_summaries = nlohmann::json::object();
     nlohmann::json physical_state_declaration = nullptr;
     nlohmann::json confirmation = nullptr;
+    // Rim review images, written off the GUI thread after the fits (refused fits too).
+    std::vector<std::pair<std::string, std::shared_future<orange::daily_rim_fit::FitImages>>> rim_image_jobs;
+    nlohmann::json pending_targets = nlohmann::json::array();
+    std::string rim_fit_refusal;   // first refusal of the fits, applied once the images are written
 };
 
 // Returns true when the GUI should close (the run finished and the config asks to exit).

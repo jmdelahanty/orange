@@ -1,9 +1,12 @@
 // Run the known-radius daily rim fit on a saved 8-bit grey PNG (evidence, dry checks).
 //
-//   daily_rim_fit_cli <png> <camera_serial> <fish_plane_scale.json> <start_cx> <start_cy> [--points]
+//   daily_rim_fit_cli <png> <camera_serial> <fish_plane_scale.json> <start_cx> <start_cy>
+//                     [--points] [--images <dir>]
 //
-// Prints the fit JSON (src/daily_rim_fit.h). Read-only: writes nothing.
+// Prints the fit JSON (src/daily_rim_fit.h). Writes nothing unless --images names a
+// directory for the review images (src/daily_rim_fit_images.h).
 #include "daily_rim_fit.h"
+#include "daily_rim_fit_images.h"
 
 #include <opencv2/imgcodecs.hpp>
 
@@ -14,7 +17,8 @@
 int main(int argc, char** argv)
 {
     if (argc < 6) {
-        std::cerr << "usage: daily_rim_fit_cli <png> <camera_serial> <fish_plane_scale.json> <start_cx> <start_cy> [--points]\n";
+        std::cerr << "usage: daily_rim_fit_cli <png> <camera_serial> <fish_plane_scale.json> <start_cx> <start_cy>"
+                     " [--points] [--images <dir>]\n";
         return 2;
     }
     const cv::Mat image = cv::imread(argv[1], cv::IMREAD_GRAYSCALE);
@@ -32,8 +36,25 @@ int main(int argc, char** argv)
     const fit::Result result = fit::fit_known_radius(image.data, image.cols, image.rows,
                                                      std::atof(argv[4]), std::atof(argv[5]),
                                                      known.radius_px, config);
-    nlohmann::json out = fit::to_json(result, config, 1.0 / known.px_per_mm,
-                                      argc > 6 && std::string(argv[6]) == "--points");
+    bool points = false;
+    std::string images_dir;
+    for (int i = 6; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--points") {
+            points = true;
+        } else if (arg == "--images" && i + 1 < argc) {
+            images_dir = argv[++i];
+        } else {
+            std::cerr << "unknown argument: " << arg << "\n";
+            return 2;
+        }
+    }
+    nlohmann::json out = fit::to_json(result, config, 1.0 / known.px_per_mm, points);
+    if (!images_dir.empty()) {
+        const std::vector<std::uint8_t> gray(image.data, image.data + image.total());
+        out["images"] = fit::to_json(fit::write_fit_images(gray, image.cols, image.rows, result, images_dir,
+                                                           std::string("Cam") + argv[2]));
+    }
     out["image"] = argv[1];
     out["camera_serial"] = argv[2];
     out["known_radius"] = {{"inner_diameter_mm", known.inner_diameter_mm},

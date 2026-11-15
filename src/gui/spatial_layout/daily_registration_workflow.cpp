@@ -3836,6 +3836,21 @@ std::string AutorunUtcNow()
     return buffer;
 }
 
+// Per camera: the review images the person looks at before confirming.
+nlohmann::json AutorunRimImages(const DailyRegistrationAutorunState& state)
+{
+    nlohmann::json out = nlohmann::json::array();
+    for (const auto& [serial, summary] : state.fit_summaries.items()) {
+        const auto images = summary.value("images", nlohmann::json::object());
+        out.push_back({{"camera_serial", serial},
+                       {"arena_id", summary.value("arena_id", "")},
+                       {"overlay_png", images.value("overlay_png", nlohmann::json(nullptr))},
+                       {"zoom_png", images.value("zoom_png", nlohmann::json(nullptr))},
+                       {"rim_frame_png", images.value("rim_frame_png", nlohmann::json(nullptr))}});
+    }
+    return out;
+}
+
 void AutorunPublish(const DailyRegistrationAutorunState& state)
 {
     orange::gui::GuiDailyRegistrationAutorun().SetStatus({
@@ -3848,7 +3863,8 @@ void AutorunPublish(const DailyRegistrationAutorunState& state)
             ? nlohmann::json({{"method", orange::gui::kDailyRegistrationConfirmMethod},
                               {"step", orange::gui::kDailyRegistrationConfirmStep},
                               {"transaction_id", state.transaction_id},
-                              {"pending_confirmation_path", state.pending_confirmation_path}})
+                              {"pending_confirmation_path", state.pending_confirmation_path},
+                              {"rim_images", AutorunRimImages(state)}})
             : nlohmann::json(nullptr)},
         {"rim_fits", state.fit_summaries},
         {"workflow_stage", state.workflow_stage},
@@ -4067,16 +4083,15 @@ bool advance_daily_registration_autorun(
             return false;
         }
         // Known-radius rim fit per camera.
-        nlohmann::json pending_targets = nlohmann::json::array();
-        bool all_ok = true;
-        std::string first_refusal;
+        state->pending_targets = nlohmann::json::array();
+        state->rim_fit_refusal.clear();
+        state->rim_image_jobs.clear();
         for (auto& target : workflow.targets) {
             const auto& known = state->known_radius[target.camera_serial];
             const int width = target.rim_capture.width;
             const int height = target.rim_capture.height;
             if (!target.rim_detection_ok || target.rim_gray.size() != static_cast<std::size_t>(width) * height) {
-                all_ok = false;
-                if (first_refusal.empty()) first_refusal = "rim_proposal_missing:" + target.camera_serial;
+                if (state->rim_fit_refusal.empty()) state->rim_fit_refusal = "rim_proposal_missing:" + target.camera_serial;
                 continue;
             }
             const orange::daily_rim_fit::Config fit_config;
@@ -4100,10 +4115,18 @@ bool advance_daily_registration_autorun(
             summary.erase("edge_points_xy_inlier");
             summary["path"] = (target_dir / "daily_rim_fit.json").string();
             state->fit_summaries[target.camera_serial] = summary;
+            // The review images (frame, overlay, zoom), refused fits included, off the GUI thread.
+            state->rim_image_jobs.emplace_back(
+                target.camera_serial,
+                std::async(std::launch::async,
+                           [gray = target.rim_gray, width, height, fit, target_dir,
+                            label = "Cam" + target.camera_serial + " " + target.arena_id]() {
+                               return orange::daily_rim_fit::write_fit_images(gray, width, height, fit, target_dir,
+                                                                              label);
+                           }).share());
             if (!fit.ok) {
-                all_ok = false;
-                if (first_refusal.empty()) {
-                    first_refusal = "rim_fit_refused:" + target.camera_serial + ":" +
+                if (state->rim_fit_refusal.empty()) {
+                    state->rim_fit_refusal = "rim_fit_refused:" + target.camera_serial + ":" +
                         (fit.refusals.empty() ? std::string("unknown") : fit.refusals.front());
                 }
                 continue;
@@ -4113,7 +4136,7 @@ bool advance_daily_registration_autorun(
             target.accepted_rim_center_x_camera_px = fit.fixed.cx;
             target.accepted_rim_center_y_camera_px = fit.fixed.cy;
             target.accepted_rim_radius_camera_px = fit.expected_radius_px;
-            pending_targets.push_back({
+            state->pending_targets.push_back({
                 {"camera_serial", target.camera_serial},
                 {"arena_id", target.arena_id},
                 {"center_camera_px", {fit.fixed.cx, fit.fixed.cy}},
@@ -4127,13 +4150,44 @@ bool advance_daily_registration_autorun(
                 {"fit_path", (target_dir / "daily_rim_fit.json").string()},
             });
         }
-        if (!all_ok) {
-            AutorunAbort(state, &workflow, first_refusal);
+        AutorunSetStage(state, "saving_rim_images");
+        return false;
+    }
+
+    if (state->stage == "saving_rim_images") {
+        for (const auto& [serial, job] : state->rim_image_jobs) {
+            if (job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                if (now - state->stage_started_s > config.workflow_timeout_seconds) {
+                    AutorunAbort(state, &workflow, "rim_images_timeout:" + serial);
+                }
+                return false;
+            }
+        }
+        std::string image_failure;
+        for (const auto& [serial, job] : state->rim_image_jobs) {
+            const auto images = job.get();
+            const nlohmann::json images_json = orange::daily_rim_fit::to_json(images);
+            if (state->fit_summaries.contains(serial)) state->fit_summaries[serial]["images"] = images_json;
+            for (auto& pending_target : state->pending_targets) {
+                if (pending_target.value("camera_serial", "") == serial) pending_target["images"] = images_json;
+            }
+            std::cout << "[GUI][daily_registration_autorun] rim images Cam" << serial << ": "
+                      << (images.ok ? images.overlay_png : "FAILED " + images.error) << std::endl;
+            if (!images.ok && image_failure.empty()) image_failure = "rim_images_write_failed:" + serial + ":" + images.error;
+        }
+        state->rim_image_jobs.clear();
+        if (!state->rim_fit_refusal.empty()) {
+            AutorunAbort(state, &workflow, state->rim_fit_refusal);
+            return false;
+        }
+        if (!image_failure.empty()) {
+            // Nobody confirms a rim without seeing it.
+            AutorunAbort(state, &workflow, image_failure);
             return false;
         }
         const nlohmann::json pending = {
             {"schema_id", "orange.daily_registration_autorun_pending_confirmation"},
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"transaction_id", workflow.transaction_id},
             {"created_utc", AutorunUtcNow()},
             {"physical_state_declaration", state->physical_state_declaration},
@@ -4143,7 +4197,9 @@ bool advance_daily_registration_autorun(
                                           {"declared_by", "<identity>"}}}}},
             {"meaning", "These rims follow the dishes' water-side inner rim; accept and select the resulting "
                         "translation if Orange's automatic geometry QC passes."},
-            {"targets", pending_targets},
+            {"review", "Look at each target's images.overlay_png (whole view) and images.zoom_png (native "
+                       "resolution at the top, right, bottom and left) before confirming."},
+            {"targets", state->pending_targets},
         };
         state->pending_confirmation_path =
             (fs::path(workflow.transaction_dir) / "autorun_pending_confirmation.json").string();

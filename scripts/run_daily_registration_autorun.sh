@@ -210,13 +210,21 @@ d = (s.get("status") or {}).get("local_control", {}).get("daily_registration_aut
 a = d.get("awaiting")
 if a:
     print(a["transaction_id"], a.get("pending_confirmation_path", ""))
+    for image in a.get("rim_images") or []:
+        print(f"  Cam{image['camera_serial']} {image.get('arena_id', '')}:")
+        for key in ("overlay_png", "zoom_png", "rim_frame_png"):
+            print(f"    {key:14s} {image.get(key) or 'MISSING'}")
 PY
 )"
     if [[ -n "${awaiting}" ]]; then
-      read -r transaction_id pending_path <<<"${awaiting}"
+      read -r transaction_id pending_path <<<"$(head -n 1 <<<"${awaiting}")"
       echo
       echo "AWAITING OPERATOR CONFIRMATION (transaction ${transaction_id})."
-      echo "Review ${pending_path} and the rim fits it lists, then run:"
+      echo "Look at each camera's rim images (overlay = whole view, zoom = native px at"
+      echo "the top/right/bottom/left; white = the known-radius fit, green = inlier edge"
+      echo "points, red = rejected, orange = uncovered arcs):"
+      tail -n +2 <<<"${awaiting}"
+      echo "and review ${pending_path}, then run:"
       echo "  python3 ${REPO_ROOT}/scripts/orange_local_control_client.py --socket ${ORANGE_SOCKET} \\"
       echo "      confirm-daily-registration --transaction-id ${transaction_id} --declared-by <your identity>"
       echo "No confirmation within ${CONFIRM_TIMEOUT_SECONDS}s aborts the transaction (runtime unchanged)."
@@ -239,6 +247,11 @@ for t in r.get("targets", []):
     print("  ", t["camera_serial"], t["arena_id"], "translation canvas px", t.get("applied_translation_canvas_px"),
           "rim centre", [round(v, 1) for v in t.get("accepted_rim_center_camera_px", [])])
 print("accepted registration:", r.get("accepted_registration"))
+for serial, fit in sorted((r.get("rim_fits") or {}).items()):
+    images = fit.get("images") or {}
+    print(f"  rim fit Cam{serial}: {'ok' if fit.get('ok') else 'REFUSED ' + ', '.join(fit.get('refusals') or [])};"
+          f" coverage {fit.get('arc_coverage_fraction', 0):.3f}; overlay {images.get('overlay_png') or '-'};"
+          f" zoom {images.get('zoom_png') or '-'}")
 PY
 else
   echo "No result JSON at ${RESULT_JSON}" >&2

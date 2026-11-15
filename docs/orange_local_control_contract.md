@@ -614,8 +614,14 @@ request whose socket peer (SO_PEERCRED) the kernel does not report is refused
 
 - Meaning: "these rims follow the dishes' water-side inner rim; accept and select
   the resulting translation if Orange's automatic geometry QC passes". Read the
-  transaction's `autorun_pending_confirmation.json` and the per-camera
-  `daily_rim_fit.json` first.
+  transaction's `autorun_pending_confirmation.json` and look at each camera's
+  rim images first (beside `daily_rim_fit.json` in `targets/<serial>_<arena>/`:
+  `daily_rim_fit_overlay.png`, the whole view at 1/4 with the fixed and free
+  fits, inlier and rejected edge points and every uncovered arc labelled;
+  `daily_rim_fit_zoom.png`, native-resolution crops at the top, right, bottom
+  and left; `daily_rim_frame.png`, the lossless frame the fit ran on). The
+  images are written off the GUI thread (stage `saving_rim_images`), for a
+  refused fit too, before the confirmation is requested.
 - The response is `accepted` and `queued_for_gui_thread`. The autorun applies it
   only while its state is `awaiting_operator_confirmation` and the
   `transaction_id` matches; otherwise it is ignored and logged. It records the
@@ -623,7 +629,8 @@ request whose socket peer (SO_PEERCRED) the kernel does not report is refused
   registration's `verification.autorun`.
 - `status.local_control.daily_registration_autorun`: `stage`, `finished`,
   `passed`, `error`, `transaction_id`, `awaiting` (method, step, transaction,
-  pending-confirmation path) and the per-camera rim-fit summaries. Null when the
+  pending-confirmation path, `rim_images` per camera) and the per-camera rim-fit
+  summaries (each with its `images`). Null when the
   autorun is off.
 - Client: `scripts/orange_local_control_client.py confirm-daily-registration
   --transaction-id <id> --declared-by <identity>`.

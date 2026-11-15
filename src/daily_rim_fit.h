@@ -26,7 +26,7 @@
 
 namespace orange::daily_rim_fit {
 
-inline constexpr const char* kFitMethodId = "orange_daily_rim_fit_known_radius_v1";
+inline constexpr const char* kFitMethodId = "orange_daily_rim_fit_known_radius_v2";
 
 struct Config {
     int rays = 720;
@@ -43,8 +43,16 @@ struct Config {
     double min_contrast_dn = 8.0;
     int tangential_samples = 5;            // each radial sample averages these points ...
     double tangential_half_width_px = 4.0; // ... spread over +/- this along the rim
-    double inlier_px = 3.0;           // smallest inlier tolerance on |distance - model radius|
-    double max_inlier_px = 12.0;      // largest (follows 3 x 1.4826 x MAD in between): the IR rim edge wanders +/- 8-12 px; the floor edge is 16-32 px inside
+    // Inlier tolerance on |distance - model radius|, set once from the provisional fit over
+    // every edge point and held through the trimming rounds:
+    //   clamp(max(inlier_scatter_factor x median |residual|, inlier_floor_px), inlier_floor_px, max_inlier_px).
+    // It never follows the trimmed points (that shrank to below the scatter: 2010093 on
+    // 2026-11-15 lost a coherent 21 deg arc at +5..10 px). The wall-top edge has coherent
+    // 5-10 px arcs beyond the ellipse model, so the floor covers them; the floor edge is
+    // 16-32 px inside and stays out under the cap.
+    double inlier_scatter_factor = 4.0;
+    double inlier_floor_px = 8.0;
+    double max_inlier_px = 12.0;
     bool model_ellipticity = true;    // fit a cos/sin(2t) term: the rim is a slight ellipse in the image
     int iterations = 3;               // resample rays from the refined centre this many times
     // Refusal limits, proposed from evidence (docs/daily_registration_autorun_plan.md):
@@ -102,6 +110,7 @@ struct CircleFit {
     double ellipticity_px = 0.0;      // amplitude of the cos/sin(2t) radius term
     double ellipticity_axis_deg = 0.0;
     double inlier_tolerance_px = 0.0;
+    double provisional_residual_median_px = 0.0;  // median |residual| of the all-point fit that set the tolerance
 };
 
 struct Result {

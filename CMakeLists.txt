@@ -412,6 +412,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/daily_registration_workflow.cpp"
     "${SRC_DIR}/gui/daily_registration_autorun.cpp"
     "${SRC_DIR}/daily_rim_fit.cpp"
+    "${SRC_DIR}/daily_rim_fit_images.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_native_context_capture.cpp"
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
     "${SRC_DIR}/gui/spatial_layout/group_capture_controller.cpp"
@@ -712,7 +713,8 @@ target_compile_features(physical_target_fit_cli PRIVATE cxx_std_17)
 target_compile_definitions(physical_target_fit_cli PRIVATE ORANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(physical_target_fit_cli PRIVATE ${OpenCV_LIBS})
 # Known-radius daily rim fit on a saved grey PNG (docs/daily_registration_autorun_plan.md).
-add_executable(daily_rim_fit_cli EXCLUDE_FROM_ALL "tools/daily_rim_fit_cli.cpp" "${SRC_DIR}/daily_rim_fit.cpp")
+add_executable(daily_rim_fit_cli EXCLUDE_FROM_ALL "tools/daily_rim_fit_cli.cpp" "${SRC_DIR}/daily_rim_fit.cpp"
+    "${SRC_DIR}/daily_rim_fit_images.cpp")
 target_include_directories(daily_rim_fit_cli PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(daily_rim_fit_cli PRIVATE ${OpenCV_LIBS})
 
@@ -1314,6 +1316,12 @@ if(BUILD_TESTING)
     target_include_directories(daily_rim_fit_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(daily_rim_fit_tests PRIVATE cxx_std_17)
     add_test(NAME daily_rim_fit_tests COMMAND daily_rim_fit_tests)
+    add_executable(daily_rim_fit_images_tests "tools/daily_rim_fit_images_tests.cpp" "${SRC_DIR}/daily_rim_fit.cpp"
+        "${SRC_DIR}/daily_rim_fit_images.cpp")
+    target_include_directories(daily_rim_fit_images_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(daily_rim_fit_images_tests PRIVATE ${OpenCV_LIBS})
+    target_compile_features(daily_rim_fit_images_tests PRIVATE cxx_std_17)
+    add_test(NAME daily_rim_fit_images_tests COMMAND daily_rim_fit_images_tests)
     add_test(NAME citrus_rig_claim_ready_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/citrus_rig_claim_ready_tests.py")
     # The burst on a GPU (device 0 only; skipped without one): GPU median == CPU median,

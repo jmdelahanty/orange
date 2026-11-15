@@ -848,7 +848,8 @@
    "free_minus_known_radius_px",
    "free_radius_fit",
    "gaps",
-   "inlier_px",
+   "inlier_floor_px",
+   "inlier_scatter_factor",
    "inlier_tolerance_px",
    "inliers",
    "largest_gap_center_deg",
@@ -869,6 +870,7 @@
    "model_ellipticity",
    "nearest_frame_border_px",
    "ok",
+   "provisional_residual_median_px",
    "radius_camera_px",
    "radius_fixed",
    "radius_mm",
@@ -893,6 +895,18 @@
    "tangential_samples",
    "warnings",
    "width_deg"
+  ],
+  "schemas": []
+ },
+ "src/daily_rim_fit_images.cpp": {
+  "csv_headers": [],
+  "json_keys": [
+   "error",
+   "ok",
+   "overlay_png",
+   "rim_frame_png",
+   "top",
+   "zoom_png"
   ],
   "schemas": []
  },
@@ -3229,6 +3243,7 @@
    "homography",
    "hough_proposal",
    "image_set_path",
+   "images",
    "inner_diameter_mm",
    "inner_diameter_source",
    "inner_diameter_uncertainty_mm",
@@ -3269,6 +3284,7 @@
    "operator_confirmed_physical_projection_alignment",
    "operator_visual_alignment",
    "overlay_path",
+   "overlay_png",
    "overlay_sha256",
    "params",
    "passed",
@@ -3301,11 +3317,14 @@
    "requested_x",
    "requested_y",
    "result",
+   "review",
    "review_overlay",
    "rim",
    "rim_center_camera_px",
    "rim_fit_method",
    "rim_fits",
+   "rim_frame_png",
+   "rim_images",
    "rim_observation",
    "rim_observation_path",
    "rim_observation_sha256",
@@ -3353,7 +3372,8 @@
    "written_at_utc",
    "x",
    "y",
-   "z_rim_top_mm"
+   "z_rim_top_mm",
+   "zoom_png"
   ],
   "schemas": [
    [
@@ -3374,7 +3394,7 @@
    ],
    [
     "orange.daily_registration_autorun_pending_confirmation",
-    "1"
+    "2"
    ],
    [
     "orange.daily_registration_autorun_result",

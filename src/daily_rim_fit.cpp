@@ -256,9 +256,9 @@ bool gauss_newton(const std::vector<EdgePoint>& points, Model* m, std::vector<do
     return true;
 }
 
-// Robust fit: trim at 3 x 1.4826 x MAD (at least config.inlier_px) over a few rounds;
-// the final inliers are within max(config.inlier_px, 3 x 1.4826 x MAD), capped at
-// config.max_inlier_px.
+// Robust fit: the tolerance comes once from the provisional fit over every point
+// (Config::inlier_scatter_factor x median |residual|, between inlier_floor_px and
+// max_inlier_px); a few rounds then refit on the points within it.
 CircleFit robust_fit(std::vector<EdgePoint>* points, bool free_radius, double cx, double cy,
                      double radius, const Config& config)
 {
@@ -270,14 +270,18 @@ CircleFit robust_fit(std::vector<EdgePoint>* points, bool free_radius, double cx
     m.cy = cy;
     m.r = radius;
     for (auto& p : *points) p.inlier = true;
-    double tolerance = config.max_inlier_px;
+    if (!gauss_newton(*points, &m, nullptr)) return fit;
+    std::vector<double> provisional;
+    for (const auto& p : *points) provisional.push_back(std::fabs(point_residual(p, m)));
+    const double provisional_median = median(provisional);
+    const double tolerance = std::clamp(std::max(config.inlier_scatter_factor * provisional_median,
+                                                 config.inlier_floor_px),
+                                        config.inlier_floor_px, std::max(config.inlier_floor_px, config.max_inlier_px));
     for (int round = 0; round < 6; ++round) {
+        for (auto& p : *points) p.inlier = std::fabs(point_residual(p, m)) <= tolerance;
         if (!gauss_newton(*points, &m, nullptr)) return fit;
-        std::vector<double> abs_residuals;
-        for (const auto& p : *points) abs_residuals.push_back(std::fabs(point_residual(p, m)));
-        tolerance = std::clamp(3.0 * 1.4826 * median(abs_residuals), config.inlier_px, config.max_inlier_px);
-        for (std::size_t i = 0; i < points->size(); ++i) (*points)[i].inlier = abs_residuals[i] <= tolerance;
     }
+    fit.provisional_residual_median_px = provisional_median;
     std::vector<double> inverse;
     if (!gauss_newton(*points, &m, &inverse)) return fit;
     std::vector<double> residuals;
@@ -408,6 +412,7 @@ Result fit_known_radius(const std::uint8_t* gray, int width, int height, double 
         CircleFit fixed = fit_on_inliers(points, fixed_model);
         if (!fixed.ok) break;
         fixed.inlier_tolerance_px = free_fit.inlier_tolerance_px;
+        fixed.provisional_residual_median_px = free_fit.provisional_residual_median_px;
         result.fixed = fixed;
         cx = fixed.cx;
         cy = fixed.cy;
@@ -529,6 +534,7 @@ nlohmann::json to_json(const Result& result, const Config& config, double mm_per
             {"ellipticity_px", f.ellipticity_px},
             {"ellipticity_axis_deg", f.ellipticity_axis_deg},
             {"inlier_tolerance_px", f.inlier_tolerance_px},
+            {"provisional_residual_median_px", f.provisional_residual_median_px},
         };
         if (free_radius) j["radius_sigma_camera_px"] = f.sigma_radius_px;
         if (mm_per_px > 0.0) {
@@ -572,7 +578,8 @@ nlohmann::json to_json(const Result& result, const Config& config, double mm_per
             {"max_center_sigma_px", config.max_center_sigma_px},
             {"max_free_radius_delta_px", config.max_free_radius_delta_px},
             {"max_fixed_free_center_px", config.max_fixed_free_center_px},
-            {"inlier_px", config.inlier_px},
+            {"inlier_scatter_factor", config.inlier_scatter_factor},
+            {"inlier_floor_px", config.inlier_floor_px},
             {"max_inlier_px", config.max_inlier_px},
             {"model_ellipticity", config.model_ellipticity},
             {"border_margin_px", config.border_margin_px},
