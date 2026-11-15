@@ -536,6 +536,18 @@ void test_one_day_freshness()
             "expiry must say selection_expired: " + resolved.error);
     require(resolved.freshness.value("state", "") == "expired", "expired state expected");
 
+    // Half-open: valid_from itself is inside, one second before it is not.
+    resolved = resolve_active_physical_registration(
+        root, "2010093", 4512, 4512, "Mono8", "2026-11-15T10:00:00Z");
+    require(resolved.valid && resolved.freshness.value("state", "") == "fresh",
+            "the window's first second (valid_from) is fresh");
+    resolved = resolve_active_physical_registration(
+        root, "2010093", 4512, 4512, "Mono8", "2026-11-15T09:59:59Z");
+    require(resolved.selected && !resolved.valid && resolved.status == "invalid_selected" &&
+                resolved.error.rfind("selection_not_yet_valid", 0) == 0 &&
+                resolved.freshness.value("state", "") == "expired",
+            "a time before valid_from is not fresh: " + resolved.error);
+
     // The freshness record cannot be edited to extend the window.
     nlohmann::json edited = read_pointer(root, "2010093");
     edited["freshness"]["valid_until_utc"] = "2030-01-01T00:00:00Z";

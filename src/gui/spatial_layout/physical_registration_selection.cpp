@@ -507,14 +507,20 @@ bool evaluate_freshness(
             return false;
         }
     }
+    long long from_s = 0;
     long long until_s = 0;
     long long evaluated_s = 0;
+    parse_utc_timestamp_seconds(valid_from, &from_s);
     parse_utc_timestamp_seconds(valid_until, &until_s);
     if (!parse_utc_timestamp_seconds(evaluated_at_utc, &evaluated_s)) {
         if (error_out) *error_out = "freshness_evaluation_time_unparseable:" + evaluated_at_utc;
         return false;
     }
-    const bool fresh = evaluated_s < until_s;
+    // Half-open window [valid_from, valid_until) (Palette, 2026-11-15). A time
+    // before valid_from (a recording that predates the fit or the reuse) is not
+    // fresh either. The published contract v3 state enum has only fresh and
+    // expired, so it reads expired; the resolution error tells them apart.
+    const bool fresh = from_s <= evaluated_s && evaluated_s < until_s;
     *fresh_out = fresh;
     *freshness_out = {
         {"rule", kPhysicalRegistrationFreshnessRule},
@@ -812,8 +818,18 @@ PhysicalRegistrationSelectionResolution resolve_active_physical_registration(
             // Never silently used: an expired selection is invalid until the
             // operator registers again or explicitly reuses it.
             result.status = "invalid_selected";
-            result.error = "selection_expired:valid_until=" +
-                result.freshness.value("valid_until_utc", std::string());
+            long long evaluated_s = 0;
+            long long from_s = 0;
+            const bool before_window =
+                parse_utc_timestamp_seconds(evaluated_at_utc, &evaluated_s) &&
+                parse_utc_timestamp_seconds(
+                    result.freshness.value("valid_from_utc", std::string()), &from_s) &&
+                evaluated_s < from_s;
+            result.error = before_window
+                ? "selection_not_yet_valid:valid_from=" +
+                      result.freshness.value("valid_from_utc", std::string())
+                : "selection_expired:valid_until=" +
+                      result.freshness.value("valid_until_utc", std::string());
             return result;
         }
         result.valid = true;
