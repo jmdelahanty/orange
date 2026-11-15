@@ -69,8 +69,21 @@ public:
     // null until streaming or a capture; then {state (idle until a capture),
     // the last capture's fields, staging: {serial: {reserved, bytes, error}}}.
     nlohmann::json StatusJson() const;
-    // The newest capture this process wrote (GUI selection at record start).
+    // The newest capture this process wrote.
     std::optional<empty_background::CaptureReceipt> LastReceipt() const { return last_receipt_; }
+
+    // The "Empty-dish background" panel (GUI thread, inside the recording
+    // panel): the capture with its declaration (the Capture button queues it;
+    // the next Poll starts it), and the selection for the next recording: no
+    // background, or the newest capture in the store with the per-recording
+    // "scene unchanged apart from the fish" confirmation.
+    void RenderPanel(bool streaming, bool recording_locked);
+    // Record start without a remote start (GUI thread). nullopt: no background
+    // chosen. Otherwise the chosen capture as a gui_operator selection, checked
+    // again at the copy (id and sha256). *requested is true whenever the
+    // operator chose a capture, so a failure refuses the start. Throws when the
+    // scene confirmation is missing. Consumes the confirmation either way.
+    std::optional<empty_background::BindingSelection> SelectionForRecordStart(bool* requested);
 
 private:
     enum class Phase { kIdle, kBursting, kWriting };
@@ -98,6 +111,24 @@ private:
     std::optional<empty_background::CaptureReceipt> last_receipt_;
     nlohmann::json status_ = nullptr;
     nlohmann::json staging_ = nullptr;  // per streaming camera, refreshed by Poll
+
+    // Panel state (GUI thread).
+    void refresh_newest();
+    std::optional<Request> panel_request_;
+    char declared_by_[33] = {};
+    bool dishes_empty_ = false;
+    int display_state_ = 0;  // off, on, unknown, not_displayed
+    int shown_kind_ = 0;     // solid_color, canvas, other
+    int rgba_[4] = {0, 0, 0, 255};
+    char canvas_name_[257] = {};
+    char shown_note_[257] = {};
+    char note_[513] = {};
+    std::string panel_message_;
+    bool newest_loaded_ = false;
+    std::optional<empty_background::StoredCapture> newest_;
+    std::string newest_error_;
+    bool attach_ = false;
+    bool scene_confirmed_ = false;
 };
 
 EmptyBackgroundCapture& GuiEmptyBackgroundCapture();

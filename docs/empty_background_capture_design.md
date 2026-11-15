@@ -3,10 +3,29 @@
 Date: 2026-11-02. Status: design agreed with Jeremy; file layout, descriptor
 and statistic names agreed with Palette (session palette-empty-background,
 2026-11-02, checked against Palette main f6f23487). Schemas merged in
-agent-contracts `orange-palette/empty_background_v1`. Implemented on
-2026-11-15 (branch `agent/gui/empty-background-20261102`): the core library,
-the record-start binding and the headless key; the GUI capture action and its
-selection are not built yet (see the checklist).
+agent-contracts `orange-palette/empty_background_v1` and, on 2026-11-15,
+`orange-palette/empty_background_v2` (603da1fe: requester, declared_by, the
+local_control selection, a schema_version on the block). Orange writes
+version 2 since fb0c3ae. Built on 2026-11-15 (branch
+`agent/gui/empty-background-20261102`): the core library, the 17-frame burst
+on the landing die, the GUI panel, the local-control capture and start
+selection, the record-start binding and the headless key. Not yet run on the
+rig (see the checklist).
+
+Additions on 2026-11-15 (Jeremy):
+
+- **Burst (option 2/A):** each camera's 17-frame staging area is reserved once
+  per stream, last at stream start (after the stream's own allocations), never
+  mid-stream. A failed reservation refuses only that camera's capture.
+- **Remote starts work unattended:** local-control `capture_empty_background`
+  and `start_recording` `params.empty_background` (by capture_id and
+  descriptor sha256, nothing implicit). See
+  `docs/orange_local_control_contract.md`.
+- **A capture that cannot be attached refuses the start** when a remote start
+  named it or the operator chose it; without a choice the recording records
+  every camera not_selected.
+- The panel never offers the newest capture by default: the operator chooses
+  "Attach this capture" and confirms the scene per recording.
 
 ## Purpose
 
@@ -261,19 +280,20 @@ they are.
       `published_schemas.EMBEDDED` entry for `/session/empty_background`, and
       `check_output_surface.py --update`; fixtures tested in jsonschema and the
       generated readers (`empty_background_schema_fixture_tests`).
-- [ ] Burst capture on the snapshot worker; refused while recording;
-      per-camera timeout. (The median, the failure reporting in the
-      descriptor and the consecutive-frame check are in
-      `src/empty_background.cpp`; the worker today delivers single native
-      frames only, so a 17-consecutive-frame burst needs a worker change.)
+- [x] Burst capture (`src/empty_background_burst_worker.*`, median kernel
+      `src/empty_background_median.cu`): owned copies only, never the
+      GPUDirect ring; refused while recording; 5 s timeout per camera;
+      min free pool entries/events recorded per burst.
 - [x] Background store and descriptor, written atomically, descriptor last
       (`orange::empty_background::WriteCapture`).
-- [ ] GUI: Capture empty background (with the empty-dish declaration),
-      selection at record start, the per-recording confirmation and the
-      per-camera result display.
+- [x] GUI: "Empty-dish background" panel (`src/gui/empty_background_capture.*`):
+      capture with the declaration (declared_by, dishes empty, display), the
+      per-camera result and staging state, and the per-recording selection
+      with its confirmation.
+- [x] Local control: `capture_empty_background`, `start_recording`
+      `params.empty_background`, status `local_control.empty_background_capture`.
 - [x] Record-start binding: settings check, copy, digest, start-snapshot block
-      (`BindToRecording`; the GUI writes the not_selected block until its
-      selection exists).
+      (`BindToRecording`).
 - [x] Headless spec key `fixed.empty_background_capture` (absolute path of
       background.json) and the same binding.
 - [x] Tests: median correctness, statistics, settings-drift flag per setting,

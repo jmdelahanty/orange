@@ -4462,9 +4462,11 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     }
     {
         // Empty-dish background (docs/empty_background_capture_design.md):
-        // session.empty_background on every recording. The GUI capture action and
-        // its per-recording selection are not built yet, so every recording camera
-        // is not_selected (a declared absence; no files are written).
+        // session.empty_background on every recording: the capture a remote start
+        // named, or the one the operator chose and confirmed in the panel, copied
+        // into empty_background/; otherwise every camera not_selected. A chosen
+        // capture that cannot be attached refuses the start.
+        bool background_requested = remote_start && remote_start->empty_background;
         try {
             std::vector<orange::empty_background::RecordingCamera> background_cameras;
             for (int i = 0; i < num_cameras; ++i) {
@@ -4473,19 +4475,24 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
                         orange::empty_background::CameraConfigurationFromCamera(cameras_params[i])});
                 }
             }
-            const bool named = remote_start && remote_start->empty_background;
+            // A remote start uses only what it named; a panel start uses only the
+            // operator's choice (never the newest capture by default).
+            orange::empty_background::BindingSelection selection;
+            if (remote_start) {
+                if (remote_start->empty_background) selection = *remote_start->empty_background;
+            } else if (auto chosen = orange::gui::GuiEmptyBackgroundCapture().SelectionForRecordStart(
+                           &background_requested)) {
+                selection = std::move(*chosen);
+            }
             const orange::empty_background::BindingResult background = orange::empty_background::WriteRecordingBinding(
-                prepared.recording_folder,
-                named ? *remote_start->empty_background : orange::empty_background::BindingSelection{},
-                background_cameras,
-                update_recording_snapshot_session_artifacts);
+                prepared.recording_folder, selection, background_cameras, update_recording_snapshot_session_artifacts);
             for (const std::string& warning : background.warnings) {
                 std::cerr << "[GUI][recording] empty background: " << warning << std::endl;
             }
         } catch (const std::exception& ex) {
-            if (remote_start && remote_start->empty_background) {
-                // The request named this capture: a recording never starts without
-                // it, or with any other capture.
+            if (background_requested) {
+                // The request or the operator chose this capture: a recording never
+                // starts without it, or with any other capture.
                 const std::string error = std::string("Named empty background not attached: ") + ex.what();
                 orange::session::abort_prepared_recording_run(
                     recording_session, camera_control, prepared,
@@ -7160,6 +7167,10 @@ int main(int /*argc*/, char ** /*args*/) {
                     gui_async_recording_start.active,
                     subject_camera_serials);
             }
+            orange::gui::GuiEmptyBackgroundCapture().RenderPanel(
+                camera_control->open && camera_control->subscribe,
+                camera_control->record_video || camera_control->recording_draining ||
+                    gui_async_recording_start.active || gui_recording_run.active || gui_recording_run.finalizing);
             orange::gui::RenderRegisteredContextRecordingSettings(
                 camera_control->record_video || camera_control->recording_draining ||
                 gui_async_recording_start.active ||
