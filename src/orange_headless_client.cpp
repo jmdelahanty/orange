@@ -31,6 +31,7 @@
 #include <mutex>
 #include <numeric>
 #include <optional>
+#include <pwd.h>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -63,6 +64,8 @@
 #include "rig_config_pin.h"
 #include "session/recording_observation_request_artifacts.h"
 #include "session/session_control_host.h"
+#include "session/recording_start_declaration.h"
+#include "outputs/common/digest.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
 #include "external_recorder_supervisor.h"
@@ -272,6 +275,11 @@ struct HeadlessCliOptions {
     orange::recording::RecordingMediaSelection media_products;
     orange::recording::RecordingContextsConfig recording_contexts;
     orange::recording::SubjectReferencesConfig subject_references;
+    // fixed.declaration (orange.recording_start_declaration v1): who declared
+    // this recording; written as subject_confirmation.json (confirmed_by
+    // run_spec) with the spec as the requester. Absent: no confirmation file.
+    std::optional<orange::session::RecordingStartDeclaration> declaration;
+    nlohmann::json declaration_requester = nullptr;
     orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
@@ -333,6 +341,8 @@ struct ExperimentSpec {
     bool unique_run_id = false;
     orange::recording::RecordingContextsConfig recording_contexts;
     orange::recording::SubjectReferencesConfig subject_references;
+    std::optional<orange::session::RecordingStartDeclaration> declaration;
+    nlohmann::json declaration_requester = nullptr;
     orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
@@ -4549,7 +4559,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const orange::recording::RecordingMediaSelection& media_products = {},
     const orange::recording::RecordingContextsConfig& recording_contexts = {},
     const orange::recording::SubjectReferencesConfig& subject_references = {},
-    const orange::recording::ZebrobotLookupConfig& zebrobot = {})
+    const orange::recording::ZebrobotLookupConfig& zebrobot = {},
+    const orange::session::RecordingStartDeclaration* declaration = nullptr,
+    const nlohmann::json& declaration_requester = nullptr)
 {
     std::cout << "start camera sthread..." << std::endl;
     try {
@@ -5207,6 +5219,19 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     subject_references.Resolve(recording_serials), zebrobot, get_current_utc_timestamp());
                 if (!update_recording_snapshot_session_artifacts(record_folder, {{"subject_references", block}}))
                     throw std::runtime_error("failed to persist headless subject references");
+                if (declaration) {
+                    // The same file a GUI start writes (one writer), before the seal.
+                    const nlohmann::json confirmation = orange::session::BuildSubjectConfirmation(
+                        declaration->subject_references, recording_serials, orange::session::kConfirmedByRunSpec,
+                        declaration->ToJson(), declaration_requester, get_current_utc_timestamp());
+                    orange::ScopedFsuid fsuid_guard;
+                    const std::filesystem::path path =
+                        std::filesystem::path(record_folder) / "subject_confirmation.json";
+                    std::ofstream out(path, std::ios::out | std::ios::trunc);
+                    out << confirmation.dump(2) << "\n";
+                    out.close();
+                    if (!out) throw std::runtime_error("failed to write " + path.string());
+                }
             }
             if (enable_recording) {
                 // Same per-camera model, crop-output and pose declarations the GUI
@@ -8446,6 +8471,46 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("declaration")) {
+        // The person's declaration for this recording, as a remote GUI start
+        // carries it (src/session/recording_start_declaration.h): its subjects
+        // are the recording's subjects and its intent replaces the contexts'.
+        // One source only: a spec with a declaration declares no
+        // subject_references of its own.
+        try {
+            if (fixed.contains("subject_references"))
+                throw std::runtime_error("a spec with fixed.declaration must not also set fixed.subject_references "
+                                         "(the declaration's subject_references are the recording's)");
+            if (!spec->recording_contexts.configured())
+                throw std::runtime_error("fixed.declaration needs fixed.recording_contexts to apply its "
+                                         "recording_intent to");
+            spec->declaration = orange::session::ParseRecordingStartDeclaration(fixed.at("declaration"));
+            spec->subject_references = spec->declaration->subject_references;
+            if (spec->recording_contexts.default_context)
+                spec->recording_contexts.default_context->recording_intent = spec->declaration->recording_intent;
+            for (auto& [serial, ctx] : spec->recording_contexts.cameras)
+                ctx.recording_intent = spec->declaration->recording_intent;
+            std::string spec_sha256;
+            std::string sha_error;
+            if (!orange::outputs::file_sha256_hex(cli_options.experiment_spec_path, &spec_sha256, &sha_error))
+                throw std::runtime_error("cannot hash the spec file: " + sha_error);
+            std::error_code ec;
+            const std::filesystem::path absolute_spec =
+                std::filesystem::absolute(cli_options.experiment_spec_path, ec).lexically_normal();
+            std::string user;
+            if (const char* sudo_user = std::getenv("SUDO_USER"); sudo_user && *sudo_user) user = sudo_user;
+            else if (const passwd* pw = ::getpwuid(::getuid()); pw && pw->pw_name) user = pw->pw_name;
+            spec->declaration_requester = {
+                {"transport", "run_spec"},
+                {"spec_path", ec ? cli_options.experiment_spec_path : absolute_spec.string()},
+                {"spec_sha256", spec_sha256},
+                {"experiment_id", root.value("experiment_id", "")},
+                {"user", user.empty() ? nlohmann::json(nullptr) : nlohmann::json(user)}};
+        } catch (const std::exception& ex) {
+            if (error_out) *error_out = std::string("declaration: ") + ex.what();
+            return false;
+        }
+    }
     if (fixed.contains("zebrobot")) {
         try {
             if (fixed.at("zebrobot").is_null()) throw std::runtime_error("zebrobot must be an object, not null");
@@ -9223,6 +9288,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.media_products = spec.media_products;
                                                             run.options.recording_contexts = spec.recording_contexts;
                                                             run.options.subject_references = spec.subject_references;
+                                                            run.options.declaration = spec.declaration;
+                                                            run.options.declaration_requester = spec.declaration_requester;
                                                             run.options.zebrobot = spec.zebrobot;
                                                             run.options.master_frame_journal = spec.master_frame_journal;
                                                             run.options.registered_scene_context = spec.registered_scene_context;
@@ -10164,7 +10231,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &options.external_recorder_contract,
         options.crop_recording,
         options.master_frame_journal, options.registered_scene_context, &registered_context, options.media_products,
-        options.recording_contexts, options.subject_references, options.zebrobot);
+        options.recording_contexts, options.subject_references, options.zebrobot,
+        options.declaration ? &*options.declaration : nullptr, options.declaration_requester);
 
     if (!started) {
         stop_supervised_external_recorder();

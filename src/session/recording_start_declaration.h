@@ -20,8 +20,10 @@
 // The confirmation (orange.recording_subject_confirmation v2) keeps the two
 // identities apart: `declaration.declared_by` is what the request claims, and
 // `requester` is who actually sent it as the transport saw it (the socket's
-// peer uid, or the GUI's invoking user). v2 added `declaration` (null for a
-// panel confirmation) and `requester` to v1's keys.
+// peer uid, the GUI's invoking user, or the experiment spec file an
+// orange_client run read, with its sha256). v2 added `declaration` (null for a
+// panel confirmation) and `requester` to v1's keys. confirmed_by is
+// gui_operator, local_control or run_spec.
 
 #include <map>
 #include <regex>
@@ -42,6 +44,7 @@ inline constexpr int kSubjectConfirmationSchemaVersion = 2;
 
 inline constexpr const char* kConfirmedByGuiOperator = "gui_operator";
 inline constexpr const char* kConfirmedByLocalControl = "local_control";
+inline constexpr const char* kConfirmedByRunSpec = "run_spec";
 
 struct RecordingStartDeclaration {
     std::string declared_by;

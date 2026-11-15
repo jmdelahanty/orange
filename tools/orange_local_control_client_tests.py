@@ -222,6 +222,21 @@ def test_start_declaration_flags() -> None:
         },
         f"blank declaration: {declared['params']}",
     )
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        spec_path = Path(tmp) / "spec.json"
+        spec_path.write_text(json.dumps({"fixed": {"declaration": declared["params"]["declaration"]}}))
+        from_spec = parse_stdout_json(
+            run_client(["--dry-run", "start-recording", "--declaration-from-spec", str(spec_path)])
+        )
+        require(
+            from_spec["params"]["declaration"] == declared["params"]["declaration"],
+            "a spec's fixed.declaration declares the GUI start",
+        )
+        spec_path.write_text(json.dumps({"fixed": {}}))
+        missing = run_client(["--dry-run", "start-recording", "--declaration-from-spec", str(spec_path)])
+        require(missing.returncode == 2, "a spec without a declaration is refused")
     partial = run_client(["--dry-run", "start-recording", "--intent", "recording_only"])
     require(partial.returncode == 2, "a partial declaration is refused, never completed with defaults")
     require("--declared-by" in partial.stderr, "the refusal names what is missing")

@@ -175,6 +175,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help="File holding the whole orange.recording_start_declaration object.",
     )
+    subjects.add_argument(
+        "--declaration-from-spec",
+        type=Path,
+        help="Headless experiment spec whose fixed.declaration declares this GUI recording.",
+    )
 
     stop = subparsers.add_parser(
         "stop-recording",
@@ -207,10 +212,16 @@ DECLARATION_SCHEMA_ID = "orange.recording_start_declaration"
 
 def build_declaration(args: argparse.Namespace) -> dict[str, Any] | None:
     """The start's declaration, or None for a start the operator confirms in the GUI."""
-    if args.declaration_file is not None:
+    if args.declaration_file is not None or args.declaration_from_spec is not None:
         if args.declared_by or args.intent:
-            raise ValueError("--declaration-file already holds declared_by and the intent")
-        return json.loads(args.declaration_file.read_text())
+            raise ValueError("a declaration file already holds declared_by and the intent")
+        if args.declaration_file is not None:
+            return json.loads(args.declaration_file.read_text())
+        spec = json.loads(args.declaration_from_spec.read_text())
+        declaration = spec.get("fixed", {}).get("declaration") if isinstance(spec, dict) else None
+        if not isinstance(declaration, dict):
+            raise ValueError(f"{args.declaration_from_spec} has no fixed.declaration")
+        return declaration
     wanted = (args.declared_by, args.intent, args.blank_subjects or args.subjects_json)
     if not any(wanted):
         return None
