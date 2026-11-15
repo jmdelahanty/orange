@@ -57,7 +57,8 @@ fi
 HELP_TEXT="$("$TARGET" --help)"
 for required in \
   "--dry-run" \
-  "/tmp/orange-timing-build-20260906/orange_client" \
+  "/home/jeremy/orange/targets/release/orange_client" \
+  "--run-stamp" \
   "--yolo-perf-log" \
   "--yolo-perf-sample" \
   "--analytics-early-owned-frame" \
