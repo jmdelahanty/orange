@@ -825,6 +825,7 @@ if(BUILD_TESTING)
     add_test(NAME commissioning_record_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/commissioning_record_tests.py")
     add_test(NAME source_version_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/source_version_tests.py")
     add_test(NAME external_video_sanity_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/external_video_sanity_tests.py")
+    add_test(NAME local_control_events_contract_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/local_control_events_contract_tests.py")
     add_executable(generated_outputs_tests "tools/generated_outputs_tests.cpp")
     target_include_directories(generated_outputs_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     add_test(NAME generated_outputs_tests COMMAND generated_outputs_tests
