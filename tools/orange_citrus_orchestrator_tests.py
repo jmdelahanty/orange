@@ -203,6 +203,23 @@ def test_citrus_bound_start_checks_and_delivery() -> None:
     require(module.Orchestrator(args).bound_run() if hasattr(module, "Orchestrator") else True, "stimulus run is bound")
 
 
+def test_citrus_completion_under_its_own_experiment_id() -> None:
+    module = load_module()
+    citexp = "citexp_1b1b12ec1ca0ad2bef272e7465f8b55055cd7a759746cffb3fc425ebef32181e"
+    orange = {"local_control": {"recording_stop": {
+        "method": "citrus_completion", "command_source": "citrus", "operation_id": citexp,
+        "terminal_state": "completed", "reason": "protocol_finished"}}}
+    citrus = {"experiment": {"terminal_state": "completed", "terminal_reason": "protocol_finished",
+                             "last_operation_id": citexp}}
+    failures = module.check_orange_citrus_notify_stop_status(
+        orange, citrus, operation_id="orange_citrus_20261115T035850Z_2d7c5865")
+    require(failures == [], f"an autorun Citrus completes under its citexp id (2026-11-15 false failure): {failures}")
+    citrus_other = copy.deepcopy(citrus)
+    citrus_other["experiment"]["last_operation_id"] = "citexp_other"
+    failures = module.check_orange_citrus_notify_stop_status(orange, citrus_other, operation_id="orch-op")
+    require(any("operation id mismatch" in f for f in failures), "a foreign completion id still fails")
+
+
 def test_orange_start_carries_declaration() -> None:
     module = load_module()
     plain = module.build_orange_start_request("op-1", "req", "test")
@@ -4014,6 +4031,7 @@ def main() -> int:
     tests = [
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
+        test_citrus_completion_under_its_own_experiment_id,
         test_citrus_bound_start_checks_and_delivery,
         test_dry_run_default_does_not_open_sockets,
         test_dry_run_launch_socket_preflight_flags,

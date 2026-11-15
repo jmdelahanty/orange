@@ -711,10 +711,15 @@ def check_orange_citrus_notify_stop_status(
         )
 
     stop_operation_id = orange_recording_stop_operation_id(orange_status)
-    if operation_id and stop_operation_id != operation_id:
+    # An autorun Citrus completes under its own experiment id (citexp_...),
+    # which its status reports as experiment.last_operation_id once
+    # start_experiment is accepted (citrus-agent, 2026-11-15).
+    citrus_operation_id = json_path(citrus_status, ["experiment", "last_operation_id"], "")
+    allowed = {value for value in (operation_id, citrus_operation_id) if value}
+    if allowed and stop_operation_id not in allowed:
         failures.append(
             "Orange Citrus completion stop operation id mismatch: "
-            f"operation_id={stop_operation_id!r}; expected {operation_id!r}"
+            f"operation_id={stop_operation_id!r}; expected one of {sorted(allowed)!r}"
         )
 
     terminal_state = citrus_terminal_state(citrus_status)
@@ -2715,6 +2720,62 @@ class Orchestrator:
             record = self.__dict__["_bound_record"] = {}
         return record
 
+    def settle_bound_receipts(self, final_orange_status: dict[str, Any]) -> dict[str, Any]:
+        """Bound run, after Orange's finalize: wait until Citrus's receipts are
+        settled, then let Orange's GUI exit by itself. Nothing may stop Orange
+        or Citrus before this returns: Citrus reads Orange's status once per
+        arena, so an early exit loses the later arenas (2026-11-15,
+        2026_11_14_22_59_07). Raises when the receipts were not delivered."""
+        # Citrus reads Orange's final recording_session.json, seals its
+        # H5s and delivers the receipts; Orange's GUI stays up for them.
+        # Set before waiting: the failure path must not wait a second time.
+        self.bound_receipts_settled = True
+        final_citrus_status: dict[str, Any] = {}
+        folder = orange_recording_folder(final_orange_status)
+        limit = self.args.citrus_receipt_timeout_seconds or (
+            citrus_receipt_wait_limit_seconds(folder) if folder else 900.0
+        )
+        grace_started = time.monotonic()
+
+        def receipts_settled_or_never(status: dict[str, Any]) -> bool:
+            if citrus_finalization_settled(status):
+                return True
+            return (
+                citrus_finalization_never_started(status)
+                and time.monotonic() - grace_started >= self.args.citrus_receipt_idle_grace_seconds
+            )
+
+        final_citrus_status = self.wait_for_status(
+            "citrus",
+            CITRUS_REQUEST_SCHEMA_ID,
+            self.args.citrus_socket,
+            receipts_settled_or_never,
+            limit,
+            "receipts_delivered",
+        )
+        state = citrus_finalization_state(final_citrus_status)
+        self.bound_record["receipts"] = {
+            "state": state,
+            "limit_s": limit,
+            "waited_s": round(time.monotonic() - grace_started, 3),
+        }
+        if folder:
+            self.bound_record["citrus_h5_session_status"] = citrus_h5_session_statuses(folder)
+        if state != CITRUS_FINALIZATION_DELIVERED:
+            reason = ("Citrus built no receipts (idle, 0 attempts)"
+                      if citrus_finalization_never_started(final_citrus_status)
+                      else f"recording_observation_finalization.state={state!r}")
+            raise OrchestratorError("Citrus receipts not delivered: " + reason)
+        # Orange's GUI exits by itself once the receipts are stored.
+        orange_process = self.processes.get("orange")
+        if orange_process is not None:
+            try:
+                orange_process.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                self.bound_record["orange_exit"] = "still running 120 s after delivery; cleanup stops it"
+
+        return final_citrus_status
+
     def bound_run(self) -> bool:
         """A start declared as a stimulus experiment binds Citrus."""
         declaration = getattr(self.args, "declaration", None)
@@ -2860,6 +2921,7 @@ class Orchestrator:
         if not response_accepted(citrus_start_response):
             step.finish(ok=False, response=citrus_start_response)
             raise OrchestratorError(f"Citrus start_experiment was not accepted: {citrus_start_response}")
+        self.citrus_start_sent = True
         step.finish(ok=True, response=citrus_start_response)
 
         final_citrus_status = self.wait_for_citrus_terminal_or_run_duration()
@@ -2893,6 +2955,8 @@ class Orchestrator:
 
         if self.args.stop_policy == "citrus_completion_notify":
             final_orange_status = self.wait_for_orange_citrus_notify_stop()
+            if self.bound_run():
+                final_citrus_status = self.settle_bound_receipts(final_orange_status)
             self.require_orange_citrus_notify_stop_status(
                 final_orange_status,
                 final_citrus_status,
@@ -2900,53 +2964,9 @@ class Orchestrator:
             self.orange_recording_started = False
         elif self.args.stop_policy != "none":
             final_orange_status = self.request_orange_stop(final_citrus_status)
+            if self.bound_run():
+                final_citrus_status = self.settle_bound_receipts(final_orange_status)
             self.orange_recording_started = False
-
-        if self.bound_run():
-            # Citrus reads Orange's final recording_session.json, seals its
-            # H5s and delivers the receipts; Orange's GUI stays up for them.
-            folder = orange_recording_folder(final_orange_status)
-            limit = self.args.citrus_receipt_timeout_seconds or (
-                citrus_receipt_wait_limit_seconds(folder) if folder else 900.0
-            )
-            grace_started = time.monotonic()
-
-            def receipts_settled_or_never(status: dict[str, Any]) -> bool:
-                if citrus_finalization_settled(status):
-                    return True
-                return (
-                    citrus_finalization_never_started(status)
-                    and time.monotonic() - grace_started >= self.args.citrus_receipt_idle_grace_seconds
-                )
-
-            final_citrus_status = self.wait_for_status(
-                "citrus",
-                CITRUS_REQUEST_SCHEMA_ID,
-                self.args.citrus_socket,
-                receipts_settled_or_never,
-                limit,
-                "receipts_delivered",
-            )
-            state = citrus_finalization_state(final_citrus_status)
-            self.bound_record["receipts"] = {
-                "state": state,
-                "limit_s": limit,
-                "waited_s": round(time.monotonic() - grace_started, 3),
-            }
-            if folder:
-                self.bound_record["citrus_h5_session_status"] = citrus_h5_session_statuses(folder)
-            if state != CITRUS_FINALIZATION_DELIVERED:
-                reason = ("Citrus built no receipts (idle, 0 attempts)"
-                          if citrus_finalization_never_started(final_citrus_status)
-                          else f"recording_observation_finalization.state={state!r}")
-                raise OrchestratorError("Citrus receipts not delivered: " + reason)
-            # Orange's GUI exits by itself once the receipts are stored.
-            orange_process = self.processes.get("orange")
-            if orange_process is not None:
-                try:
-                    orange_process.wait(timeout=120)
-                except subprocess.TimeoutExpired:
-                    self.bound_record["orange_exit"] = "still running 120 s after delivery; cleanup stops it"
 
         self.require_orange_local_control_event_log(final_orange_status)
         self.validation_results = self.run_validations(
@@ -3084,6 +3104,7 @@ class Orchestrator:
         if not response_accepted(citrus_start_response):
             step.finish(ok=False, response=citrus_start_response)
             raise OrchestratorError(f"Citrus start_experiment was not accepted: {citrus_start_response}")
+        self.citrus_start_sent = True
         step.finish(ok=True, response=citrus_start_response)
 
         final_citrus_status = self.wait_for_citrus_terminal_or_run_duration()
@@ -3960,6 +3981,17 @@ def main(argv: list[str] | None = None) -> int:
                         error = f"{error}; {still_running}"
         else:
             error = str(exc)
+            if (
+                orchestrator.bound_run()
+                and orchestrator.citrus_start_sent
+                and not getattr(orchestrator, "bound_receipts_settled", False)
+            ):
+                # Citrus ran: never stop Orange or Citrus before the receipts
+                # settle; the failure is reported after.
+                try:
+                    orchestrator.settle_bound_receipts(orchestrator.last_orange_status or {})
+                except Exception as settle_exc:  # the run already failed; record why
+                    error = f"{error}; receipts: {settle_exc}"
             failure_stop_response = orchestrator.best_effort_stop_after_failure()
             cleanup_labels = {"citrus"}
             if (
