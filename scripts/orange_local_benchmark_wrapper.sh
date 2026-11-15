@@ -19,6 +19,7 @@ YOLO_SPATIAL_MASK_MODE=""
 YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX=""
 YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS=""
 CITRUS_RECORDING_CANVAS_CONFIG_PATH=""
+RUN_STAMP=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 ALLOWED_SPEC_DIR_3="$EXPERIMENT_ORANGE_ROOT/experiment_specs"
@@ -52,6 +53,9 @@ Options:
                                       Export ORANGE_YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX.
   --yolo-spatial-mask-apply-timeout-ms <ms>
                                       Export ORANGE_YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS (50-10000).
+  --run-stamp <YYYYmmdd_HHMMSS>      Pass --run-stamp to orange_client: it reads the spec
+                                      file itself and stamps experiment_id, session_id and an
+                                      absolute recorder artifact_root in memory (no spec copy).
   --citrus-recording-canvas-config-path <path>
                                       Select an existing Citrus canvas JSON under
                                       /home/jeremy/citrus/targets/rigs or /tmp.
@@ -217,6 +221,13 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS="$1"
+      shift
+      ;;
+    --run-stamp)
+      shift
+      [[ $# -gt 0 ]] || { echo "--run-stamp requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[0-9]{8}_[0-9]{6}$ ]] || { echo "--run-stamp must be YYYYmmdd_HHMMSS." >&2; exit 2; }
+      RUN_STAMP="$1"
       shift
       ;;
     --citrus-recording-canvas-config-path)
@@ -440,6 +451,13 @@ if [[ "${#SPEC_FIELDS[@]}" -ne 2 ]]; then
 fi
 
 EXPERIMENT_ID="${SPEC_FIELDS[0]}"
+if [[ -n "$RUN_STAMP" ]]; then
+  EXPERIMENT_ID="${EXPERIMENT_ID}_${RUN_STAMP}"
+fi
+CLIENT_ARGS=(--mode local --experiment-spec "$SPEC_PATH")
+if [[ -n "$RUN_STAMP" ]]; then
+  CLIENT_ARGS+=(--run-stamp "$RUN_STAMP")
+fi
 OUTPUT_ROOT="${SPEC_FIELDS[1]}"
 EXPERIMENT_ROOT="$(realpath -m "$OUTPUT_ROOT/$EXPERIMENT_ID")"
 
@@ -450,11 +468,11 @@ echo "[sudo-wrapper] output_root=$EXPERIMENT_ROOT"
 export_optional_runtime_env
 
 if [[ "$DRY_RUN" == 1 ]]; then
-  printf '[dry-run] '; printf '%q ' "$ORANGE_CLIENT" --mode local --experiment-spec "$SPEC_PATH"; printf '\n'
+  printf '[dry-run] '; printf '%q ' "$ORANGE_CLIENT" "${CLIENT_ARGS[@]}"; printf '\n'
   exit 0
 fi
 set +e
-"$ORANGE_CLIENT" --mode local --experiment-spec "$SPEC_PATH"
+"$ORANGE_CLIENT" "${CLIENT_ARGS[@]}"
 STATUS=$?
 set -e
 

@@ -2019,6 +2019,9 @@ if(BUILD_TESTING)
     add_test(
         NAME headless_declaration_spec_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/headless_declaration_spec_tests.py" $<TARGET_FILE:orange_client>)
+    add_test(
+        NAME headless_run_stamp_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/headless_run_stamp_tests.py" $<TARGET_FILE:orange_client>)
 
     add_test(
         NAME orange_local_control_client_tests

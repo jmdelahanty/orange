@@ -7,9 +7,11 @@
 # targets/release/orange_client). The sudo wrapper accepts only its allowed
 # paths; a new worktree's binary must be added there first.
 #
-# - stamps a copy of the spec into /tmp with a unique experiment_id and
-#   external_recorder_contract.artifact_root (the client refuses to reuse a
-#   non-empty run folder),
+# - runs the spec file itself with --run-stamp: orange_client gives the run a
+#   unique experiment_id, recorder session_id and (absolute)
+#   external_recorder_contract.artifact_root in memory (it refuses to reuse a
+#   non-empty run folder). No copy of the spec is written, so the run records
+#   the path and sha256 of the file in experiment_specs/,
 # - runs it through the NOPASSWD benchmark wrapper with YOLO perf logging,
 # - runs scripts/analyze_yolo_latency_phases.py on the first run, writing
 #   <output_root>/<experiment_id>/latency_phases.json next to runs.json (never
@@ -42,42 +44,32 @@ CLIENT="${CLIENT_OVERRIDE:-$REPO_ROOT/targets/release/orange_client}"
 [[ -x "$CLIENT" ]] || { echo "build first: cmake --build targets/release --target orange_client external_recorder_ipc_probe" >&2; exit 2; }
 echo "[run] orange_client=$CLIENT"
 STAMP="$(date +%Y%m%d_%H%M%S)"
-STAMPED="/tmp/$(basename "${SPEC_SRC%.json}")_${STAMP}.json"
-python3 - "$SPEC_SRC" "$STAMP" "$STAMPED" <<'PY'
+# The names orange_client derives from the spec and the stamp (--run-stamp).
+mapfile -t RUN_NAMES < <(python3 - "$SPEC_SRC" "$STAMP" <<'PY'
 import json, sys
-src, stamp, out = sys.argv[1:4]
+src, stamp = sys.argv[1:3]
 s = json.load(open(src))
 name = s['experiment_id'] + '_' + stamp
-s['experiment_id'] = name
 c = s['fixed'].get('external_recorder_contract')
-new = ''
+root = ''
 if c:  # stream-only specs have no recorder contract
-    old = c['artifact_root']
-    c['session_id'] = name
-    if old.startswith('/'):
-        # Absolute root outside the recording folder: stamp it so a rerun never
-        # reuses it (the client refuses a reused artifact_root).
-        new = old + '_' + stamp
-        c['artifact_root'] = new
-        for st in c['streams'].values():
-            for k in ('summary_json', 'video_sanity_json', 'mp4', 'gop_routing_csv'):
-                st[k] = st[k].replace(old, new)
-    else:
-        # Relative root (e.g. "external_recorder"): resolved by the client under
-        # the per-run recording folder, which is unique already; stream paths
-        # stay relative to it (Palette-transferable layout).
-        new = old
-json.dump(s, open(out, 'w'), indent=2)
-print(f"experiment_id={name}")
-print(f"artifact_root={new}")
+    root = c['artifact_root']
+    if root.startswith('/'):
+        root = root + '_' + stamp
+print(name)
+print(root)
+print(s['fixed']['output_root'])
 PY
-EXPERIMENT_ID="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['experiment_id'])" "$STAMPED")"
-ARTIFACT_ROOT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['fixed'].get('external_recorder_contract', {}).get('artifact_root', ''))" "$STAMPED")"
-OUTPUT_ROOT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['fixed']['output_root'])" "$STAMPED")"
+)
+EXPERIMENT_ID="${RUN_NAMES[0]}"
+ARTIFACT_ROOT="${RUN_NAMES[1]}"
+OUTPUT_ROOT="${RUN_NAMES[2]}"
+echo "experiment_id=$EXPERIMENT_ID"
+echo "artifact_root=$ARTIFACT_ROOT"
 LOG="/tmp/${EXPERIMENT_ID}.log"
-echo "[run] spec=$STAMPED log=$LOG"
+echo "[run] spec=$SPEC_SRC run_stamp=$STAMP log=$LOG"
 set +e
-sudo -n /usr/local/bin/orange-local-benchmark --orange-client "$CLIENT" --yolo-perf-log --yolo-perf-sample 1 "$STAMPED" > "$LOG" 2>&1
+sudo -n /usr/local/bin/orange-local-benchmark --orange-client "$CLIENT" --yolo-perf-log --yolo-perf-sample 1 --run-stamp "$STAMP" "$SPEC_SRC" > "$LOG" 2>&1
 RC=$?
 set -e
 echo "[run] exit=$RC"

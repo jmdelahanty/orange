@@ -4564,6 +4564,7 @@
    "routing_last_target_gpu_id",
    "run_id",
    "run_index",
+   "run_stamp",
    "runs",
    "safety_headroom_ratio",
    "sample_every",

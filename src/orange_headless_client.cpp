@@ -32,6 +32,7 @@
 #include <numeric>
 #include <optional>
 #include <pwd.h>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -292,6 +293,11 @@ struct HeadlessCliOptions {
     std::string config_folder;
     std::string record_folder;
     std::string experiment_spec_path;
+    // --run-stamp YYYYmmdd_HHMMSS: make this run's names unique from the spec
+    // file itself (experiment_id, recorder session_id and an absolute
+    // artifact_root get "_<stamp>"), so the spec that ran is the file in
+    // experiment_specs/ and no stamped copy exists.
+    std::string run_stamp;
     std::string sync_mode_override;
     std::string ptp_gate_acquisition_mode_override;
     std::string acquisition_buffer_mode_override;
@@ -2297,6 +2303,8 @@ void print_headless_usage(const char* argv0)
         << "  --yolo-decimate <int>       Optional. Process 1/N frames when real YOLO is enabled.\n"
         << "  --yolo-publish-live-ipc     Optional. Let real YOLO publish detections to frame IPC.\n"
         << "  --experiment-spec <path>     Run a local single-host experiment matrix.\n"
+        << "  --run-stamp <YYYYmmdd_HHMMSS> Stamp experiment_id, recorder session_id and an absolute\n"
+        << "                               artifact_root with this run's stamp (no spec copy).\n"
         << "  --validate-experiment-spec   Parse and resolve the experiment spec without opening cameras.\n"
         << "  --list-cameras               List local cameras and exit.\n"
         << "  --help\n";
@@ -3737,6 +3745,15 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
         if (arg == "--experiment-spec") {
             options->experiment_spec_path = consume_value("--experiment-spec");
             if (options->experiment_spec_path.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--run-stamp") {
+            options->run_stamp = consume_value("--run-stamp");
+            static const std::regex kStamp("^[0-9]{8}_[0-9]{6}$");
+            if (!std::regex_match(options->run_stamp, kStamp)) {
+                if (error_out) *error_out = "--run-stamp must be YYYYmmdd_HHMMSS";
                 return false;
             }
             continue;
@@ -8403,6 +8420,41 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         return false;
     }
 
+    if (!cli_options.run_stamp.empty()) {
+        // What scripts/run_detect_latency_spec.sh used to do to a /tmp copy.
+        const std::string& stamp = cli_options.run_stamp;
+        if (!root.contains("experiment_id") || !root.at("experiment_id").is_string()) {
+            if (error_out) *error_out = "--run-stamp needs the spec's experiment_id";
+            return false;
+        }
+        const std::string stamped_id = root.at("experiment_id").get<std::string>() + "_" + stamp;
+        root["experiment_id"] = stamped_id;
+        if (root.contains("fixed") && root["fixed"].is_object() &&
+            root["fixed"].contains("external_recorder_contract") &&
+            root["fixed"]["external_recorder_contract"].is_object()) {
+            nlohmann::json& contract = root["fixed"]["external_recorder_contract"];
+            contract["session_id"] = stamped_id;
+            const std::string old_root = contract.value("artifact_root", std::string());
+            if (!old_root.empty() && old_root.front() == '/') {
+                // An absolute root outside the recording folder is shared by
+                // reruns; the client refuses a reused one. A relative root
+                // lives in the per-run folder and stays as it is.
+                const std::string new_root = old_root + "_" + stamp;
+                contract["artifact_root"] = new_root;
+                if (contract.contains("streams") && contract["streams"].is_object()) {
+                    for (auto& stream : contract["streams"]) {
+                        for (const char* key : {"summary_json", "video_sanity_json", "mp4", "gop_routing_csv"}) {
+                            if (stream.contains(key) && stream[key].is_string()) {
+                                std::string value = stream[key].get<std::string>();
+                                if (value.rfind(old_root, 0) == 0) value = new_root + value.substr(old_root.size());
+                                stream[key] = value;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     spec->source_path = cli_options.experiment_spec_path;
     spec->source_json = root;
     spec->experiment_id = root.value("experiment_id", "");
@@ -8504,6 +8556,8 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                 {"transport", "run_spec"},
                 {"spec_path", ec ? cli_options.experiment_spec_path : absolute_spec.string()},
                 {"spec_sha256", spec_sha256},
+                {"run_stamp", cli_options.run_stamp.empty() ? nlohmann::json(nullptr)
+                                                            : nlohmann::json(cli_options.run_stamp)},
                 {"experiment_id", root.value("experiment_id", "")},
                 {"user", user.empty() ? nlohmann::json(nullptr) : nlohmann::json(user)}};
         } catch (const std::exception& ex) {
