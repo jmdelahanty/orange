@@ -2091,18 +2091,26 @@ def citrus_h5_session_statuses(recording_folder: str) -> dict[str, str]:
     return statuses
 
 
+def is_citrus_binary_cmdline(argv: list[str]) -> bool:
+    """The process's program is the Citrus binary (<citrus>/targets/citrus),
+    not a shell or tool whose arguments merely mention it."""
+    return bool(argv) and (argv[0] == "./targets/citrus" or argv[0].endswith("/targets/citrus"))
+
+
 def other_citrus_processes(own_pids: set[int]) -> list[str]:
     """Running Citrus binaries this orchestrator did not start. A second Citrus
     unlinks and takes over the live one's socket path at bind."""
-    try:
-        out = subprocess.run(["pgrep", "-af", "targets/citrus"], capture_output=True, text=True, check=False).stdout
-    except OSError:
-        return []
     found = []
-    for line in out.splitlines():
-        pid_text, _, command = line.partition(" ")
-        if pid_text.isdigit() and int(pid_text) not in own_pids and "pgrep" not in command:
-            found.append(line)
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) in own_pids:
+            continue
+        try:
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        argv = [part.decode("utf-8", "replace") for part in argv if part]
+        if is_citrus_binary_cmdline(argv):
+            found.append(f"{entry.name} {' '.join(argv)}")
     return found
 
 

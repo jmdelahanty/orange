@@ -190,7 +190,14 @@ def test_citrus_bound_start_checks_and_delivery() -> None:
             handle.truncate(1000 * 1000 * 1000)
         require(module.citrus_receipt_wait_limit_seconds(str(folder)) == 330 + 120 + 3 * 11 + 60,
                 "3 s per started 100 MB, as Orange's GUI exit computes it")
-    require(module.other_citrus_processes(set()) == [] or True, "pgrep probe runs")
+    require(module.is_citrus_binary_cmdline(["./targets/citrus"]), "relative Citrus binary")
+    require(module.is_citrus_binary_cmdline(["/home/jeremy/citrus/targets/citrus", "--x"]), "absolute Citrus binary")
+    require(not module.is_citrus_binary_cmdline(
+        ["/bin/bash", "-c", "python3 orchestrator.py --citrus-command 'env -C ~/citrus ./targets/citrus'"]),
+        "a shell whose command line mentions targets/citrus is not Citrus (2026-11-15 false positive)")
+    require(not module.is_citrus_binary_cmdline(["env", "-C", "/home/jeremy/citrus", "./targets/citrus"]),
+            "the env launcher is not Citrus itself (it execs it)")
+    require(isinstance(module.other_citrus_processes({0}), list), "the /proc scan runs")
 
     args = module.parse_args(["--declared-by", "delahantyj", "--intent", "stimulus_experiment", "--blank-subjects"])
     require(module.Orchestrator(args).bound_run() if hasattr(module, "Orchestrator") else True, "stimulus run is bound")
