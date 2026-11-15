@@ -184,7 +184,10 @@ cb373326 after `GET /version` joined the slice), repo
   both files at that commit, checks the digest and runs the verifier for
   Orange. It runs in Orange CI (`.github/workflows/ci.yml`) and before every
   rig day (Shadow runbook precheck). On 2026-10-05 the pinned check passed for Orange, and the live
-  check passed after the service restart (below).
+  check passed after the service restart (below). Re-pinned 2026-11-15 to
+  agent-contracts PR 128 (f0810590, `consumers.json` e45d0e1e…; MetaZebrobot
+  ecaa247, consumer_openapi 97c581df…, additive usage-link `members`): pinned
+  and live checks PASS.
 
 Orange's reliance set, every field of which is in the pinned slice:
 `/dishes/{dish_id}/citrus-snapshot` v2 top-level `dish_id`, `dish_uuid`,

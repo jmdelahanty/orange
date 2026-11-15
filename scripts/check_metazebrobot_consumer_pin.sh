@@ -2,7 +2,7 @@
 # Verify Orange's MetaZebrobot consumer expectations against the owner's pin.
 #
 # Fetches metazebrobot-consumers/{consumers.json,verify_consumers.py} from
-# agent-contracts at a pinned commit (PR 54 merge by default) and runs the
+# agent-contracts at a pinned commit (PR 128 merge by default) and runs the
 # verifier for the orange consumer against the pinned consumer_openapi.json.
 # With --live <base_url> it also checks the running service (/version digest
 # and /openapi.json). Stdlib Python only; needs gh auth (or GITHUB_TOKEN) and network.
@@ -11,8 +11,8 @@
 set -euo pipefail
 
 CONTRACTS_REPO="jmdelahanty/agent-contracts"
-CONTRACTS_COMMIT="5fc735fee7a013b016ab501177339b138f8931b7"   # agent-contracts PR 54 merge, 2026-10-05
-CONSUMERS_SHA256="8d2b38780ad08c7111cb6f5bd81723169e5ce96cad44f489e6cf442ee071bda3"
+CONTRACTS_COMMIT="f081059040fa9a194f2dcd67ed5261313f9b6d35"   # agent-contracts PR 128 merge, 2026-11-15 (metazebrobot ecaa247)
+CONSUMERS_SHA256="e45d0e1e16e4f3e3d0857a85852a4a86ae731fcc8a983098cd53c4cbbc0ac2b4"
 LIVE=""
 while [ $# -gt 0 ]; do
     case "$1" in
