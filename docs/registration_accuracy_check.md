@@ -82,10 +82,24 @@ then a weighted circle fit with 3 x MAD rejection. Its centre against the observ
 `crosshair.dish_placement`, the primary placement number; `dish.registration_vs_today` says how
 far the active registration's circle is from today's rim (has the dish moved since?).
 
-Overlays: `Cam<serial>_projection.png` (green: predicted dot, red: measured),
-`Cam<serial>_crosshair.png` (cyan: fitted arms and outline, red: observed centre, green:
-predicted centre, yellow: the registration's rim fit, magenta: today's measured rim),
-`Cam<serial>_dish_rim.png` (the registration's rim fit on the lit frame).
+Per-angle edges (`dish.observed_rim.radial_edges`): on the 720 gate angles, the strongest
+bright-to-dark step within +/- 40 px of today's fit gives the radial residual (median and max, px
+and mm). Where two steps of at least 40 % of the strongest are resolved, the innermost is the lit
+floor's edge and the outermost the wall's inner edge at the top; `fit_locks_onto` says which one
+today's fit follows. The registration means the inner rim, water side, at the top
+(`dish_inner_rim_water_side_edge`, plane `dish_top_rim`), i.e. the outermost edge.
+
+Figures:
+- `Cam<serial>_dish_rim.png` (every camera with a uniform-gray frame, 1/4 size, legend below):
+  today's rim fit and its centre (magenta), the observed crosshair centre with the offset
+  arrow (cyan, drawn 10x longer) and its value in mm, and the active registration's circle where
+  one exists (yellow), labelled with its artifact id and "EXPIRED <time>" or "valid until <time>".
+- `Cam<serial>_dish_rim_zoom.png`: 320 x 320 native-pixel crops (shown x2) at the top, right,
+  bottom and left of today's rim, with today's fit, the registration's fit and the strongest
+  edge found on each ray, so a person can judge a fit against the actual edge.
+- `Cam<serial>_projection.png` (green: predicted dot, red: measured) and
+  `Cam<serial>_crosshair.png` (cyan: fitted arms and outline, red: observed centre, green:
+  predicted centre, yellow: the registration's fit, magenta: today's rim).
 
 Caveats:
 - The outline is drawn at the experimental-area radius on the film (40.5 mm today). Where it runs
@@ -108,6 +122,15 @@ lights on, 10 ms; black, uniform gray 64, centre and outline, static_dots
 | 2010094 | 9/9 | 0.17 / 0.24 | (0.09, 0.12), 0.062, 1.0031 | 0.16 | 2.35 (0.67, 2.26) | 40.08 mm |
 | 2010095 | 9/9 | 0.17 / 0.25 | (0.07, 0.14), 0.045, 1.0031 | 0.18 | 1.51 | 40.11 mm |
 | 2010096 | 9/9 | 0.29 / 0.35 | (0.05, 0.27), -0.048, 1.0033 | 0.23 | 1.36 | 40.21 mm |
+
+Today's rim, per-angle (720 rays, output `20261115T1947Z_grid9_crosshair_v2`): residual median
+3.5-7.5 px (0.07-0.14 mm), max 31-36 px (0.6-0.7 mm, rays where the strongest step is the floor
+edge instead). Two edges are resolved on 507-641 rays, 25-35 px (0.5-0.65 mm) apart: the lit
+floor's edge at 2115-2123 px (39.6-39.7 mm) and the wall's inner edge at the top at 2143-2152 px
+(40.13-40.31 mm). Today's fit follows the outer one (fit minus outermost -1.5 to -5.5 px), the
+dish top rim the registration means, and that edge sits just above the design band's rim-top
+value (2138-2140 px at 80 mm), as the calipered 80.15 mm predicts. The 2010093 registration of
+2026-11-04 (radius 2165.7 px) is 24 px larger than today's rim as well as 1.65 mm off centre.
 
 The October homographies hold to 0.6 mm everywhere; the remaining error is mostly a +0.1 to
 +0.3 % scale (the expected refraction term with dishes and water in the light path), with
