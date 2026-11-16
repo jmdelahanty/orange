@@ -17,6 +17,19 @@
 //   7. optional: build/write the single-clip recording_session.json with
 //      conspicuously labelled placeholder media files.
 //
+// --run-spec <merged spec.json> (2026-11-16): a spec-declared recording, as
+// orange_client writes it. The spec's fixed.declaration
+// (orange.recording_start_declaration v1 or v2) goes through the production
+// parser and route check (confirmed_by run_spec); an orchard_run_plan
+// declaration's run_plan/ files are read from fixed.declaration_files_root and
+// hash-checked as load_experiment_spec does; then, before step 4 and the seal,
+// session::WriteRecordingDeclarationArtifacts writes the production
+// subject_references block, subject_confirmation.json v2, the exact spec bytes
+// as run_spec/<sha256>.json and the run_plan/ copies. No MetaZebrobot lookup
+// runs (no base_url; the HTTP hook refuses), so declared dishes are emitted as
+// lookup_failed / zebrobot_not_configured and stated blanks as
+// not_collected / declared_blank, exactly as an unconfigured rig would.
+//
 // Synthetic geometry inputs come either from --fixture-rig (a self-contained
 // synthetic Citrus rig/canvas/commissioning/daily-registration tree written by
 // this tool) or from --canvas (any existing Citrus canvas config). The bundle is
@@ -36,7 +49,10 @@
 #include "recording_subject_reference.h"
 #include "recording_metadata_csv.h"
 #include "recording_output_descriptor.h"
+#include "outputs/common/digest.h"
+#include "session/recording_declaration_artifacts.h"
 #include "session/recording_observation_request_artifacts.h"
+#include "session/recording_start_declaration.h"
 #include "session/recording_session.h"
 #include "video_capture.h"
 #include "NvEncoder/Logger.h"
@@ -46,7 +62,12 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
+#include <pwd.h>
+#include <regex>
+#include <set>
 #include <sstream>
+#include <unistd.h>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -86,6 +107,7 @@ struct Options {
     unsigned width = 4512;
     unsigned height = 4512;
     unsigned frame_rate = 100;
+    fs::path run_spec;                                  // spec-declared recording (fixed.declaration)
 };
 
 [[noreturn]] void usage(const std::string& error = "")
@@ -100,7 +122,8 @@ struct Options {
         "         [--behavior-mode free|embedded|none]\n"
         "         [--intent stimulus_experiment|recording_only]\n"
         "         [--request-version 1|2] [--manifest] [--placeholder-frames N]\n"
-        "         [--copy-images] [--raster WxH] [--frame-rate N]\n\n"
+        "         [--copy-images] [--raster WxH] [--frame-rate N]\n"
+        "         [--run-spec <spec.json with fixed.declaration>]\n\n"
         "Writes a clearly labelled synthetic recording folder with Orange's production\n"
         "snapshot, geometry-contract, asset, seal, binding-request and manifest writers.\n"
         "data_origin is always 'synthetic'. --recording-subtype omit (or absent) emits\n"
@@ -145,6 +168,7 @@ Options parse_args(int argc, char** argv)
             o.width = static_cast<unsigned>(std::stoul(v.substr(0, x)));
             o.height = static_cast<unsigned>(std::stoul(v.substr(x + 1)));
         }
+        else if (a == "--run-spec") o.run_spec = need(i, "--run-spec");
         else if (a == "--frame-rate") o.frame_rate = static_cast<unsigned>(std::stoul(need(i, "--frame-rate")));
         else if (a == "-h" || a == "--help") usage();
         else usage("unknown argument " + a);
@@ -178,6 +202,106 @@ std::string file_sha256(const fs::path& path)
         throw std::runtime_error("sha256 failed for " + path.string() + ": " + error);
     }
     return value;
+}
+
+// A spec-declared recording's inputs, read as orange_client's
+// load_experiment_spec reads them (src/orange_headless_client.cpp, the
+// fixed.declaration block): one read of the spec bytes, the production parser
+// and run_spec route check, and for an orchard_run_plan declaration the
+// run_plan/ files from fixed.declaration_files_root, each checked against the
+// sha256 its name and the declaration give.
+struct SpecDeclaration {
+    orange::session::RecordingStartDeclaration declaration;
+    json requester;
+    std::string spec_bytes;
+    std::vector<orange::session::RecordingDeclarationArtifacts::SealedFile> files;
+    json declaration_template = nullptr;
+    std::string files_root;
+};
+
+SpecDeclaration load_spec_declaration(const fs::path& spec_path)
+{
+    SpecDeclaration out;
+    {
+        std::ifstream input(spec_path, std::ios::binary);
+        if (!input) throw std::runtime_error("cannot read --run-spec " + spec_path.string());
+        std::ostringstream contents;
+        contents << input.rdbuf();
+        out.spec_bytes = contents.str();
+    }
+    const json root = json::parse(out.spec_bytes);
+    if (!root.contains("fixed") || !root.at("fixed").is_object() || !root.at("fixed").contains("declaration")) {
+        throw std::runtime_error("--run-spec has no fixed.declaration");
+    }
+    const json& fixed = root.at("fixed");
+    if (fixed.contains("subject_references")) {
+        throw std::runtime_error("a spec with fixed.declaration must not also set fixed.subject_references");
+    }
+    out.declaration = orange::session::ParseRecordingStartDeclaration(fixed.at("declaration"));
+    orange::session::CheckDeclarationRoute(out.declaration, orange::session::kConfirmedByRunSpec);
+    const auto copies = orange::session::DeclarationFileCopies(out.declaration);
+    if (copies.empty()) {
+        if (fixed.contains("declaration_files_root")) {
+            throw std::runtime_error("fixed.declaration_files_root is only for an orchard_run_plan declaration");
+        }
+    } else {
+        if (!fixed.contains("declaration_files_root") || !fixed.at("declaration_files_root").is_string()) {
+            throw std::runtime_error("an orchard_run_plan declaration needs fixed.declaration_files_root");
+        }
+        const fs::path files_root(fixed.at("declaration_files_root").get<std::string>());
+        if (!files_root.is_absolute()) throw std::runtime_error("fixed.declaration_files_root must be an absolute path");
+        if (!fixed.contains("declaration_template") || !fixed.at("declaration_template").is_object()) {
+            throw std::runtime_error("an orchard_run_plan declaration needs fixed.declaration_template");
+        }
+        const json& tmpl = fixed.at("declaration_template");
+        static const std::regex kHex40("^[0-9a-f]{40}$"), kHex64("^[0-9a-f]{64}$"),
+            kRepo("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$");
+        const bool template_ok = tmpl.size() == 4 && tmpl.contains("repo") && tmpl.at("repo").is_string() &&
+            std::regex_match(tmpl.at("repo").get<std::string>(), kRepo) && tmpl.contains("commit") &&
+            tmpl.at("commit").is_string() && std::regex_match(tmpl.at("commit").get<std::string>(), kHex40) &&
+            tmpl.contains("path") && tmpl.at("path").is_string() && !tmpl.at("path").get<std::string>().empty() &&
+            tmpl.at("path").get<std::string>().front() != '/' &&
+            tmpl.at("path").get<std::string>().find("..") == std::string::npos && tmpl.contains("sha256") &&
+            tmpl.at("sha256").is_string() && std::regex_match(tmpl.at("sha256").get<std::string>(), kHex64);
+        if (!template_ok) throw std::runtime_error("fixed.declaration_template is malformed");
+        out.declaration_template = tmpl;
+        out.files_root = files_root.string();
+        std::set<std::string> named;
+        for (const auto& copy : copies) named.insert(copy.relative_path);
+        std::error_code walk_ec;
+        for (fs::recursive_directory_iterator it(files_root / "run_plan", walk_ec), end; !walk_ec && it != end;
+             it.increment(walk_ec)) {
+            if (!it->is_regular_file()) continue;
+            const std::string relative = fs::relative(it->path(), files_root).generic_string();
+            if (!named.count(relative)) throw std::runtime_error("run_plan file not named by the declaration: " + relative);
+        }
+        for (const auto& copy : copies) {
+            std::ifstream input(files_root / copy.relative_path, std::ios::binary);
+            if (!input) throw std::runtime_error("missing declaration file " + copy.relative_path);
+            std::ostringstream contents;
+            contents << input.rdbuf();
+            const std::string bytes = contents.str();
+            if (orange::outputs::sha256_hex(bytes) != copy.sha256) {
+                throw std::runtime_error("declaration file " + copy.relative_path +
+                                         " does not hash to the sha256 the declaration names");
+            }
+            out.files.push_back({copy.relative_path, bytes, copy.sha256});
+        }
+    }
+    const std::string spec_sha256 = orange::outputs::sha256_hex(out.spec_bytes);
+    std::error_code ec;
+    const fs::path absolute_spec = fs::absolute(spec_path, ec).lexically_normal();
+    std::string user;
+    if (const char* sudo_user = std::getenv("SUDO_USER"); sudo_user && *sudo_user) user = sudo_user;
+    else if (const passwd* pw = ::getpwuid(::getuid()); pw && pw->pw_name) user = pw->pw_name;
+    out.requester = {{"transport", "run_spec"},
+                     {"spec_path", ec ? spec_path.string() : absolute_spec.string()},
+                     {"spec_sha256", spec_sha256},
+                     {"spec_copy_relative_path", "run_spec/" + spec_sha256 + ".json"},
+                     {"run_stamp", nullptr},
+                     {"experiment_id", root.value("experiment_id", "")},
+                     {"user", user.empty() ? json(nullptr) : json(user)}};
+    return out;
 }
 
 // A self-contained synthetic Citrus rig tree: one arena per camera, a local
@@ -487,6 +611,12 @@ int main(int argc, char** argv)
 {
     try {
         const Options o = parse_args(argc, argv);
+        // A spec-declared run is checked before anything is written.
+        std::optional<SpecDeclaration> spec_declaration;
+        if (!o.run_spec.empty()) {
+            spec_declaration = load_spec_declaration(o.run_spec);
+            orange::session::CheckDeclarationCoversCameras(spec_declaration->declaration, o.cameras);
+        }
         if (fs::exists(o.out) && !fs::is_empty(o.out)) {
             throw std::runtime_error("output folder exists and is not empty: " + o.out.string());
         }
@@ -575,15 +705,59 @@ int main(int argc, char** argv)
         context.recording_type = o.recording_type;
         if (!o.recording_subtype.empty()) context.recording_subtype = o.recording_subtype;
         context.behavior_mode = o.behavior_mode;
-        context.recording_intent = o.recording_intent;
+        // A declaration's intent replaces the contexts' (as in load_experiment_spec).
+        context.recording_intent = spec_declaration ? spec_declaration->declaration.recording_intent : o.recording_intent;
         context.data_origin = "synthetic";
         (void)orange::recording::RecordingContext::Parse(context.ToJson());  // same rules as the app config
         std::map<std::string, orange::recording::RecordingContext> contexts;
         for (const auto& serial : o.cameras) contexts.emplace(serial, context);
         const json emitted_contexts = orange::recording::EmittedRecordingContextsJson(contexts);
-        // No subject: a synthetic bundle images nothing, declared explicitly per camera.
+        // No subject: a synthetic bundle images nothing, declared explicitly per
+        // camera. A spec-declared bundle instead writes what orange_client
+        // writes: the declaration artifacts (subject references, confirmation,
+        // run_spec/ and run_plan/ copies), before the seal.
         json subject_references = json::object();
-        for (const auto& serial : o.cameras) subject_references[serial] = orange::recording::NotCollectedSubjectReference("synthetic_bundle");
+        json declaration_summary = nullptr;
+        if (spec_declaration) {
+            const auto& d = spec_declaration->declaration;
+            orange::session::CheckDeclarationCoversCameras(d, o.cameras);
+            orange::session::RecordingDeclarationArtifacts artifacts;
+            artifacts.recording_serials = o.cameras;
+            artifacts.subject_references = d.subject_references;
+            artifacts.declaration_files = spec_declaration->files;
+            artifacts.subject_confirmation = orange::session::BuildSubjectConfirmation(
+                d.subject_references, o.cameras, orange::session::kConfirmedByRunSpec, d.ToJson(),
+                spec_declaration->requester, get_current_utc_timestamp());
+            artifacts.spec_bytes = spec_declaration->spec_bytes;
+            artifacts.spec_sha256 = spec_declaration->requester.value("spec_sha256", std::string());
+            artifacts.spec_copy_relative_path = spec_declaration->requester.value("spec_copy_relative_path", std::string());
+            const orange::recording::HttpGetFn no_network = [](const std::string&, int) {
+                orange::recording::HttpGetResult r;
+                r.error = "synthetic_recording_bundle performs no network lookups";
+                return r;
+            };
+            orange::session::WriteRecordingDeclarationArtifacts(o.out.string(), artifacts,
+                                                                update_recording_snapshot_session_artifacts,
+                                                                get_current_utc_timestamp(), no_network);
+            const json written = json::parse(std::ifstream(o.out / "recording_snapshot.json"));
+            subject_references = written.at("session").at("subject_references");
+            json files = json::array();
+            for (const auto& f : spec_declaration->files) files.push_back({{"relative_path", f.relative_path}, {"sha256", f.sha256}});
+            declaration_summary = {
+                {"confirmed_by", orange::session::kConfirmedByRunSpec},
+                {"declaration_schema_version", d.schema_version},
+                {"source_kind", d.source_kind().empty() ? json(nullptr) : json(d.source_kind())},
+                {"run_spec_input_path", spec_declaration->requester.value("spec_path", std::string())},
+                {"spec_copy_relative_path", artifacts.spec_copy_relative_path},
+                {"spec_sha256", artifacts.spec_sha256},
+                {"declaration_template", spec_declaration->declaration_template},
+                {"declaration_files_root", spec_declaration->files_root.empty() ? json(nullptr) : json(spec_declaration->files_root)},
+                {"run_plan_files", files},
+                {"subject_confirmation", sha_reference(o.out, "subject_confirmation.json")},
+                {"zebrobot_lookups", "not performed (no base_url; synthetic)"}};
+        } else {
+            for (const auto& serial : o.cameras) subject_references[serial] = orange::recording::NotCollectedSubjectReference("synthetic_bundle");
+        }
         orange::recording::ValidateEmittedSubjectReferences(subject_references);
         const json label = {
             {"schema_id", kBundleSchemaId}, {"schema_version", kBundleSchemaVersion},
@@ -711,6 +885,7 @@ int main(int argc, char** argv)
                         {"camera_configs", camera_inputs}}},
             {"recording_contexts", emitted_contexts},
             {"subject_references", subject_references},
+            {"start_declaration", declaration_summary},
             {"artifacts", {
                 {"recording_snapshot", sha_reference(o.out, "recording_snapshot.json")},
                 {"recording_snapshot_start", start_reference},

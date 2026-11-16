@@ -39,7 +39,7 @@ def run(binary: Path, out: Path, rig: Path, *extra: str) -> dict:
 
 
 def check_bundle(out: Path, summary: dict, *, expect_subtype: bool, expect_requests: bool,
-                 request_version: int) -> None:
+                 request_version: int, declared: bool = False) -> None:
     label = load(out / "synthetic_bundle.json")
     assert label["schema_id"] == "orange.synthetic_recording_bundle" and label["synthetic"] is True
     assert label["data_origin"] == "synthetic"
@@ -83,6 +83,8 @@ def check_bundle(out: Path, summary: dict, *, expect_subtype: bool, expect_reque
     refs = start["session"]["subject_references"]
     assert set(refs) == set(CAMERAS)
     for entry in refs.values():
+        if declared:  # a spec-declared bundle: checked by check_run_spec_declaration
+            break
         assert entry["status"] == "not_collected" and entry["reason"] == "synthetic_bundle" and entry["dish"] is None
         assert entry["subject_count"] is None
     assert snapshot["session"]["subject_references"] == refs
@@ -169,6 +171,80 @@ def check_bundle(out: Path, summary: dict, *, expect_subtype: bool, expect_reque
         assert summary["observation_binding_requests"]["binding_mode"] == "not_applicable"
 
 
+DECLARATION_FIXTURE = REPO_ROOT / "tools" / "fixtures" / "declaration_v2" / "orchard_v2"
+
+
+def check_run_spec_declaration(binary: Path, root: Path) -> None:
+    """--run-spec: a spec-declared recording (orchard plan, declaration v2) as
+    orange_client writes it: subject_confirmation.json v2, run_spec/ and run_plan/
+    copies, the frozen subject references, the declared intent."""
+    import shutil
+    files_root = root / "declare_out"
+    shutil.copytree(DECLARATION_FIXTURE, files_root)
+    declaration = load(next(files_root.glob("*.orange_declaration.json")))
+    spec = {"experiment_id": "synthetic_declared", "fixed": {
+        "recording_contexts": {"schema_version": 1, "default": {"recording_type": "behavior",
+                               "behavior_mode": "embedded", "recording_intent": "recording_only"}},
+        "declaration": declaration,
+        "declaration_template": {"repo": "jmdelahanty/orange", "commit": "0" * 40,
+                                 "path": "experiment_specs/templates/t.json", "sha256": "0" * 64},
+        "declaration_files_root": str(files_root)}}
+    spec_path = root / "merged_run_spec.json"
+    spec_path.write_text(json.dumps(spec, indent=2) + "\n")
+    spec_sha = hashlib.sha256(spec_path.read_bytes()).hexdigest()
+
+    out = root / "synthetic_declared_v2"
+    summary = run(binary, out, root / "rig_e", "--run-spec", str(spec_path), "--manifest")
+    check_bundle(out, summary, expect_subtype=False, expect_requests=True, request_version=2, declared=True)
+    confirmation = load(out / "subject_confirmation.json")
+    assert confirmation["schema_id"] == "orange.recording_subject_confirmation"
+    assert confirmation["schema_version"] == 2 and confirmation["confirmed_by"] == "run_spec"
+    assert confirmation["declaration"] == declaration
+    assert confirmation["config"] == declaration["subject_references"]
+    requester = confirmation["requester"]
+    assert requester["transport"] == "run_spec" and requester["spec_sha256"] == spec_sha
+    assert requester["spec_copy_relative_path"] == f"run_spec/{spec_sha}.json"
+    assert (out / requester["spec_copy_relative_path"]).read_bytes() == spec_path.read_bytes()
+    source = declaration["source"]
+    for key in ("plan_copy_relative_path", "plan_json_copy_relative_path", "sign_off_copy_relative_path"):
+        copy = out / source[key]
+        assert copy.read_bytes() == (files_root / source[key]).read_bytes(), key
+        assert hashlib.sha256(copy.read_bytes()).hexdigest() == copy.stem, key
+    start = load(out / "recording_snapshot_start.json")
+    refs = start["session"]["subject_references"]
+    assert refs["2010096"]["status"] == "not_collected" and refs["2010096"]["reason"] == "declared_blank"
+    assert refs["2010096"]["subject_count"] is None
+    assert confirmation["cameras"]["2010096"] == {"dish_id": None, "subject_count": None}
+    for serial in ("2010093", "2010094", "2010095"):
+        assert refs[serial]["status"] == "lookup_failed" and refs[serial]["reason"] == "zebrobot_not_configured"
+        assert refs[serial]["subject_count"] == declaration["subject_references"]["cameras"][serial]["subject_count"]
+    # The declaration's intent replaces the spec contexts' recording_only.
+    assert all(c["recording_intent"] == "stimulus_experiment" for c in start["session"]["recording_contexts"].values())
+    assert load(out / "recording_session.json")["subject_references"] == refs
+    assert summary["start_declaration"]["source_kind"] == "orchard_run_plan"
+
+    # Refused before anything is written: a stray run_plan file, a tampered copy,
+    # a camera the plan does not declare.
+    stray = files_root / "run_plan" / "extra.json"
+    stray.write_text("{}\n")
+    result = subprocess.run([str(binary), "--out", str(root / "refused_stray"), "--fixture-rig", str(root / "rig_f"),
+                             "--camera", "2010093", "--run-spec", str(spec_path)], capture_output=True, text=True)
+    assert result.returncode != 0 and "not named by the declaration" in result.stderr, result.stderr
+    assert not (root / "refused_stray").exists()
+    stray.unlink()
+    plan = files_root / source["plan_copy_relative_path"]
+    plan.write_bytes(plan.read_bytes() + b"# edited\n")
+    result = subprocess.run([str(binary), "--out", str(root / "refused_hash"), "--fixture-rig", str(root / "rig_g"),
+                             "--camera", "2010093", "--run-spec", str(spec_path)], capture_output=True, text=True)
+    assert result.returncode != 0 and "does not hash" in result.stderr, result.stderr
+    shutil.copyfile(DECLARATION_FIXTURE / source["plan_copy_relative_path"], plan)
+    result = subprocess.run([str(binary), "--out", str(root / "refused_camera"), "--fixture-rig", str(root / "rig_h"),
+                             *(f for c in (*CAMERAS, "2010097") for f in ("--camera", c)),
+                             "--run-spec", str(spec_path)], capture_output=True, text=True)
+    assert result.returncode != 0 and "does not declare recording camera 2010097" in result.stderr, result.stderr
+    assert not (root / "refused_camera").exists()
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(__doc__)
@@ -221,6 +297,8 @@ def main() -> int:
         # An acquired origin cannot be requested: data_origin is fixed by the tool.
         for f in (out / "synthetic_bundle.json", out2 / "synthetic_bundle.json", out3 / "synthetic_bundle.json"):
             assert all(e["data_origin"] == "synthetic" for e in load(f)["recording_contexts"].values())
+
+        check_run_spec_declaration(binary, root)
 
     print("synthetic_recording_bundle_tests passed")
     return 0

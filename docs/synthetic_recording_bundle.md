@@ -112,6 +112,33 @@ fixture rig). Timestamps and `source_version` differ between runs by design;
 reproducibility means the same inputs produce the same structure, statuses,
 file set and declared-checksum verification, not byte-identical snapshots.
 
+### Spec-declared bundles (`--run-spec`, 2026-11-16)
+
+`--run-spec <merged spec.json>` makes the bundle a spec-declared recording,
+as `orange_client` writes one: the spec's `fixed.declaration`
+(`orange.recording_start_declaration` v1 or v2) goes through the production
+parser, the `run_spec` route check and the camera-coverage check; for an
+`orchard_run_plan` declaration the `run_plan/` files are read from
+`fixed.declaration_files_root` and hash-checked as `load_experiment_spec`
+does. Before the seal, `session::WriteRecordingDeclarationArtifacts` writes
+the subject references, `subject_confirmation.json` (v2, `confirmed_by
+run_spec`, the spec as `requester`), the exact spec bytes as
+`run_spec/<sha256>.json` and the `run_plan/` copies, and the declaration's
+`recording_intent` replaces `--intent`. No MetaZebrobot lookup runs: declared
+dishes are emitted as `lookup_failed` / `zebrobot_not_configured`, stated
+blanks as `not_collected` / `declared_blank`. Everything is refused before the
+folder is created. The merged spec comes from
+`scripts/apply_declaration_to_template.py`:
+
+```bash
+scripts/apply_declaration_to_template.py \
+  experiment_specs/fourcam_fused_recorder_realfish_int8_192_native_ownerpush_ring_od8ff_s16.json \
+  <declare.py --out DIR> --out <merged.json>
+targets/release/synthetic_recording_bundle --out <folder> --fixture-rig <rig> \
+  --camera 2010093 --camera 2010094 --camera 2010095 --camera 2010096 \
+  --request-version 2 --manifest --run-spec <merged.json>
+```
+
 ## Completing the Orange side after Citrus answers
 
 `recording_observation_binding_cli` (same sources as the binding tests, built
