@@ -82,7 +82,10 @@ Options:
   --scene-confirmation-timeout-seconds <n>
                            How long to wait for the operator after the capture (default 3600)
   --background-stimulus-display <json>
-                           The capture's display declaration (default {"state": "unknown"})
+                           Operator override of the capture's display (state off|on|not_displayed),
+                           recorded as operator_override. Default: declared from Citrus's status
+                           (idle clear rgba8 0,0,0,255, read before and after the capture), or
+                           the capture is refused; never "unknown".
   --execute                Run it (default: print the plan only)
 
 Subjects: without --declaration-dir, Citrus autorun declares every arena blank,

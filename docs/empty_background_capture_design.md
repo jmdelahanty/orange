@@ -31,8 +31,8 @@ Bound runner (spec-runner branch, 2026-11-16):
 `scripts/run_orange_citrus_bound.sh --empty-background capture_at_setup` (or a
 plan session whose `orange.empty_background` is `capture_at_setup`) captures
 inside the same GUI process and stream as the recording: launch, Citrus
-checks, capture (the launch declares the dishes empty; display `unknown`
-unless given), `<out-dir>/empty_background_capture.json`, then a wait on
+checks, capture (the launch declares the dishes empty),
+`<out-dir>/empty_background_capture.json`, then a wait on
 `<out-dir>/scene_confirmation.sock` (mode 0600, the invoking user's) for
 `scripts/confirm_bound_run_scene.py --run-dir <out-dir> --confirmed-by <id>`
 (fish loaded, dishes not moved; or `--abort`). The runner names the caller by
@@ -41,7 +41,30 @@ is neither the invoking user's nor root's, and itself writes
 `<out-dir>/scene_confirmation.json` once with `requester.peer`. A request for
 another capture or with another decision is answered, recorded
 (`refused_requests`) and the wait goes on. Only an accepted request sets
-`scene_unchanged_confirmed`; a timeout or an abort refuses the start. A failed
+`scene_unchanged_confirmed`; a timeout or an abort refuses the start.
+
+The display is declared from Citrus, never `unknown`. Before START Citrus
+clears its output every frame to rgba8 0,0,0,255 (projector black, not zero
+light; Citrus 027d292 code, not measured on the rig) unless an arena preview
+or a calibration scene is active. The runner reads Citrus's status
+immediately before the capture and again once Orange reports it finished,
+and declares `stimulus_display_declaration` {source `citrus_idle_clear`,
+fill_rgba_u8 [0,0,0,255], citrus_build, evidence: both reads (time, every
+arena's active_preview_mode, calibration_scene, photodiode marker or
+`not_reported`, idle_display), evidence_used per read} in the capture record.
+Orange's descriptor gets `{state: on, shown: {kind: solid_color, rgba8:
+[0,0,0,255]}}` and a note naming the Citrus build. Evidence: Citrus's
+`status.idle_display` (source `idle_clear`, fill [0,0,0,255]) when reported
+(citrus-agent PR, not installed); otherwise every arena's
+`active_preview_mode` must be `NONE` and no calibration scene active. Citrus
+027d292 reports neither (its `arenas[]` carry no `active_preview_mode`; the
+mode appears only in `active_projection_snapshot` for calibration-grid
+previews), so with it the capture is refused unless the operator overrides:
+`--background-stimulus-display '{"state": "off"|"on"|"not_displayed", ...}'`,
+recorded as source `operator_override`, still read twice and refused when
+Citrus positively reports a preview, a calibration scene or a non-idle
+display. A display that differs after the capture refuses the start (the
+capture stays in the store, never named). A failed
 camera or unreserved staging refuses before the fish go in. `--fish-free-test`
 lets the runner confirm itself (decision `fish_free_test_scene_unchanged`),
 refused when the declaration names subjects. Both files stay in the run's

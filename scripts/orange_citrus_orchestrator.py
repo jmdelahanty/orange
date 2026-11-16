@@ -515,6 +515,88 @@ def empty_background_capture_problems(capture: dict[str, Any], staging_cameras: 
     return problems
 
 
+CITRUS_IDLE_FILL_RGBA_U8 = [0, 0, 0, 255]
+# What Orange's capture descriptor says for Citrus's idle clear: the display is
+# on, showing projector black (not zero light).
+CITRUS_IDLE_ORANGE_STIMULUS_DISPLAY = {"state": "on",
+                                       "shown": {"kind": "solid_color", "rgba8": CITRUS_IDLE_FILL_RGBA_U8}}
+
+
+def citrus_display_read(status: dict[str, Any]) -> dict[str, Any]:
+    """What Citrus's status says about its stimulus output, kept verbatim as
+    evidence: status.idle_display when this Citrus reports it, every arena's
+    active_preview_mode (null when not reported), the calibration scene, the
+    photodiode marker state if reported, and the build."""
+    arenas = [a for a in (status.get("arenas") or []) if isinstance(a, dict)]
+    scene = status.get("calibration_scene")
+    marker = status.get("photodiode_marker")
+    if marker is None and isinstance(scene, dict):
+        marker = scene.get("photodiode_marker")
+    return {
+        "read_at_utc": utc_now(),
+        "idle_display": status.get("idle_display"),
+        "arenas": [{"arena_id": a.get("arena_id"), "active_preview_mode": a.get("active_preview_mode")}
+                   for a in arenas],
+        "calibration_scene": ({k: scene.get(k) for k in ("state", "active", "scene_kind", "kind", "presented")
+                               if k in scene} if isinstance(scene, dict) else None),
+        "active_projection_snapshot_status": json_path(status, ["active_projection_snapshot", "status"], None),
+        "photodiode_marker": marker if marker is not None else "not_reported",
+        "citrus_build": status.get("citrus_build"),
+    }
+
+
+def citrus_idle_clear_problems(read: dict[str, Any]) -> tuple[str, list[str]]:
+    """(evidence used, problems) for 'the display shows Citrus's idle clear,
+    rgba8 0,0,0,255'. status.idle_display is preferred; without it, every
+    arena must report active_preview_mode NONE and no calibration scene may
+    be active. Empty problems = declared exactly; anything else refuses."""
+    idle = read.get("idle_display")
+    if idle is not None:
+        if not isinstance(idle, dict):
+            return "status.idle_display", ["status.idle_display is not an object"]
+        problems = []
+        if idle.get("source") != "idle_clear":
+            problems.append(f"status.idle_display.source is {idle.get('source')!r}, not 'idle_clear'")
+        if idle.get("fill_rgba_u8") != CITRUS_IDLE_FILL_RGBA_U8:
+            problems.append(f"status.idle_display.fill_rgba_u8 is {idle.get('fill_rgba_u8')!r}, "
+                            f"not {CITRUS_IDLE_FILL_RGBA_U8}")
+        return "status.idle_display", problems
+    problems = []
+    if not read["arenas"]:
+        problems.append("Citrus reports no arenas")
+    for arena in read["arenas"]:
+        mode = arena["active_preview_mode"]
+        if mode is None:
+            problems.append(f"{arena['arena_id']}: Citrus status does not report active_preview_mode "
+                            "(needs status.idle_display or arenas[].active_preview_mode)")
+        elif mode != "NONE":
+            problems.append(f"{arena['arena_id']}: preview {mode!r} is active")
+    scene = read["calibration_scene"]
+    if scene is None:
+        problems.append("Citrus status does not report calibration_scene")
+    elif scene.get("active"):
+        problems.append(f"calibration scene active (state {scene.get('state')!r})")
+    if read.get("active_projection_snapshot_status") == "active":
+        problems.append("Citrus's active projection snapshot is active (a calibration-grid preview or run)")
+    return "arena_preview_and_calibration_scene", problems
+
+
+def citrus_display_contradictions(read: dict[str, Any]) -> list[str]:
+    """What an operator override may not contradict: a preview or
+    calibration scene Citrus positively reports as active, or an idle
+    display that is not the idle clear."""
+    problems = [f"{a['arena_id']}: preview {a['active_preview_mode']!r} is active" for a in read["arenas"]
+                if a["active_preview_mode"] not in (None, "NONE")]
+    if isinstance(read["calibration_scene"], dict) and read["calibration_scene"].get("active"):
+        problems.append("calibration scene active")
+    if read.get("active_projection_snapshot_status") == "active":
+        problems.append("Citrus's active projection snapshot is active")
+    idle = read.get("idle_display")
+    if isinstance(idle, dict) and idle.get("source") not in (None, "idle_clear"):
+        problems.append(f"status.idle_display.source is {idle.get('source')!r}")
+    return problems
+
+
 SCENE_CONFIRMATION_SOCKET_NAME = "scene_confirmation.sock"
 SCENE_CONFIRMATION_REQUEST_SCHEMA_ID = "orange_citrus.scene_confirmation_request"
 SCENE_CONFIRMATION_REQUEST_KEYS = {"schema_id", "schema_version", "capture_id", "descriptor_sha256",
@@ -3568,9 +3650,11 @@ class Orchestrator:
             record["state"] = "refused"
             raise OrchestratorError("empty background: " + "; ".join(staging_problems))
 
+        # The display, from Citrus, immediately before the capture.
+        before = self.read_citrus_display("before_capture")
         step = self.step("orange_capture_empty_background")
         request_id = f"{args.operation_id}:orange:capture_empty_background"
-        params = empty_background_capture_params(args)
+        params = empty_background_capture_params(args, before.get("citrus_build"))
         response = self.send(args.orange_socket, build_orange_capture_empty_background_request(
             args.operation_id, request_id, args.source, params))
         record.update(state="requested", request_id=request_id, params=params)
@@ -3586,6 +3670,18 @@ class Orchestrator:
         )
         capture = empty_background_status(status)
         record["capture"] = {k: v for k, v in capture.items() if k != "staging"}
+        after = self.read_citrus_display("after_capture")
+        display_declaration = record["stimulus_display_declaration"]
+        display_declaration["evidence"]["after_capture"] = after
+        if display_declaration["source"] == "citrus_idle_clear":
+            used, display_problems = citrus_idle_clear_problems(after)
+            display_declaration["evidence_used"]["after_capture"] = used
+        else:
+            display_problems = citrus_display_contradictions(after)
+        if display_problems:
+            record["state"] = "display_changed_during_capture"
+            raise OrchestratorError("the stimulus display was not as declared after the capture (the capture is "
+                                    "never named): " + "; ".join(display_problems))
         problems = empty_background_capture_problems(capture, staging_cameras)
         if problems:
             record["state"] = "failed"
@@ -3605,6 +3701,7 @@ class Orchestrator:
             "recorded_at_utc": utc_now(),
             "cameras": {serial: (capture.get("cameras") or {}).get(serial) for serial in staging_cameras},
             "scene_declaration": params,
+            "stimulus_display_declaration": record["stimulus_display_declaration"],
             "camera_config": {key: camera_config.get(key) for key in ("name", "path", "hash_rule", "sha256")}
             if args.camera_config else None,
             "plan": plan_record(args),
@@ -3652,6 +3749,39 @@ class Orchestrator:
             "scene_unchanged_confirmed": True,
         }
         record.update(state="confirmed", start_params=self.empty_background_start)
+
+    def read_citrus_display(self, when: str) -> dict[str, Any]:
+        """One Citrus status read as display evidence. Before the capture it
+        also decides the declaration: Citrus's idle clear (status.idle_display
+        preferred, else every arena's preview NONE and no calibration scene),
+        or the operator's override, which Citrus may not contradict. Refuses
+        otherwise; never declares unknown."""
+        _, status = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
+        read = citrus_display_read(status)
+        record = self.empty_background_record
+        if when == "before_capture":
+            source = empty_background_display_source(self.args)
+            record["stimulus_display_declaration"] = {
+                "source": source,
+                "fill_rgba_u8": CITRUS_IDLE_FILL_RGBA_U8 if source == "citrus_idle_clear" else None,
+                "orange_stimulus_display": (copy.deepcopy(CITRUS_IDLE_ORANGE_STIMULUS_DISPLAY)
+                                            if source == "citrus_idle_clear"
+                                            else self.args.background_stimulus_display_json),
+                "citrus_build": read.get("citrus_build"),
+                "evidence_used": {},
+                "evidence": {"before_capture": read},
+            }
+            declaration = record["stimulus_display_declaration"]
+            if source == "citrus_idle_clear":
+                used, problems = citrus_idle_clear_problems(read)
+                declaration["evidence_used"]["before_capture"] = used
+            else:
+                problems = citrus_display_contradictions(read)
+            if problems:
+                record["state"] = "display_not_declarable"
+                raise OrchestratorError("empty background: the stimulus display cannot be declared "
+                                        f"({source}) before the capture: " + "; ".join(problems))
+        return read
 
     def wait_for_scene_confirmation_request(self, capture_record: dict[str, Any], step: StepLog
                                             ) -> dict[str, Any]:
@@ -4798,9 +4928,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "(the launcher's out dir). Needed with an empty background.")
     parser.add_argument("--background-declared-by", default=None,
                         help="Who declares the dishes empty at the capture (default: the declaration's declared_by).")
-    parser.add_argument("--background-stimulus-display", default='{"state": "unknown"}',
-                        help="The capture's stimulus_display declaration (JSON, Orange's capture_empty_background "
-                             "params). Default unknown: the runner cannot see the display.")
+    parser.add_argument("--background-stimulus-display", default=None,
+                        help="Operator override of the capture's display (JSON, Orange's stimulus_display: state "
+                             "off|on|not_displayed, shown...), recorded as source operator_override; Citrus is still "
+                             "read before and after and may not contradict it. Default: declared from Citrus's "
+                             "status as its idle clear rgba8 0,0,0,255, or the capture is refused.")
     parser.add_argument("--background-note", default="",
                         help="Free-text note for the capture's scene declaration.")
     parser.add_argument("--background-capture-timeout-seconds", type=positive_float, default=60.0,
@@ -4969,23 +5101,38 @@ def resolve_plan_and_background(args: argparse.Namespace) -> None:
     args.background_declared_by = args.background_declared_by or declaration.get("declared_by")
     if not IDENTITY_PATTERN.fullmatch(str(args.background_declared_by or "")):
         raise ValueError("--background-declared-by must match ^[a-z][a-z0-9_-]{0,31}$")
-    try:
-        display = json.loads(args.background_stimulus_display)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"--background-stimulus-display is not JSON: {exc}") from exc
-    if not isinstance(display, dict) or display.get("state") not in {"off", "on", "unknown", "not_displayed"}:
-        raise ValueError("--background-stimulus-display needs state off, on, unknown or not_displayed")
-    args.background_stimulus_display_json = display
+    if args.background_stimulus_display is not None:
+        try:
+            display = json.loads(args.background_stimulus_display)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"--background-stimulus-display is not JSON: {exc}") from exc
+        # An override states what is shown; "unknown" is never declared.
+        if not isinstance(display, dict) or display.get("state") not in {"off", "on", "not_displayed"}:
+            raise ValueError("--background-stimulus-display needs state off, on or not_displayed")
+        args.background_stimulus_display_json = display
     if args.fish_free_test and declaration_names_subjects(declaration):
         raise ValueError("--fish-free-test with a declaration that names subjects: the runner would confirm "
                          "'no fish loaded' for a recording declared with fish")
 
 
-def empty_background_capture_params(args: argparse.Namespace) -> dict[str, Any]:
+def empty_background_display_source(args: argparse.Namespace) -> str:
+    return "operator_override" if args.background_stimulus_display_json is not None else "citrus_idle_clear"
+
+
+def empty_background_capture_params(args: argparse.Namespace, citrus_build: Any = None) -> dict[str, Any]:
     note = args.background_note or (f"Dishes declared empty by {args.background_declared_by} when the bound run "
                                     f"{args.operation_id} was launched (before fish loading).")
+    if args.background_stimulus_display_json is not None:
+        display = args.background_stimulus_display_json
+        note += " Display: operator override."
+    else:
+        display = copy.deepcopy(CITRUS_IDLE_ORANGE_STIMULUS_DISPLAY)
+        commit = citrus_build.get("git_commit_hash") if isinstance(citrus_build, dict) else None
+        note += (f" Display: Citrus idle clear rgba8 0,0,0,255 (projector black), read from Citrus status "
+                 f"before and after the capture (Citrus {commit or 'build unknown'}); evidence in the runner's "
+                 f"{CAPTURE_RECORD_NAME}.")
     return {"declared_by": args.background_declared_by, "dishes_empty": True,
-            "note": note, "stimulus_display": args.background_stimulus_display_json}
+            "note": note, "stimulus_display": display}
 
 
 def plan_record(args: argparse.Namespace) -> dict[str, Any] | None:
@@ -5000,6 +5147,7 @@ def empty_background_plan(args: argparse.Namespace) -> dict[str, Any]:
         return {"mode": args.empty_background}
     return {
         "mode": "capture_at_setup",
+        "stimulus_display_source": empty_background_display_source(args),
         "capture_request": build_orange_capture_empty_background_request(
             args.operation_id, f"{args.operation_id}:orange:capture_empty_background", args.source,
             empty_background_capture_params(args)),

@@ -4687,6 +4687,21 @@ def background_orange_status(base: dict[str, Any], capture: dict[str, Any] | Non
     return status
 
 
+CITRUS_BUILD = {"git_commit_hash": "027d292", "git_dirty": False}
+# The field citrus-agent is adding (status.idle_display), as the fake reports it.
+IDLE_DISPLAY_STATUS = {"idle_display": {"source": "idle_clear", "fill_rgba_u8": [0, 0, 0, 255]},
+                       "citrus_build": CITRUS_BUILD}
+# Without the field: the inference from every arena's preview and the calibration scene.
+INFERRED_IDLE_STATUS = {"arenas": [{"arena_id": "arena_1", "active_preview_mode": "NONE"},
+                                   {"arena_id": "arena_2", "active_preview_mode": "NONE"}],
+                        "calibration_scene": {"state": "idle", "active": False},
+                        "active_projection_snapshot": {"status": "inactive"}, "citrus_build": CITRUS_BUILD}
+# Citrus 027d292 as installed: arenas without active_preview_mode, no idle_display.
+CITRUS_027D292_STATUS = {"arenas": [{"arena_id": "arena_1"}, {"arena_id": "arena_2"}],
+                         "calibration_scene": {"state": "idle", "active": False},
+                         "active_projection_snapshot": {"status": "inactive"}, "citrus_build": CITRUS_BUILD}
+
+
 def run_background_fake(
     module: Any,
     root: Path,
@@ -4696,6 +4711,9 @@ def run_background_fake(
     camera_results: dict[str, str] | None = None,
     staging: dict[str, Any] | None = None,
     allowed_uids: set[int] | None = None,
+    citrus_display_before: dict[str, Any] | None = None,
+    citrus_display_after: dict[str, Any] | None = None,
+    citrus_sent: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """A GUI run against fake sockets whose Orange answers capture_empty_background.
     `confirm` runs once the runner listens on its confirmation socket."""
@@ -4727,12 +4745,19 @@ def run_background_fake(
         status = background_orange_status(orange_status(state["started"], state["stopped"]), state["capture"], staging)
         return response_for(request, status)
 
+    before = IDLE_DISPLAY_STATUS if citrus_display_before is None else citrus_display_before
+    after = before if citrus_display_after is None else citrus_display_after
+
     def handle_citrus(request: dict[str, Any]) -> dict[str, Any]:
+        if citrus_sent is not None and request.get("method") != "status":
+            citrus_sent.append(request)
         if request.get("method") == "start_experiment":
             state["citrus_started"] = True
         elif request.get("method") == "status" and state["citrus_started"]:
             state["citrus_polls"] += 1
-        return response_for(request, citrus_status(state["citrus_started"], state["citrus_polls"] >= 1))
+        status = citrus_status(state["citrus_started"], state["citrus_polls"] >= 1)
+        status.update(copy.deepcopy(after if state["capture"] is not None else before))
+        return response_for(request, status)
 
     def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
         return handle_orange(request) if socket_path == "orange-test.sock" else handle_citrus(request)
@@ -4783,8 +4808,19 @@ def test_empty_background_capture_confirmation_and_start() -> None:
         require(methods[:2] == ["capture_empty_background", "start_recording"], f"capture before start: {methods}")
         capture_params = sent[0]["params"]
         require(capture_params["declared_by"] == "delahantyj" and capture_params["dishes_empty"] is True
-                and capture_params["stimulus_display"] == {"state": "unknown"} and sent[0]["operation_id"] == "op-bg",
-                f"the capture request: {sent[0]}")
+                and capture_params["stimulus_display"] == {"state": "on", "shown": {"kind": "solid_color",
+                                                                                     "rgba8": [0, 0, 0, 255]}}
+                and "027d292" in capture_params["note"] and sent[0]["operation_id"] == "op-bg",
+                f"the capture declares Citrus's idle clear to Orange: {sent[0]}")
+        declared = summary["empty_background"]["stimulus_display_declaration"]
+        require(declared["source"] == "citrus_idle_clear" and declared["fill_rgba_u8"] == [0, 0, 0, 255]
+                and declared["evidence_used"] == {"before_capture": "status.idle_display",
+                                                  "after_capture": "status.idle_display"}
+                and declared["citrus_build"] == CITRUS_BUILD
+                and set(declared["evidence"]) == {"before_capture", "after_capture"}
+                and declared["evidence"]["before_capture"]["read_at_utc"]
+                and declared["evidence"]["after_capture"]["photodiode_marker"] == "not_reported",
+                f"both reads are the evidence, and which evidence was used: {declared}")
         start = sent[1]["params"]
         require(start["empty_background"] == {"capture_id": "eb_20261116T000000Z_test",
                                               "descriptor_sha256": "sha256:" + "c" * 64,
@@ -4933,6 +4969,71 @@ def test_empty_background_capture_confirmation_and_start() -> None:
                 f"the summary and the capture record name the plan: {summary['plan']}")
 
 
+def test_empty_background_display_from_citrus() -> None:
+    module = load_module()
+    blank = ["--declared-by", "delahantyj", "--intent", "recording_only", "--blank-subjects",
+             "--empty-background", "capture_at_setup", "--fish-free-test"]
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+
+        # Without status.idle_display: the preview / calibration-scene inference.
+        summary, sent = run_background_fake(module, base / "inferred", blank,
+                                            citrus_display_before=INFERRED_IDLE_STATUS)
+        declared = summary["empty_background"]["stimulus_display_declaration"]
+        require(summary["result"] == "pass" and declared["evidence_used"] == {
+            "before_capture": "arena_preview_and_calibration_scene",
+            "after_capture": "arena_preview_and_calibration_scene"}
+            and [a["active_preview_mode"] for a in declared["evidence"]["before_capture"]["arenas"]] == ["NONE"] * 2,
+            f"the inference is recorded as the evidence used: {summary.get('error')} {declared}")
+
+        def refused_before(name: str, display: dict[str, Any], text: str, extra: list[str] = ()) -> None:
+            summary, sent = run_background_fake(module, base / name, blank + list(extra),
+                                                citrus_display_before=display)
+            require(summary["result"] == "fail" and text in summary["error"] and not sent
+                    and summary["empty_background"]["state"] == "display_not_declarable",
+                    f"{name}: refused before any capture: {summary['error']}")
+
+        # Citrus 027d292 as installed reports neither: never 'unknown', refused.
+        refused_before("installed_citrus", CITRUS_027D292_STATUS, "does not report active_preview_mode")
+        refused_before("preview", {**INFERRED_IDLE_STATUS, "arenas": [
+            {"arena_id": "arena_1", "active_preview_mode": "NONE"},
+            {"arena_id": "arena_2", "active_preview_mode": "CHASER"}]}, "arena_2: preview 'CHASER' is active")
+        refused_before("calibration", {**INFERRED_IDLE_STATUS,
+                                       "calibration_scene": {"state": "presenting", "active": True}},
+                       "calibration scene active")
+        refused_before("idle_preview", {"idle_display": {"source": "preview", "fill_rgba_u8": [0, 0, 0, 255]}},
+                       "not 'idle_clear'")
+        refused_before("idle_grey", {"idle_display": {"source": "idle_clear", "fill_rgba_u8": [40, 40, 40, 255]}},
+                       "fill_rgba_u8")
+
+        # A change between the two reads: the capture is never named.
+        summary, sent = run_background_fake(
+            module, base / "changed", blank, citrus_display_before=IDLE_DISPLAY_STATUS,
+            citrus_display_after={"idle_display": {"source": "canvas_fill", "fill_rgba_u8": [255, 255, 255, 255]}})
+        require(summary["result"] == "fail" and "after the capture" in summary["error"]
+                and [r["method"] for r in sent] == ["capture_empty_background"]
+                and summary["empty_background"]["state"] == "display_changed_during_capture",
+                f"a display change during the capture refuses the start: {summary['error']}")
+
+        # The operator override: recorded as such, read twice, never contradicted.
+        override = ["--background-stimulus-display", '{"state": "off"}']
+        summary, sent = run_background_fake(module, base / "override", blank + override,
+                                            citrus_display_before=CITRUS_027D292_STATUS)
+        declared = summary["empty_background"]["stimulus_display_declaration"]
+        require(summary["result"] == "pass" and declared["source"] == "operator_override"
+                and declared["orange_stimulus_display"] == {"state": "off"}
+                and sent[0]["params"]["stimulus_display"] == {"state": "off"}
+                and "operator override" in sent[0]["params"]["note"]
+                and set(declared["evidence"]) == {"before_capture", "after_capture"},
+                f"override recorded with both reads: {summary.get('error')} {declared}")
+        refused_before("override_contradicted", {**INFERRED_IDLE_STATUS, "calibration_scene":
+                                                 {"state": "presenting", "active": True}},
+                       "calibration scene active", override)
+        text = parse_error(module, blank + ["--run-dir", str(base / "x"),
+                                            "--background-stimulus-display", '{"state": "unknown"}'])
+        require("off, on or not_displayed" in text, f"unknown is never declared: {text}")
+
+
 def test_bound_launcher_declaration_dir() -> None:
     launcher = REPO_ROOT / "scripts" / "run_orange_citrus_bound.sh"
     digest_tool = REPO_ROOT / "scripts" / "camera_config_dir_digest.py"
@@ -5029,6 +5130,7 @@ def main() -> int:
         test_plan_declaration_recording_only_all_blank_is_accepted,
         test_orchard_declaration_files_preset_and_citrus_gate,
         test_empty_background_capture_confirmation_and_start,
+        test_empty_background_display_from_citrus,
         test_bound_launcher_declaration_dir,
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
