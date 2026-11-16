@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import copy
 import errno
+import hashlib
 import json
 import os
+import re
 import signal
 import shlex
 import shutil
@@ -140,12 +142,22 @@ def build_orange_start_request(
     request_id: str,
     source: str,
     declaration: dict[str, Any] | None = None,
+    *,
+    declaration_files_root: str | None = None,
+    empty_background: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Orange's start. With a declaration the GUI needs no Subject panel Confirm
-    (src/session/recording_start_declaration.h); without one it does."""
+    (src/session/recording_start_declaration.h); without one it does. An
+    orchard declaration names the folder holding its run_plan/ copies, and a
+    start may name an empty-dish background capture (both need the
+    declaration; docs/orange_local_control_contract.md)."""
     params: dict[str, Any] = {"reason": "orchestrator_start"}
     if declaration is not None:
         params["declaration"] = declaration
+    if declaration_files_root is not None:
+        params["declaration_files_root"] = declaration_files_root
+    if empty_background is not None:
+        params["empty_background"] = empty_background
     return build_request(
         ORANGE_REQUEST_SCHEMA_ID,
         "start_recording",
@@ -356,6 +368,201 @@ def build_citrus_stop_request(operation_id: str, request_id: str, source: str) -
         operation_id=operation_id,
         source=source,
     )
+
+
+ORCHARD_SOURCE_KIND = "orchard_run_plan"
+IDENTITY_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+EMPTY_BACKGROUND_MODES = ("none", "capture_at_setup")
+CAPTURE_RECORD_NAME = "empty_background_capture.json"
+CAPTURE_RECORD_SCHEMA_ID = "orange_citrus.empty_background_capture_record"
+SCENE_CONFIRMATION_NAME = "scene_confirmation.json"
+SCENE_CONFIRMATION_SCHEMA_ID = "orange_citrus.scene_confirmation"
+SCENE_DECISION_FISH_LOADED = "fish_loaded_scene_unchanged"
+SCENE_DECISION_FISH_FREE = "fish_free_test_scene_unchanged"
+SCENE_DECISION_ABORT = "abort"
+SCENE_STATEMENTS = {
+    SCENE_DECISION_FISH_LOADED: ("The fish are loaded; the dishes were not moved and nothing else in the scene "
+                                 "changed since the empty background capture."),
+    SCENE_DECISION_FISH_FREE: ("Fish-free test: no fish were loaded; nothing in the scene changed since the "
+                               "empty background capture."),
+    SCENE_DECISION_ABORT: "Do not start: the scene is not as captured, or the session is called off.",
+}
+
+
+def is_orchard_declaration(declaration: dict[str, Any] | None) -> bool:
+    return bool(declaration) and declaration.get("schema_version") == 2 \
+        and isinstance(declaration.get("source"), dict) and declaration["source"].get("kind") == ORCHARD_SOURCE_KIND
+
+
+def declaration_file_copies(declaration: dict[str, Any]) -> list[tuple[str, str]]:
+    """(relative path, sha256) of the run_plan/ copies an orchard declaration
+    names (Orange's session::DeclarationFileCopies)."""
+    source = declaration["source"]
+    return [(source["plan_copy_relative_path"], source["file_sha256"]),
+            (source["plan_json_copy_relative_path"], source["plan_sha256"]),
+            (source["sign_off_copy_relative_path"], source["sign_off"]["entry_sha256"])]
+
+
+def check_declaration_files(declaration: dict[str, Any], root: Path) -> list[str]:
+    """Orange's rule (session::ReadDeclarationFiles), checked before anything
+    is launched: every named copy exists and hashes to its name, and run_plan/
+    holds nothing else. Empty = the GUI will accept the folder."""
+    problems: list[str] = []
+    try:
+        copies = declaration_file_copies(declaration)
+    except (KeyError, TypeError) as exc:
+        return [f"the declaration's source does not name its run_plan copies: {exc}"]
+    named = {relative for relative, _ in copies}
+    run_plan = root / "run_plan"
+    if run_plan.is_dir():
+        for path in sorted(run_plan.rglob("*")):
+            if path.is_file() and path.relative_to(root).as_posix() not in named:
+                problems.append(f"run_plan file not named by the declaration: {path.relative_to(root).as_posix()}")
+    for relative, sha in copies:
+        path = root / relative
+        if not path.is_file():
+            problems.append(f"missing declaration file {relative}")
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != sha:
+            problems.append(f"declaration file {relative} does not hash to the sha256 the declaration names")
+    return problems
+
+
+def plan_session_from_files(declaration: dict[str, Any], root: Path) -> dict[str, Any]:
+    """The plan session the declaration was made for, from the canonical plan
+    JSON copy (run_plan/<plan_sha256>.json, written by orchard declare.py)."""
+    source = declaration["source"]
+    plan = json.loads((root / source["plan_json_copy_relative_path"]).read_text(encoding="utf-8"))
+    for session in plan.get("sessions") or []:
+        if isinstance(session, dict) and session.get("session_id") == source.get("plan_session_id"):
+            return session
+    raise ValueError(f"plan {source.get('plan_id')} has no session {source.get('plan_session_id')!r}")
+
+
+def plan_preset_problems(session: dict[str, Any], camera_config: dict[str, Any] | None) -> list[str]:
+    """The plan pins the Orange camera preset (orange.preset name, sha256,
+    hash_rule); the launcher's preset record must be that one (abort rule A8)."""
+    preset = json_path(session, ["orange", "preset"], None)
+    if preset is None:
+        return []
+    if not isinstance(preset, dict):
+        return ["the plan's orange.preset is not an object"]
+    if camera_config is None:
+        return ["the plan pins a camera preset but no preset record was given (--camera-config-json)"]
+    problems = []
+    for key in ("name", "sha256", "hash_rule"):
+        if preset.get(key) != camera_config.get(key):
+            problems.append(f"preset {key}: the plan says {preset.get(key)!r}, the launched folder is "
+                            f"{camera_config.get(key)!r}")
+    return problems
+
+
+def declaration_names_subjects(declaration: dict[str, Any] | None) -> bool:
+    """True when any camera (or the default) carries a dish or a subject count."""
+    references = (declaration or {}).get("subject_references") or {}
+    entries = [references.get("default")] + list((references.get("cameras") or {}).values())
+    return any(isinstance(e, dict) and not e.get("blank") and (e.get("dish_id") or e.get("subject_count"))
+               for e in entries)
+
+
+def build_orange_capture_empty_background_request(
+    operation_id: str, request_id: str, source: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    return build_request(
+        ORANGE_REQUEST_SCHEMA_ID,
+        "capture_empty_background",
+        request_id,
+        operation_id=operation_id,
+        source=source,
+        params=params,
+    )
+
+
+def empty_background_status(status: dict[str, Any]) -> dict[str, Any]:
+    value = json_path(status, ["local_control", "empty_background_capture"], None)
+    return value if isinstance(value, dict) else {}
+
+
+def empty_background_staging_problems(status: dict[str, Any]) -> list[str]:
+    """Every streaming camera must have had its burst staging reserved at
+    stream start, or its capture would be refused."""
+    staging = empty_background_status(status).get("staging")
+    if not isinstance(staging, dict) or not staging:
+        return ["Orange reports no streaming camera with burst staging (local_control.empty_background_capture.staging)"]
+    return [f"camera {serial}: staging not reserved ({(entry or {}).get('error')})"
+            for serial, entry in sorted(staging.items()) if not (isinstance(entry, dict) and entry.get("reserved"))]
+
+
+def empty_background_capture_finished(status: dict[str, Any], request_id: str) -> bool:
+    capture = empty_background_status(status)
+    return capture.get("request_id") == request_id and capture.get("state") in {"captured", "failed", "refused"}
+
+
+def empty_background_capture_problems(capture: dict[str, Any], staging_cameras: list[str]) -> list[str]:
+    """A capture the runner may name: captured, with a descriptor, and every
+    camera that streamed captured (a failed camera would record
+    missing_in_capture; the runner refuses before the fish go in instead)."""
+    if capture.get("state") != "captured":
+        return [f"capture state {capture.get('state')!r}: {capture.get('error')}"]
+    problems = []
+    if not capture.get("capture_id") or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(capture.get("descriptor_sha256"))):
+        problems.append("the capture names no capture_id or descriptor_sha256")
+    cameras = capture.get("cameras") if isinstance(capture.get("cameras"), dict) else {}
+    for serial in staging_cameras:
+        entry = cameras.get(serial)
+        if not isinstance(entry, dict) or entry.get("capture_status") != "captured":
+            reason = entry.get("failure_reason") if isinstance(entry, dict) else "not in the capture"
+            problems.append(f"camera {serial}: not captured ({reason})")
+    return problems
+
+
+def scene_confirmation_problems(confirmation: Any, capture_record: dict[str, Any]) -> list[str]:
+    """The operator's confirmation must answer this capture (id and sha256),
+    name who confirmed, and carry one of the known decisions."""
+    if not isinstance(confirmation, dict) or confirmation.get("schema_id") != SCENE_CONFIRMATION_SCHEMA_ID \
+            or confirmation.get("schema_version") != 1:
+        return [f"not an {SCENE_CONFIRMATION_SCHEMA_ID} v1"]
+    problems = []
+    for key in ("capture_id", "descriptor_sha256"):
+        if confirmation.get(key) != capture_record.get(key):
+            problems.append(f"{key} {confirmation.get(key)!r} is not this run's {capture_record.get(key)!r}")
+    if not IDENTITY_PATTERN.fullmatch(str(confirmation.get("confirmed_by", ""))):
+        problems.append("confirmed_by must match ^[a-z][a-z0-9_-]{0,31}$")
+    decision = confirmation.get("decision")
+    if decision not in SCENE_STATEMENTS:
+        problems.append(f"unknown decision {decision!r}")
+    elif confirmation.get("statement") != SCENE_STATEMENTS[decision]:
+        problems.append("the statement is not the one for its decision")
+    if str(confirmation.get("confirmed_at_utc", "")) < str(capture_record.get("recorded_at_utc", "")):
+        problems.append("confirmed before the capture was recorded")
+    return problems
+
+
+def build_scene_confirmation(capture_record: dict[str, Any], confirmed_by: str, decision: str, *,
+                             tool: str, note: str = "") -> dict[str, Any]:
+    return {
+        "schema_id": SCENE_CONFIRMATION_SCHEMA_ID,
+        "schema_version": 1,
+        "capture_id": capture_record.get("capture_id"),
+        "descriptor_sha256": capture_record.get("descriptor_sha256"),
+        "decision": decision,
+        "statement": SCENE_STATEMENTS[decision],
+        "confirmed_by": confirmed_by,
+        "confirmed_at_utc": utc_now(),
+        "note": note,
+        "writer": {"tool": tool, "uid": os.getuid(), "pid": os.getpid(),
+                   "user": os.environ.get("SUDO_USER") or os.environ.get("USER") or None},
+    }
+
+
+def write_json_exclusive(path: Path, payload: dict[str, Any]) -> None:
+    """Writes once (a second confirmation never replaces the first), atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        os.link(tmp, path)
+    finally:
+        tmp.unlink()
 
 
 def send_unix_json(socket_path: str, payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
@@ -2582,6 +2789,9 @@ class Orchestrator:
         self.last_orange_coverage_check_monotonic = 0.0
         self.citrus_start_sent = False
         self.headless_result: dict[str, Any] = {}
+        # Empty background (capture -> operator confirmation -> start params).
+        self.empty_background_record: dict[str, Any] | None = None
+        self.empty_background_start: dict[str, Any] | None = None
         # Long waits follow Orange's and Citrus's lifecycle event logs (made
         # before either process starts, so earlier runs' rows are skipped).
         self.lifecycle_waker: LifecycleWaker | None = None
@@ -3207,6 +3417,143 @@ class Orchestrator:
             raise OrchestratorError(f"Citrus subject declarations not in force ({when}): " + "; ".join(problems))
         return status
 
+    def capture_empty_background_and_wait(self) -> None:
+        """The plan's capture_at_setup, in this GUI process and stream (the
+        start names the capture by id and sha256): capture with the filled,
+        empty dishes, write the capture record, then wait for the operator's
+        confirmation that the fish are loaded and nothing else moved.
+        scene_unchanged_confirmed comes only from that confirmation."""
+        args = self.args
+        record: dict[str, Any] = {"mode": "capture_at_setup", "state": "staging"}
+        self.empty_background_record = record
+        status = self.wait_for_status(
+            "orange", ORANGE_REQUEST_SCHEMA_ID, args.orange_socket,
+            lambda s: bool(empty_background_status(s).get("staging")) and orange_ready_for_recording(s),
+            args.timeout_seconds, "empty_background_staging",
+        )
+        staging_problems = empty_background_staging_problems(status)
+        staging_cameras = sorted(empty_background_status(status).get("staging") or {})
+        record["staging"] = empty_background_status(status).get("staging")
+        if staging_problems:
+            record["state"] = "refused"
+            raise OrchestratorError("empty background: " + "; ".join(staging_problems))
+
+        step = self.step("orange_capture_empty_background")
+        request_id = f"{args.operation_id}:orange:capture_empty_background"
+        params = empty_background_capture_params(args)
+        response = self.send(args.orange_socket, build_orange_capture_empty_background_request(
+            args.operation_id, request_id, args.source, params))
+        record.update(state="requested", request_id=request_id, params=params)
+        if not response_accepted(response):
+            step.finish(ok=False, response=response)
+            record["state"] = "refused"
+            raise OrchestratorError(f"Orange capture_empty_background was not accepted: {response.get('error')}")
+        step.finish(ok=True, response=response)
+        status = self.wait_for_status(
+            "orange", ORANGE_REQUEST_SCHEMA_ID, args.orange_socket,
+            lambda s: empty_background_capture_finished(s, request_id),
+            args.background_capture_timeout_seconds, "empty_background_captured",
+        )
+        capture = empty_background_status(status)
+        record["capture"] = {k: v for k, v in capture.items() if k != "staging"}
+        problems = empty_background_capture_problems(capture, staging_cameras)
+        if problems:
+            record["state"] = "failed"
+            raise OrchestratorError("empty background capture not usable (before fish loading): "
+                                    + "; ".join(problems))
+        camera_config = args.camera_config or {}
+        capture_record = {
+            "schema_id": CAPTURE_RECORD_SCHEMA_ID,
+            "schema_version": 1,
+            "operation_id": args.operation_id,
+            "request_id": request_id,
+            "capture_id": capture["capture_id"],
+            "descriptor_path": capture.get("descriptor_path"),
+            "descriptor_sha256": capture["descriptor_sha256"],
+            "started_at_utc": capture.get("started_at_utc"),
+            "finished_at_utc": capture.get("finished_at_utc"),
+            "recorded_at_utc": utc_now(),
+            "cameras": {serial: (capture.get("cameras") or {}).get(serial) for serial in staging_cameras},
+            "scene_declaration": params,
+            "camera_config": {key: camera_config.get(key) for key in ("name", "path", "hash_rule", "sha256")}
+            if args.camera_config else None,
+            "plan": plan_record(args),
+            "scene_confirmation_path": str(args.run_dir / SCENE_CONFIRMATION_NAME),
+            "next_step": ("Load the fish without moving the dishes or changing anything else, then run "
+                          f"scripts/confirm_bound_run_scene.py --run-dir {args.run_dir} --confirmed-by <identity> "
+                          "(or --abort)."),
+        }
+        record_path = args.run_dir / CAPTURE_RECORD_NAME
+        write_json_exclusive(record_path, capture_record)
+        record.update(state="awaiting_scene_confirmation", capture_record_path=str(record_path),
+                      capture_record=capture_record)
+        print(f"[bound-run] empty background {capture['capture_id']} captured ({capture['descriptor_sha256']}); "
+              f"record {record_path}. {capture_record['next_step']}", file=sys.stderr, flush=True)
+
+        confirmation_path = args.run_dir / SCENE_CONFIRMATION_NAME
+        step = self.step("wait_scene_confirmation")
+        if args.fish_free_test:
+            write_json_exclusive(confirmation_path, build_scene_confirmation(
+                capture_record, args.background_declared_by, SCENE_DECISION_FISH_FREE,
+                tool="orange_citrus_orchestrator.py --fish-free-test"))
+        deadline = time.monotonic() + args.scene_confirmation_timeout_seconds
+        last_orange_check = 0.0
+        while not confirmation_path.exists():
+            self.raise_if_started_process_exited("waiting for the operator's scene confirmation")
+            if time.monotonic() - last_orange_check >= 5.0:
+                last_orange_check = time.monotonic()
+                try:
+                    self.status("orange", ORANGE_REQUEST_SCHEMA_ID, args.orange_socket)
+                except (OSError, TimeoutError, json.JSONDecodeError, OrchestratorError):
+                    pass  # judged after the wait: Orange must be ready for the start
+            if time.monotonic() >= deadline:
+                step.finish(ok=False, timed_out=True, path=str(confirmation_path))
+                record["state"] = "confirmation_timed_out"
+                raise OrchestratorError(
+                    f"no scene confirmation at {confirmation_path} within "
+                    f"{args.scene_confirmation_timeout_seconds:g} s of the capture; not starting")
+            time.sleep(min(poll_interval_for(args, "scene_confirmation"), max(0.0, deadline - time.monotonic())))
+        try:
+            confirmation = json.loads(confirmation_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            confirmation, problems = None, [f"unreadable: {exc}"]
+        else:
+            problems = scene_confirmation_problems(confirmation, capture_record)
+        record["scene_confirmation"] = {"path": str(confirmation_path), "content": confirmation, "problems": problems}
+        if problems:
+            step.finish(ok=False, problems=problems)
+            record["state"] = "confirmation_refused"
+            raise OrchestratorError(f"scene confirmation {confirmation_path} refused: " + "; ".join(problems))
+        if confirmation["decision"] == SCENE_DECISION_ABORT:
+            step.finish(ok=False, decision=SCENE_DECISION_ABORT, confirmed_by=confirmation["confirmed_by"])
+            record["state"] = "aborted_by_operator"
+            raise OrchestratorError(f"the operator ({confirmation['confirmed_by']}) aborted before the start")
+        step.finish(ok=True, decision=confirmation["decision"], confirmed_by=confirmation["confirmed_by"])
+        self.empty_background_start = {
+            "capture_id": capture_record["capture_id"],
+            "descriptor_sha256": capture_record["descriptor_sha256"],
+            "scene_unchanged_confirmed": True,
+        }
+        record.update(state="confirmed", start_params=self.empty_background_start)
+
+    def recheck_citrus_after_scene_wait(self) -> dict[str, Any]:
+        """The wait for the operator can be long: Orange must still be ready,
+        and for a bound run Citrus must still pass every start check."""
+        self.wait_for_status("orange", ORANGE_REQUEST_SCHEMA_ID, self.args.orange_socket,
+                             orange_ready_for_recording, self.args.timeout_seconds,
+                             "ready_for_recording_after_scene_confirmation")
+        _, citrus = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
+        if self.bound_run():
+            blockers = citrus_start_blockers(citrus, self.args.expected_citrus_arenas)
+            self.bound_record["start_blockers_after_scene_confirmation"] = blockers
+            if blockers:
+                raise OrchestratorError("Citrus is no longer ready after the scene confirmation: "
+                                        + "; ".join(blockers))
+            self.check_citrus_subject_declarations("after_scene_confirmation")
+        elif not citrus_ready_to_start(citrus):
+            raise OrchestratorError("Citrus is no longer ready to start after the scene confirmation")
+        return citrus
+
     def run(self) -> dict[str, Any]:
         if self.args.orange_mode == "headless":
             return self.run_headless()
@@ -3311,6 +3658,10 @@ class Orchestrator:
                 raise OrchestratorError("Citrus is not ready for a bound start: " + "; ".join(blockers))
             self.declare_citrus_subjects()
 
+        if self.args.empty_background == "capture_at_setup":
+            self.capture_empty_background_and_wait()
+            final_citrus_status = self.recheck_citrus_after_scene_wait()
+
         step = self.step("orange_start_recording")
         orange_start_response = self.send(
             self.args.orange_socket,
@@ -3319,6 +3670,9 @@ class Orchestrator:
                 f"{self.args.operation_id}:orange:start_recording",
                 self.args.source,
                 self.args.declaration,
+                declaration_files_root=(str(self.args.declaration_files_root)
+                                        if self.args.declaration_files_root else None),
+                empty_background=self.empty_background_start,
             ),
         )
         if not response_accepted(orange_start_response):
@@ -4045,6 +4399,8 @@ class Orchestrator:
             "operation_id": self.args.operation_id,
             "bound_run": self.bound_record if self.bound_run() else None,
             "camera_config": self.args.camera_config,
+            "plan": plan_record(self.args),
+            "empty_background": self.empty_background_record or empty_background_plan(self.args),
             "lifecycle_events": (self.lifecycle_waker.record() if self.lifecycle_waker is not None
                                  else {"mode": "off"}),
             "mode": "execute" if self.args.execute else "dry_run",
@@ -4246,6 +4602,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                       help="File holding the whole orange.recording_start_declaration.")
     declaration_subjects.add_argument("--declaration-from-spec", type=Path,
                                       help="Experiment spec whose fixed.declaration declares the recording.")
+    parser.add_argument("--declaration-files-root", type=Path, default=None,
+                        help="An orchard (declaration v2, source.kind orchard_run_plan) --declaration-file: the "
+                             "folder holding its run_plan/ copies (orchard tools/declare.py --out DIR). Default: "
+                             "the declaration file's folder. Orange reads and seals them in the recording.")
+    parser.add_argument("--empty-background", choices=("auto",) + EMPTY_BACKGROUND_MODES, default="auto",
+                        help="capture_at_setup: once Orange streams (and Citrus is checked), capture an empty-dish "
+                             "background, write <run-dir>/" + CAPTURE_RECORD_NAME + ", then wait for the "
+                             "operator's <run-dir>/" + SCENE_CONFIRMATION_NAME + " (scripts/confirm_bound_run_scene.py) "
+                             "before the start names the capture. auto: what an orchard plan session's "
+                             "orange.empty_background says, else none.")
+    parser.add_argument("--run-dir", type=Path, default=None,
+                        help="Folder for the capture record and the operator's scene confirmation "
+                             "(the launcher's out dir). Needed with an empty background.")
+    parser.add_argument("--background-declared-by", default=None,
+                        help="Who declares the dishes empty at the capture (default: the declaration's declared_by).")
+    parser.add_argument("--background-stimulus-display", default='{"state": "unknown"}',
+                        help="The capture's stimulus_display declaration (JSON, Orange's capture_empty_background "
+                             "params). Default unknown: the runner cannot see the display.")
+    parser.add_argument("--background-note", default="",
+                        help="Free-text note for the capture's scene declaration.")
+    parser.add_argument("--background-capture-timeout-seconds", type=positive_float, default=60.0,
+                        help="Time for Orange's 17-frame bursts, median and files.")
+    parser.add_argument("--scene-confirmation-timeout-seconds", type=positive_float, default=3600.0,
+                        help="How long to wait for the operator's confirmation after the capture; then refuse.")
+    parser.add_argument("--fish-free-test", action="store_true",
+                        help="No fish are loaded: the runner confirms the scene itself (decision "
+                             + SCENE_DECISION_FISH_FREE + ", recorded as such). Refused when the declaration "
+                             "names any subject.")
     parser.add_argument("--citrus-subject-declaration-request", type=Path, default=None,
                         help="Bound runs: a citrus.subject_declaration_request v1 (an orchard plan's subjects) "
                              "sent as Citrus declare_subjects before Orange binds; START is refused unless "
@@ -4331,7 +4715,121 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error(str(exc))
         if args.orange_mode == "gui" and (args.declaration or {}).get("recording_intent") != "stimulus_experiment":
             parser.error("--citrus-subject-declaration-request needs a declared stimulus_experiment (a bound run)")
+    try:
+        resolve_plan_and_background(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     return args
+
+
+def resolve_plan_and_background(args: argparse.Namespace) -> None:
+    """Orchard declarations: the run_plan/ folder, the plan session (its preset
+    pin and empty-background rule), and the Citrus gate. Then the empty
+    background phase. Raises ValueError for anything that must refuse before
+    a launch."""
+    args.plan_session = None
+    args.plan_preset_check = None
+    declaration = args.declaration
+    orchard = is_orchard_declaration(declaration)
+    if args.declaration_files_root is not None and not orchard:
+        raise ValueError("--declaration-files-root is only for an orchard_run_plan declaration")
+    if orchard:
+        root = args.declaration_files_root
+        if root is None:
+            root = args.declaration_file.parent if args.declaration_file is not None else None
+        if root is None:
+            raise ValueError("an orchard_run_plan declaration needs --declaration-files-root")
+        root = root.resolve()
+        problems = check_declaration_files(declaration, root)
+        if problems:
+            raise ValueError(f"declaration files in {root}: " + "; ".join(problems))
+        args.declaration_files_root = root
+        session = plan_session_from_files(declaration, root)
+        args.plan_session = {
+            "plan_id": declaration["source"].get("plan_id"),
+            "plan_revision": declaration["source"].get("plan_revision"),
+            "plan_session_id": declaration["source"].get("plan_session_id"),
+            "plan_sha256": declaration["source"].get("plan_sha256"),
+            "orange": session.get("orange"),
+        }
+        problems = plan_preset_problems(session, args.camera_config)
+        args.plan_preset_check = {"preset": json_path(session, ["orange", "preset"], None), "problems": problems}
+        if problems:
+            raise ValueError("the camera preset is not the one the plan pins: " + "; ".join(problems))
+        if args.orange_mode == "gui" and declaration.get("recording_intent") == "stimulus_experiment" \
+                and args.citrus_subject_declaration_request is None:
+            # Orange's pre-arm cross-check v2 compares Citrus's run_plan with
+            # Orange's declaration source on every camera: without Citrus's
+            # plan declaration (declare_subjects, acceptance v4) the arm is
+            # refused after both programs launched. Refuse now instead.
+            raise ValueError(
+                "an orchard plan declaration in a bound run needs --citrus-subject-declaration-request "
+                "(Citrus declare_subjects, acceptance v4): without it Orange's pre-arm cross-check refuses "
+                "the arm (run_plan / blank_pairing differ on every camera)")
+    mode = args.empty_background
+    plan_mode = json_path(args.plan_session or {}, ["orange", "empty_background"], None)
+    if plan_mode not in (None, "none") + EMPTY_BACKGROUND_MODES:
+        raise ValueError(f"the plan's orange.empty_background {plan_mode!r} is not one this runner knows")
+    if mode == "auto":
+        mode = plan_mode or "none"
+    elif plan_mode == "capture_at_setup" and mode != "capture_at_setup":
+        raise ValueError("the plan says orange.empty_background capture_at_setup; --empty-background none "
+                         "would record without it")
+    args.empty_background = mode
+    args.background_stimulus_display_json = None
+    if mode != "capture_at_setup":
+        if args.fish_free_test:
+            raise ValueError("--fish-free-test only applies to an empty background capture")
+        return
+    if args.orange_mode != "gui" or declaration is None:
+        raise ValueError("an empty background capture needs a GUI run with a declared start")
+    if args.run_dir is None:
+        raise ValueError("an empty background capture needs --run-dir (capture record and scene confirmation)")
+    args.background_declared_by = args.background_declared_by or declaration.get("declared_by")
+    if not IDENTITY_PATTERN.fullmatch(str(args.background_declared_by or "")):
+        raise ValueError("--background-declared-by must match ^[a-z][a-z0-9_-]{0,31}$")
+    try:
+        display = json.loads(args.background_stimulus_display)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--background-stimulus-display is not JSON: {exc}") from exc
+    if not isinstance(display, dict) or display.get("state") not in {"off", "on", "unknown", "not_displayed"}:
+        raise ValueError("--background-stimulus-display needs state off, on, unknown or not_displayed")
+    args.background_stimulus_display_json = display
+    if args.fish_free_test and declaration_names_subjects(declaration):
+        raise ValueError("--fish-free-test with a declaration that names subjects: the runner would confirm "
+                         "'no fish loaded' for a recording declared with fish")
+
+
+def empty_background_capture_params(args: argparse.Namespace) -> dict[str, Any]:
+    note = args.background_note or (f"Dishes declared empty by {args.background_declared_by} when the bound run "
+                                    f"{args.operation_id} was launched (before fish loading).")
+    return {"declared_by": args.background_declared_by, "dishes_empty": True,
+            "note": note, "stimulus_display": args.background_stimulus_display_json}
+
+
+def plan_record(args: argparse.Namespace) -> dict[str, Any] | None:
+    if args.plan_session is None:
+        return None
+    return {**args.plan_session, "declaration_files_root": str(args.declaration_files_root),
+            "preset_check": args.plan_preset_check}
+
+
+def empty_background_plan(args: argparse.Namespace) -> dict[str, Any]:
+    if args.empty_background != "capture_at_setup":
+        return {"mode": args.empty_background}
+    return {
+        "mode": "capture_at_setup",
+        "capture_request": build_orange_capture_empty_background_request(
+            args.operation_id, f"{args.operation_id}:orange:capture_empty_background", args.source,
+            empty_background_capture_params(args)),
+        "capture_record_path": str(args.run_dir / CAPTURE_RECORD_NAME),
+        "scene_confirmation_path": str(args.run_dir / SCENE_CONFIRMATION_NAME),
+        "scene_confirmation_timeout_seconds": args.scene_confirmation_timeout_seconds,
+        "confirmation": ("fish_free_test: the runner confirms, decision " + SCENE_DECISION_FISH_FREE
+                         if args.fish_free_test else
+                         "operator: scripts/confirm_bound_run_scene.py --run-dir " + str(args.run_dir)
+                         + " --confirmed-by <identity>"),
+    }
 
 
 def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
@@ -4346,6 +4844,8 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         "orange_mode": args.orange_mode,
         "citrus_start_gate": args.citrus_start_gate if args.orange_mode == "headless" else None,
         "camera_config": args.camera_config,
+        "plan": plan_record(args),
+        "empty_background": empty_background_plan(args),
         "orange": {
             "socket": args.orange_socket,
             "log_path": args.orange_log,
@@ -4357,6 +4857,11 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 f"{args.operation_id}:orange:start_recording",
                 args.source,
                 args.declaration,
+                declaration_files_root=str(args.declaration_files_root) if args.declaration_files_root else None,
+                empty_background=(
+                    {"capture_id": "<from the capture>", "descriptor_sha256": "<from the capture>",
+                     "scene_unchanged_confirmed": "<from the operator's confirmation>"}
+                    if args.empty_background == "capture_at_setup" else None),
             ),
             "stop_policy": args.stop_policy,
             "stop_grace_seconds": effective_orange_stop_grace_seconds(args),

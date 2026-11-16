@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import shutil
+import threading
 import importlib.util
 import json
 import shlex
@@ -4215,7 +4218,11 @@ def test_citrus_declare_subjects_and_executor_rule() -> None:
                 refused = True
             require(refused, f"{name} request refused at load")
 
-        common = ["--declaration-file", str(fixture)]
+        # The fixture plan pins a placeholder preset and capture_at_setup.
+        preset_record = base / "camera_config.json"
+        preset_record.write_text(json.dumps(placeholder_preset_record()))
+        common = ["--declaration-file", str(fixture), "--camera-config-json", str(preset_record),
+                  "--run-dir", str(base / "run")]
         args = module.parse_args(common + ["--citrus-subject-declaration-request", str(request_path)])
         require(args.citrus_subject_declaration_request == request, "the request is loaded whole")
         dry = module.dry_run_summary(args)["citrus"]
@@ -4227,6 +4234,8 @@ def test_citrus_declare_subjects_and_executor_rule() -> None:
         exited = False
         try:
             module.parse_args(["--declaration-file", str(recording_only),
+                               "--declaration-files-root", str(fixture.parent),
+                               "--camera-config-json", str(preset_record), "--run-dir", str(base / "run"),
                                "--citrus-subject-declaration-request", str(request_path)])
         except SystemExit:
             exited = True
@@ -4496,11 +4505,469 @@ def test_plan_declaration_recording_only_all_blank_is_accepted() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "fish_free.orange_declaration.json"
         path.write_text(json.dumps(declaration))
-        args = module.parse_args(["--declaration-file", str(path)])
+        shutil.copytree(fixture.parent / "run_plan", Path(tmp) / "run_plan")
+        preset_record = Path(tmp) / "camera_config.json"
+        preset_record.write_text(json.dumps(placeholder_preset_record()))
+        args = module.parse_args(["--declaration-file", str(path), "--camera-config-json", str(preset_record),
+                                  "--run-dir", str(Path(tmp) / "run")])
         require(args.declaration == declaration, f"accepted unchanged: {args.declaration}")
         require(args.declaration["source"]["kind"] == "orchard_run_plan", "still plan-sourced")
         start = module.build_orange_start_request("op", "req", "test", args.declaration)
         require(start["params"]["declaration"] == declaration, "the start carries it")
+
+ORCHARD_FIXTURE = REPO_ROOT / "tools" / "fixtures" / "declaration_v2" / "orchard_v2"
+
+
+def placeholder_preset_record() -> dict[str, Any]:
+    """A preset record equal to the fixture plan's placeholder pin."""
+    return {"name": "PLACEHOLDER_PRESET", "path": "/x/PLACEHOLDER_PRESET",
+            "hash_rule": "orange_camera_config_dir_sha256_v1",
+            "sha256": "sha256:" + "0" * 64, "expected_sha256": None, "files": {}}
+
+
+def make_orchard_dir(root: Path, *, preset: dict[str, Any] | None = None,
+                     empty_background: Any = "capture_at_setup",
+                     intent: str = "stimulus_experiment", all_blank: bool = False) -> Path:
+    """A declare.py --out folder built from the vendored fixture, with the plan
+    session's orange.preset / empty_background replaced and every name and
+    sha256 kept consistent (plan JSON copy renamed by its new sha256)."""
+    root.mkdir(parents=True, exist_ok=True)
+    declaration = json.loads(next(ORCHARD_FIXTURE.glob("*.orange_declaration.json")).read_text())
+    shutil.copytree(ORCHARD_FIXTURE / "run_plan", root / "run_plan")
+    source = declaration["source"]
+    plan_path = root / source["plan_json_copy_relative_path"]
+    plan = json.loads(plan_path.read_text())
+    session = next(s for s in plan["sessions"] if s["session_id"] == source["plan_session_id"])
+    if preset == {}:
+        session["orange"].pop("preset")  # a plan that pins no preset
+    elif preset is not None:
+        session["orange"]["preset"] = preset
+    if empty_background is None:
+        session["orange"].pop("empty_background", None)
+    else:
+        session["orange"]["empty_background"] = empty_background
+    data = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    plan_sha = hashlib.sha256(data).hexdigest()
+    plan_path.unlink()
+    (root / "run_plan" / f"{plan_sha}.json").write_bytes(data)
+    source["plan_sha256"] = plan_sha
+    source["plan_json_copy_relative_path"] = f"run_plan/{plan_sha}.json"
+    declaration["recording_intent"] = intent
+    if all_blank:
+        declaration["subject_references"]["cameras"] = {
+            serial: {"blank": True} for serial in declaration["subject_references"]["cameras"]}
+    (root / "test.r5.S1.orange_declaration.json").write_text(json.dumps(declaration, indent=2))
+    citrus_request = {
+        "schema_id": "citrus.subject_declaration_request", "schema_version": 1, "rig_id": "omnifin0",
+        "canvas_name": "c", "protocol": {"path": "p.json", "protocol_semantic_hash": "0" * 64,
+                                          "semantic_version": "citrus.protocol.semantic.v5"},
+        "arenas": [{"arena_id": f"arena_{i + 1}", "camera_serial": serial,
+                    "declaration": {"schema_id": "citrus.subject_declaration", "schema_version": 2,
+                                    "source": "orchard_run_plan", "run_plan": copy.deepcopy(source)}}
+                   for i, serial in enumerate(sorted(declaration["subject_references"]["cameras"]))],
+    }
+    (root / "test.r5.S1.citrus_declaration_request.json").write_text(json.dumps(citrus_request, indent=2))
+    return root
+
+
+def parse_error(module: Any, argv: list[str]) -> str:
+    """The parser's refusal text (argparse exits 2 and prints to stderr)."""
+    result = subprocess.run([sys.executable, str(SCRIPT), *argv], capture_output=True, text=True, check=False)
+    require(result.returncode == 2, f"expected a refusal for {argv}: rc={result.returncode} {result.stderr}")
+    return result.stderr
+
+
+def test_orchard_declaration_files_preset_and_citrus_gate() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        preset = {"name": "30_cam4_ptp_fourcam", "sha256": "sha256:" + "a" * 64,
+                  "hash_rule": "orange_camera_config_dir_sha256_v1"}
+        record = {**preset, "path": "/x/30_cam4_ptp_fourcam", "files": {}, "expected_sha256": preset["sha256"]}
+        record_path = base / "camera_config.json"
+        record_path.write_text(json.dumps(record))
+        folder = make_orchard_dir(base / "declared", preset=preset)
+        declaration = next(folder.glob("*.orange_declaration.json"))
+        request = next(folder.glob("*.citrus_declaration_request.json"))
+        good = ["--declaration-file", str(declaration), "--citrus-subject-declaration-request", str(request),
+                "--camera-config-json", str(record_path), "--run-dir", str(base / "run")]
+
+        args = module.parse_args(good)
+        require(args.declaration_files_root == folder.resolve(), "the files root defaults to the declaration's folder")
+        require(args.plan_session["plan_session_id"] == "S1" and args.plan_preset_check["problems"] == [],
+                f"the plan session and its preset check: {args.plan_session} {args.plan_preset_check}")
+        require(args.empty_background == "capture_at_setup", "auto takes the plan's capture_at_setup")
+        require(args.background_declared_by == "delahantyj", "the capture's claim defaults to the declaration's identity")
+        dry = module.dry_run_summary(args)
+        start = dry["orange"]["start_request"]["params"]
+        require(start["declaration"] == json.loads(declaration.read_text())
+                and start["declaration_files_root"] == str(folder.resolve()),
+                f"the start carries the declaration unchanged and its files root: {start.keys()}")
+        require(dry["plan"]["preset_check"]["preset"] == preset and dry["plan"]["plan_id"],
+                f"the dry run shows the plan and its pin: {dry['plan']}")
+        require(dry["citrus"]["declare_subjects_request"]["params"] == json.loads(request.read_text()),
+                "Citrus gets the plan's request")
+
+        # Preset pin (abort rule A8): no record, other digest, other name.
+        text = parse_error(module, [a for a in good if a not in ("--camera-config-json", str(record_path))])
+        require("no preset record" in text, text)
+        for key, value in (("sha256", "sha256:" + "b" * 64), ("name", "100_cam4_ptp_fourcam")):
+            other = base / f"camera_config_{key}.json"
+            other.write_text(json.dumps({**record, key: value}))
+            text = parse_error(module, [str(other) if a == str(record_path) else a for a in good])
+            require(f"preset {key}" in text and "not the one the plan pins" in text, text)
+
+        # A plan without a pin records none and does not refuse.
+        unpinned = make_orchard_dir(base / "unpinned", preset={})
+        args = module.parse_args(["--declaration-file", str(next(unpinned.glob("*.orange_declaration.json"))),
+                                  "--citrus-subject-declaration-request", str(request), "--run-dir", str(base / "run")])
+        require(args.plan_preset_check == {"preset": None, "problems": []}, f"no pin: {args.plan_preset_check}")
+
+        # The bound run needs Citrus's plan declaration (pre-arm cross-check v2).
+        text = parse_error(module, [a for a in good if a not in ("--citrus-subject-declaration-request", str(request))])
+        require("--citrus-subject-declaration-request" in text and "pre-arm" in text, text)
+
+        # The run_plan/ folder follows Orange's rule.
+        extra = make_orchard_dir(base / "extra", preset=preset)
+        (extra / "run_plan" / "notes.txt").write_text("x")
+        text = parse_error(module, [str(next(extra.glob("*.orange_declaration.json"))) if a == str(declaration) else a
+                                    for a in good])
+        require("not named by the declaration" in text, text)
+        tampered = make_orchard_dir(base / "tampered", preset=preset)
+        with open(next((tampered / "run_plan" / "sign_off").glob("*.json")), "a") as handle:
+            handle.write(" ")
+        text = parse_error(module, [str(next(tampered.glob("*.orange_declaration.json"))) if a == str(declaration)
+                                    else a for a in good])
+        require("does not hash" in text, text)
+        text = parse_error(module, good + ["--declaration-files-root", str(base / "nowhere")])
+        require("missing declaration file" in text, text)
+        text = parse_error(module, ["--declared-by", "delahantyj", "--intent", "recording_only", "--blank-subjects",
+                                    "--declaration-files-root", str(folder)])
+        require("only for an orchard_run_plan" in text, text)
+
+        # The plan's background rule binds; the runner never drops it.
+        text = parse_error(module, good + ["--empty-background", "none"])
+        require("capture_at_setup" in text, text)
+        text = parse_error(module, [a for a in good if a not in ("--run-dir", str(base / "run"))])
+        require("--run-dir" in text, text)
+        no_rule = make_orchard_dir(base / "no_rule", preset=preset, empty_background=None)
+        args = module.parse_args([str(next(no_rule.glob("*.orange_declaration.json"))) if a == str(declaration)
+                                  else a for a in good])
+        require(args.empty_background == "none" and module.dry_run_summary(args)["empty_background"] == {"mode": "none"},
+                "a plan without the rule records no background")
+        odd = make_orchard_dir(base / "odd", preset=preset, empty_background="capture_between_sessions")
+        text = parse_error(module, [str(next(odd.glob("*.orange_declaration.json"))) if a == str(declaration)
+                                    else a for a in good])
+        require("not one this runner knows" in text, text)
+
+        # Fish-free test mode never confirms 'no fish' for a declaration with fish.
+        text = parse_error(module, good + ["--fish-free-test"])
+        require("names subjects" in text, text)
+        blank = make_orchard_dir(base / "blank", preset=preset, intent="recording_only", all_blank=True)
+        args = module.parse_args(["--declaration-file", str(next(blank.glob("*.orange_declaration.json"))),
+                                  "--camera-config-json", str(record_path), "--run-dir", str(base / "run"),
+                                  "--fish-free-test"])
+        require(args.fish_free_test and args.empty_background == "capture_at_setup",
+                "an all-blank plan may run the fish-free test")
+        text = parse_error(module, ["--declared-by", "delahantyj", "--intent", "recording_only", "--blank-subjects",
+                                    "--fish-free-test"])
+        require("only applies to an empty background" in text, text)
+        text = parse_error(module, ["--empty-background", "capture_at_setup", "--run-dir", str(base / "run")])
+        require("declared start" in text, text)
+        text = parse_error(module, ["--declared-by", "delahantyj", "--intent", "recording_only", "--blank-subjects",
+                                    "--empty-background", "capture_at_setup", "--run-dir", str(base / "run"),
+                                    "--background-stimulus-display", '{"state": "bright"}'])
+        require("stimulus-display" in text, text)
+
+
+def background_orange_status(base: dict[str, Any], capture: dict[str, Any] | None,
+                             staging: dict[str, Any]) -> dict[str, Any]:
+    status = copy.deepcopy(base)
+    status["local_control"]["empty_background_capture"] = {**(capture or {"state": "idle"}), "staging": staging}
+    return status
+
+
+def run_background_fake(
+    module: Any,
+    root: Path,
+    argv: list[str],
+    *,
+    confirm: Callable[[Path], None] | None = None,
+    camera_results: dict[str, str] | None = None,
+    staging: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A GUI run against fake sockets whose Orange answers capture_empty_background."""
+    cameras = camera_results or {"2010093": "captured", "2010094": "captured"}
+    staging = staging or {serial: {"reserved": True, "bytes": 1, "error": None} for serial in cameras}
+    state: dict[str, Any] = {"started": False, "stopped": False, "capture": None, "citrus_started": False,
+                             "citrus_polls": 0}
+    sent: list[dict[str, Any]] = []
+
+    def handle_orange(request: dict[str, Any]) -> dict[str, Any]:
+        method = request.get("method")
+        if method != "status":
+            sent.append(request)
+        if method == "capture_empty_background":
+            state["capture"] = {
+                "request_id": request["request_id"], "operation_id": request["operation_id"],
+                "state": "captured", "capture_id": "eb_20261116T000000Z_test",
+                "descriptor_path": "/x/backgrounds/eb_20261116T000000Z_test/background.json",
+                "descriptor_sha256": "sha256:" + "c" * 64, "error": None,
+                "started_at_utc": "2026-11-16T00:00:00Z", "finished_at_utc": "2026-11-16T00:00:01Z",
+                "cameras": {serial: {"capture_status": result, "failure_reason": None if result == "captured"
+                                     else "burst did not complete within 5 s"}
+                            for serial, result in cameras.items()},
+            }
+        elif method == "start_recording":
+            state["started"] = True
+        elif method == "stop_recording":
+            state["stopped"] = True
+        status = background_orange_status(orange_status(state["started"], state["stopped"]), state["capture"], staging)
+        return response_for(request, status)
+
+    def handle_citrus(request: dict[str, Any]) -> dict[str, Any]:
+        if request.get("method") == "start_experiment":
+            state["citrus_started"] = True
+        elif request.get("method") == "status" and state["citrus_started"]:
+            state["citrus_polls"] += 1
+        return response_for(request, citrus_status(state["citrus_started"], state["citrus_polls"] >= 1))
+
+    def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        return handle_orange(request) if socket_path == "orange-test.sock" else handle_citrus(request)
+
+    original = module.send_unix_json
+    module.send_unix_json = fake_send
+    watcher = None
+    if confirm is not None:
+        def watch() -> None:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not (root / module.CAPTURE_RECORD_NAME).exists():
+                time.sleep(0.01)
+            confirm(root)
+        watcher = threading.Thread(target=watch)
+        watcher.start()
+    try:
+        args = module.parse_args([
+            "--execute", "--operation-id", "op-bg", "--orange-socket", "orange-test.sock",
+            "--citrus-socket", "citrus-test.sock", "--poll-interval-seconds", "0.01", "--timeout-seconds", "2",
+            "--citrus-terminal-timeout-seconds", "2", "--orange-finalize-timeout-seconds", "2",
+            "--lifecycle-events", "off", "--run-dir", str(root), *argv])
+        orchestrator = module.Orchestrator(args)
+        try:
+            summary = orchestrator.run()
+        except module.OrchestratorError as exc:
+            summary = orchestrator.summary("fail", error=str(exc))
+    finally:
+        module.send_unix_json = original
+        if watcher is not None:
+            watcher.join()
+    return summary, sent
+
+
+def test_empty_background_capture_confirmation_and_start() -> None:
+    module = load_module()
+    blank = ["--declared-by", "delahantyj", "--intent", "recording_only", "--blank-subjects",
+             "--empty-background", "capture_at_setup"]
+    confirm_script = REPO_ROOT / "scripts" / "confirm_bound_run_scene.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+
+        # Fish-free test: the runner confirms itself, recorded as such.
+        summary, sent = run_background_fake(module, base / "fish_free", blank + ["--fish-free-test"])
+        require(summary["result"] == "pass", f"fish-free run passes: {summary.get('error')}")
+        methods = [r["method"] for r in sent]
+        require(methods[:2] == ["capture_empty_background", "start_recording"], f"capture before start: {methods}")
+        capture_params = sent[0]["params"]
+        require(capture_params["declared_by"] == "delahantyj" and capture_params["dishes_empty"] is True
+                and capture_params["stimulus_display"] == {"state": "unknown"} and sent[0]["operation_id"] == "op-bg",
+                f"the capture request: {sent[0]}")
+        start = sent[1]["params"]
+        require(start["empty_background"] == {"capture_id": "eb_20261116T000000Z_test",
+                                              "descriptor_sha256": "sha256:" + "c" * 64,
+                                              "scene_unchanged_confirmed": True}
+                and start["declaration"]["subject_references"] == {"schema_version": 1},
+                f"the start names the capture: {start}")
+        record = summary["empty_background"]
+        confirmation = json.loads((base / "fish_free" / module.SCENE_CONFIRMATION_NAME).read_text())
+        require(record["state"] == "confirmed" and record["scene_confirmation"]["content"] == confirmation
+                and confirmation["decision"] == module.SCENE_DECISION_FISH_FREE
+                and "fish-free-test" in confirmation["writer"]["tool"],
+                f"the summary records the self-confirmation as fish-free: {record}")
+        capture_record = json.loads((base / "fish_free" / module.CAPTURE_RECORD_NAME).read_text())
+        require(capture_record["capture_id"] == "eb_20261116T000000Z_test"
+                and capture_record["descriptor_sha256"] == "sha256:" + "c" * 64
+                and set(capture_record["cameras"]) == {"2010093", "2010094"} and capture_record["recorded_at_utc"],
+                f"the capture record: {capture_record}")
+
+        # An operator confirmation, with the CLI, after the record appears.
+        def operator(run_dir: Path) -> None:
+            subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(run_dir),
+                            "--confirmed-by", "delahantyj"], check=True, capture_output=True, text=True)
+
+        summary, sent = run_background_fake(module, base / "operator", blank, confirm=operator)
+        require(summary["result"] == "pass", f"operator-confirmed run passes: {summary.get('error')}")
+        confirmation = summary["empty_background"]["scene_confirmation"]["content"]
+        require(confirmation["decision"] == module.SCENE_DECISION_FISH_LOADED
+                and confirmation["confirmed_by"] == "delahantyj"
+                and confirmation["writer"]["tool"] == "scripts/confirm_bound_run_scene.py",
+                f"who confirmed, with which tool: {confirmation}")
+        methods = [r["method"] for r in sent]
+        require(methods.index("capture_empty_background") < methods.index("start_recording"),
+                f"the start follows the capture and its confirmation: {methods}")
+        again = subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(base / "operator"),
+                                "--confirmed-by", "delahantyj", "--abort"], capture_output=True, text=True)
+        require(again.returncode == 2 and "never replaced" in again.stderr, f"one confirmation per run: {again}")
+        none_yet = subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(base / "empty"),
+                                   "--confirmed-by", "delahantyj"], capture_output=True, text=True)
+        require(none_yet.returncode == 2 and "no capture record" in none_yet.stderr, "nothing to confirm yet")
+
+        # Abort: the operator refuses; nothing starts.
+        def abort(run_dir: Path) -> None:
+            subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(run_dir),
+                            "--confirmed-by", "delahantyj", "--abort"], check=True, capture_output=True)
+
+        summary, sent = run_background_fake(module, base / "abort", blank, confirm=abort)
+        require(summary["result"] == "fail" and "aborted" in summary["error"]
+                and "start_recording" not in [r["method"] for r in sent]
+                and summary["empty_background"]["state"] == "aborted_by_operator",
+                f"an abort refuses the start: {summary['error']}")
+
+        # Timeout: no confirmation, no start.
+        summary, sent = run_background_fake(module, base / "timeout", blank +
+                                            ["--scene-confirmation-timeout-seconds", "0.2"])
+        require(summary["result"] == "fail" and "no scene confirmation" in summary["error"]
+                and "start_recording" not in [r["method"] for r in sent]
+                and summary["empty_background"]["state"] == "confirmation_timed_out",
+                f"a missing confirmation refuses: {summary['error']}")
+
+        # A confirmation for another capture is refused.
+        def other_capture(run_dir: Path) -> None:
+            record = json.loads((run_dir / module.CAPTURE_RECORD_NAME).read_text())
+            module.write_json_exclusive(run_dir / module.SCENE_CONFIRMATION_NAME, module.build_scene_confirmation(
+                {**record, "capture_id": "eb_other"}, "delahantyj", module.SCENE_DECISION_FISH_LOADED, tool="test"))
+
+        summary, sent = run_background_fake(module, base / "other", blank, confirm=other_capture)
+        require(summary["result"] == "fail" and "capture_id" in summary["error"]
+                and "start_recording" not in [r["method"] for r in sent], f"wrong capture refused: {summary['error']}")
+        forged = {"schema_id": module.SCENE_CONFIRMATION_SCHEMA_ID, "schema_version": 1, "decision": "yes"}
+        require(module.scene_confirmation_problems(forged, {"capture_id": "a", "descriptor_sha256": "b"}),
+                "a hand-written confirmation with an unknown decision is refused")
+
+        # A camera that failed its burst, or had no staging, refuses before the fish go in.
+        summary, sent = run_background_fake(module, base / "failed_cam", blank + ["--fish-free-test"],
+                                            camera_results={"2010093": "captured", "2010094": "failed"})
+        require(summary["result"] == "fail" and "2010094" in summary["error"] and "before fish loading" in summary["error"]
+                and "start_recording" not in [r["method"] for r in sent], f"failed camera: {summary['error']}")
+        summary, sent = run_background_fake(
+            module, base / "no_staging", blank + ["--fish-free-test"],
+            staging={"2010093": {"reserved": True}, "2010094": {"reserved": False, "error": "out of memory"}})
+        require(summary["result"] == "fail" and "out of memory" in summary["error"] and not sent,
+                f"unreserved staging refuses before the capture: {summary['error']}")
+
+        # An orchard plan (recording_only, so no Citrus binding): declaration,
+        # files root and capture all reach the start.
+        preset = placeholder_preset_record()
+        record_path = base / "camera_config.json"
+        record_path.write_text(json.dumps(preset))
+        folder = make_orchard_dir(base / "plan", intent="recording_only")
+        summary, sent = run_background_fake(
+            module, base / "plan_run",
+            ["--declaration-file", str(next(folder.glob("*.orange_declaration.json"))),
+             "--camera-config-json", str(record_path)], confirm=operator)
+        require(summary["result"] == "pass", f"plan run passes: {summary.get('error')}")
+        start = next(r for r in sent if r["method"] == "start_recording")["params"]
+        require(start["declaration"]["source"]["kind"] == "orchard_run_plan"
+                and start["declaration_files_root"] == str(folder.resolve())
+                and start["empty_background"]["scene_unchanged_confirmed"] is True,
+                f"the plan start: {start.keys()}")
+        require(summary["plan"]["plan_session_id"] == "S1" and summary["plan"]["preset_check"]["problems"] == []
+                and summary["empty_background"]["capture_record"]["plan"]["plan_sha256"]
+                == start["declaration"]["source"]["plan_sha256"],
+                f"the summary and the capture record name the plan: {summary['plan']}")
+
+
+def test_bound_launcher_declaration_dir() -> None:
+    launcher = REPO_ROOT / "scripts" / "run_orange_citrus_bound.sh"
+    digest_tool = REPO_ROOT / "scripts" / "camera_config_dir_digest.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        citrus = root / "citrus"
+        (citrus / "targets" / "rigs" / "omnifin0" / "shadow").mkdir(parents=True)
+        (citrus / "targets" / "rigs" / "omnifin0" / "shadow" / "shadow.json").write_text("{}\n")
+        (citrus / "targets" / "citrus").write_text("#!/bin/sh\nexit 1\n")
+        (citrus / "targets" / "citrus").chmod(0o755)
+        protocol = root / "protocol.json"
+        protocol.write_text("{}\n")
+        preset_dir = root / "30_cam4_ptp_fourcam"
+        preset_dir.mkdir()
+        (preset_dir / "2010093.json").write_text('{"frame_rate": 30}\n')
+        digest = subprocess.run([sys.executable, str(digest_tool), str(preset_dir)], capture_output=True,
+                                text=True, check=True).stdout.strip()
+        pinned = make_orchard_dir(root / "declared", preset={
+            "name": "30_cam4_ptp_fourcam", "sha256": digest, "hash_rule": "orange_camera_config_dir_sha256_v1"})
+        env = {**__import__("os").environ, "CITRUS_ROOT": str(citrus)}
+        env.pop("ORANGE_GUI_CONFIG_DIR", None)
+
+        def launch(out: str, *extra: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["bash", str(launcher), "--protocol", str(protocol), "--declared-by", "operator1",
+                 "--camera-config-dir", str(preset_dir), "--out-dir", str(root / out), *extra],
+                capture_output=True, text=True, check=False, env=env)
+
+        def citrus_acceptance(version: int) -> None:
+            (citrus / "system_config.yml").write_text(
+                "orange_completion:\n    subject_identity_version: 4\n"
+                f"    recording_observation_acceptance_schema_version: {version}\n")
+
+        citrus_acceptance(3)
+        refused = launch("v3", "--declaration-dir", str(pinned))
+        require(refused.returncode == 2 and "acceptance v3" in refused.stderr and "Not launching" in refused.stderr
+                and not refused.stdout.strip(), f"Citrus acceptance v3 refuses a plan-declared run: {refused}")
+        (citrus / "system_config.yml").unlink()
+        missing = launch("noconf", "--declaration-dir", str(pinned))
+        require(missing.returncode == 2 and "vunknown" in missing.stderr, f"no Citrus config refuses: {missing}")
+
+        citrus_acceptance(4)
+        ok = launch("ok", "--declaration-dir", str(pinned))
+        require(ok.returncode == 0, f"a v4 Citrus and the plan's preset dry-run: {ok.stderr}")
+        plan = json.loads(ok.stdout)
+        start = plan["orange"]["start_request"]["params"]
+        require(start["declaration"]["source"]["kind"] == "orchard_run_plan"
+                and start["declaration_files_root"] == str(pinned.resolve()), f"plan start: {start.keys()}")
+        require(plan["citrus"]["declare_subjects_request"]["method"] == "declare_subjects"
+                and plan["citrus"]["declare_subjects_mismatches"] == [], "Citrus gets the plan")
+        require(plan["empty_background"]["mode"] == "capture_at_setup"
+                and plan["empty_background"]["capture_request"]["params"]["declared_by"] == "operator1"
+                and plan["empty_background"]["scene_confirmation_path"] == str(root / "ok" / "scene_confirmation.json"),
+                f"the plan's background rule, claimed by the operator: {plan['empty_background']}")
+        require("declaration=" + str(pinned.resolve()) in ok.stderr, ok.stderr)
+
+        unpinned_dir = root / "100_cam4_ptp_fourcam"
+        unpinned_dir.mkdir()
+        (unpinned_dir / "2010093.json").write_text('{"frame_rate": 100}\n')
+        wrong = subprocess.run(
+            ["bash", str(launcher), "--protocol", str(protocol), "--declared-by", "operator1",
+             "--camera-config-dir", str(unpinned_dir), "--out-dir", str(root / "wrong"),
+             "--declaration-dir", str(pinned)], capture_output=True, text=True, check=False, env=env)
+        require(wrong.returncode == 2 and "not the one the plan pins" in wrong.stderr,
+                f"another preset folder refuses: {wrong.stderr}")
+        fish_free = launch("ff", "--declaration-dir", str(pinned), "--fish-free-test")
+        require(fish_free.returncode == 2 and "names subjects" in fish_free.stderr, fish_free.stderr)
+
+        blank = launch("blank", "--empty-background", "capture_at_setup", "--fish-free-test")
+        require(blank.returncode == 0, f"a blank fish-free capture test dry-runs: {blank.stderr}")
+        blank_plan = json.loads(blank.stdout)
+        require("fish_free_test" in blank_plan["empty_background"]["confirmation"]
+                and blank_plan["orange"]["start_request"]["params"]["declaration"]["subject_references"]
+                == {"schema_version": 1}, f"blank: {blank_plan['empty_background']}")
+        default = launch("default")
+        require(default.returncode == 0 and json.loads(default.stdout)["empty_background"] == {"mode": "none"},
+                f"without options nothing changes: {default.stderr}")
+        two = root / "two"
+        shutil.copytree(pinned, two)
+        shutil.copy(next(pinned.glob("*.orange_declaration.json")), two / "second.orange_declaration.json")
+        ambiguous = launch("two", "--declaration-dir", str(two))
+        require(ambiguous.returncode == 2 and "exactly one" in ambiguous.stderr, ambiguous.stderr)
 
 
 def main() -> int:
@@ -4513,6 +4980,9 @@ def main() -> int:
         test_camera_config_dir_digest_rule,
         test_bound_launcher_preset_pin_and_clip_seconds,
         test_plan_declaration_recording_only_all_blank_is_accepted,
+        test_orchard_declaration_files_preset_and_citrus_gate,
+        test_empty_background_capture_confirmation_and_start,
+        test_bound_launcher_declaration_dir,
         test_request_builders_and_readiness_helpers,
         test_orange_start_carries_declaration,
         test_long_waits_poll_slowly,
