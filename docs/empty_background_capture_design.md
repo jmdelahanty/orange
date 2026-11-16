@@ -57,12 +57,15 @@ Orange's descriptor gets `{state: on, shown: {kind: solid_color, rgba8:
 [0,0,0,255]}}` and a note naming the Citrus build. Evidence: Citrus's
 `status.display.idle_display` when reported (written by its render thread
 after each swap; citrus-agent branch `agent/citrus/idle-display-status`
-17fbc41, Citrus PR #129, not installed): in both reads `consistent` true
+Citrus PR #129, installed as 25934e8): in both reads `consistent` true
 (false is a torn snapshot; missing refuses too), source `idle_clear`, fill_rgba_u8
 [0,0,0,255], no `canvas_fill_overlay`, `preview_arena_count` 0,
 `photodiode_marker_patches_rendered` false (lit marker patches are not solid
 black, so true refuses), and `display_frame_index` advancing from the first
-read to the second (the display is live); every arena that reports
+read to the second (the display is live). Before Citrus's first swap after
+launch it reports source `none`: the read before the capture (only) is
+repeated every 0.5 s for up to 10 s while it says `none`, the attempts
+recorded (`first_swap_wait`), then the rules apply; every arena that reports
 `active_preview_mode` / `protocol_step_preview_active` must say `NONE` /
 false. Otherwise every arena must report both (`NONE`, false) and no
 calibration scene may be active. Citrus 027d292 reports neither (its `arenas[]` carry no `active_preview_mode`; the

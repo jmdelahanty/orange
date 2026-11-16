@@ -4723,6 +4723,8 @@ def run_background_fake(
     citrus_display_before: dict[str, Any] | None = None,
     citrus_display_after: dict[str, Any] | None = None,
     citrus_sent: list[dict[str, Any]] | None = None,
+    citrus_display_sequence: list[dict[str, Any]] | None = None,
+    display_grace: tuple[float, float] | None = None,  # (grace seconds, poll seconds)
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """A GUI run against fake sockets whose Orange answers capture_empty_background.
     `confirm` runs once the runner listens on its confirmation socket."""
@@ -4768,7 +4770,12 @@ def run_background_fake(
         elif request.get("method") == "status" and state["citrus_started"]:
             state["citrus_polls"] += 1
         status = citrus_status(state["citrus_started"], state["citrus_polls"] >= 1)
-        status.update(copy.deepcopy(after if state["capture"] is not None else before))
+        if state["capture"] is None and citrus_display_sequence:
+            # Before the capture, each status read takes the next entry (the last one sticks).
+            current = citrus_display_sequence.pop(0) if len(citrus_display_sequence) > 1 else citrus_display_sequence[0]
+        else:
+            current = after if state["capture"] is not None else before
+        status.update(copy.deepcopy(current))
         return response_for(request, status)
 
     def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
@@ -4794,6 +4801,8 @@ def run_background_fake(
         orchestrator = module.Orchestrator(args)
         if allowed_uids is not None:
             orchestrator.scene_allowed_uids = allowed_uids  # a foreign peer, without a second user
+        if display_grace is not None:
+            orchestrator.display_first_swap_grace_seconds, orchestrator.display_first_swap_poll_seconds = display_grace
         try:
             summary = orchestrator.run()
         except module.OrchestratorError as exc:
@@ -5047,6 +5056,28 @@ def test_empty_background_display_from_citrus() -> None:
         unmarked = idle_display(5)
         del unmarked["display"]["idle_display"]["consistent"]
         refused_before("unmarked", unmarked, "idle_display.consistent is 'missing'")
+
+        # Before Citrus's first swap idle_display says source "none": re-read, then the normal rules.
+        none = idle_display(0, source="none", fill_rgba_u8=None)
+        summary, sent = run_background_fake(
+            module, base / "first_swap", blank, citrus_display_sequence=[none] * 12 + [idle_display(1000)],
+            citrus_display_after=idle_display(1240), display_grace=(5.0, 0.01))
+        before_read = summary["empty_background"]["stimulus_display_declaration"]["evidence"]["before_capture"]
+        attempts = before_read["first_swap_wait"]["attempts_with_source_none"]
+        require(summary["result"] == "pass" and attempts and all(a["source"] == "none" for a in attempts)
+                and before_read["idle_display"]["source"] == "idle_clear",
+                f"none, then idle_clear, passes with the attempts recorded: {summary.get('error')} {len(attempts)}")
+        summary, sent = run_background_fake(module, base / "never_swapped", blank, citrus_display_before=none,
+                                            display_grace=(0.2, 0.01))
+        attempts = summary["empty_background"]["stimulus_display_declaration"]["evidence"]["before_capture"][
+            "first_swap_wait"]["attempts_with_source_none"]
+        require(summary["result"] == "fail" and "idle_display.source is 'none'" in summary["error"] and not sent
+                and len(attempts) >= 2, f"none throughout refuses after the grace: {summary['error']}")
+        # After the capture there is no grace: "none" refuses the start.
+        summary, sent = run_background_fake(module, base / "none_after", blank,
+                                            citrus_display_after=idle_display(1240, source="none"))
+        require(summary["result"] == "fail" and "after the capture" in summary["error"]
+                and "'none'" in summary["error"], f"no grace after the capture: {summary['error']}")
 
         # After the capture: a change, or a display that did not advance, is never named.
         for name, after_status, text in (

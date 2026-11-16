@@ -3050,6 +3050,10 @@ class Orchestrator:
         self.empty_background_record: dict[str, Any] | None = None
         self.empty_background_start: dict[str, Any] | None = None
         self.scene_refused_requests: list[dict[str, Any]] = []
+        # Before the capture only: how long Citrus's idle_display may read
+        # source "none" (no display swap yet since launch).
+        self.display_first_swap_grace_seconds = 10.0
+        self.display_first_swap_poll_seconds = 0.5
         # Long waits follow Orange's and Citrus's lifecycle event logs (made
         # before either process starts, so earlier runs' rows are skipped).
         self.lifecycle_waker: LifecycleWaker | None = None
@@ -3805,6 +3809,22 @@ class Orchestrator:
         read = citrus_display_read(status)
         record = self.empty_background_record
         if when == "before_capture":
+            # Citrus reports idle_display.source "none" until its first display
+            # swap after launch (seen live on 25934e8): only that state is
+            # re-read, every 0.5 s for up to 10 s; then the normal rules apply.
+            attempts = []
+            deadline = time.monotonic() + self.display_first_swap_grace_seconds
+            while isinstance(read.get("idle_display"), dict) and read["idle_display"].get("source") == "none":
+                attempts.append({"read_at_utc": read["read_at_utc"], "source": "none",
+                                 "display_frame_index": read["idle_display"].get("display_frame_index")})
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(self.display_first_swap_poll_seconds)
+                _, status = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
+                read = citrus_display_read(status)
+            read["first_swap_wait"] = {"attempts_with_source_none": attempts,
+                                       "grace_seconds": self.display_first_swap_grace_seconds,
+                                       "poll_seconds": self.display_first_swap_poll_seconds}
             record["stimulus_display_declaration"] = {
                 "source": "citrus_idle_clear",
                 "fill_rgba_u8": CITRUS_IDLE_FILL_RGBA_U8,
