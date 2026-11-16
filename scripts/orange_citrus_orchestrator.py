@@ -534,7 +534,7 @@ def citrus_display_read(status: dict[str, Any]) -> dict[str, Any]:
         marker = scene.get("photodiode_marker")
     return {
         "read_at_utc": utc_now(),
-        "idle_display": status.get("idle_display"),
+        "idle_display": json_path(status, ["display", "idle_display"], None),
         "arenas": [{"arena_id": a.get("arena_id"), "active_preview_mode": a.get("active_preview_mode")}
                    for a in arenas],
         "calibration_scene": ({k: scene.get(k) for k in ("state", "active", "scene_kind", "kind", "presented")
@@ -545,22 +545,44 @@ def citrus_display_read(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def citrus_idle_clear_problems(read: dict[str, Any]) -> tuple[str, list[str]]:
+def citrus_idle_clear_problems(read: dict[str, Any], before: dict[str, Any] | None = None
+                               ) -> tuple[str, list[str]]:
     """(evidence used, problems) for 'the display shows Citrus's idle clear,
-    rgba8 0,0,0,255'. status.idle_display is preferred; without it, every
-    arena must report active_preview_mode NONE and no calibration scene may
-    be active. Empty problems = declared exactly; anything else refuses."""
+    rgba8 0,0,0,255'. status.display.idle_display (recorded by Citrus's render
+    thread after each swap) is preferred: source idle_clear, fill
+    [0,0,0,255], no canvas fill overlay, no previewing arena, no photodiode
+    marker patches; with `before` (the read before the capture) its
+    display_frame_index must have advanced (the display is live). Without the
+    field, every arena must report active_preview_mode NONE and no
+    calibration scene may be active. Empty problems = declared exactly."""
     idle = read.get("idle_display")
     if idle is not None:
+        used = "status.display.idle_display"
         if not isinstance(idle, dict):
-            return "status.idle_display", ["status.idle_display is not an object"]
+            return used, ["status.display.idle_display is not an object"]
         problems = []
         if idle.get("source") != "idle_clear":
-            problems.append(f"status.idle_display.source is {idle.get('source')!r}, not 'idle_clear'")
+            problems.append(f"idle_display.source is {idle.get('source')!r}, not 'idle_clear'")
         if idle.get("fill_rgba_u8") != CITRUS_IDLE_FILL_RGBA_U8:
-            problems.append(f"status.idle_display.fill_rgba_u8 is {idle.get('fill_rgba_u8')!r}, "
-                            f"not {CITRUS_IDLE_FILL_RGBA_U8}")
-        return "status.idle_display", problems
+            problems.append(f"idle_display.fill_rgba_u8 is {idle.get('fill_rgba_u8')!r}, not {CITRUS_IDLE_FILL_RGBA_U8}")
+        if idle.get("canvas_fill_overlay"):
+            problems.append(f"a canvas fill overlay is shown: {idle.get('canvas_fill_overlay')!r}")
+        if idle.get("preview_arena_ids"):
+            problems.append(f"arenas previewing: {idle.get('preview_arena_ids')!r}")
+        if idle.get("photodiode_marker_patches_rendered") is not False:
+            # Marker patches are lit pixels on the projector: not solid black.
+            problems.append("photodiode_marker_patches_rendered is "
+                            f"{idle.get('photodiode_marker_patches_rendered')!r} (must be false)")
+        index = idle.get("display_frame_index")
+        if not isinstance(index, int) or isinstance(index, bool):
+            problems.append(f"idle_display.display_frame_index is {index!r}, not an integer")
+        elif before is not None:
+            previous = (before.get("idle_display") or {}).get("display_frame_index") \
+                if isinstance(before.get("idle_display"), dict) else None
+            if not isinstance(previous, int) or index <= previous:
+                problems.append(f"display_frame_index did not advance between the reads ({previous!r} -> "
+                                f"{index!r}): the display is not shown live")
+        return used, problems
     problems = []
     if not read["arenas"]:
         problems.append("Citrus reports no arenas")
@@ -568,7 +590,7 @@ def citrus_idle_clear_problems(read: dict[str, Any]) -> tuple[str, list[str]]:
         mode = arena["active_preview_mode"]
         if mode is None:
             problems.append(f"{arena['arena_id']}: Citrus status does not report active_preview_mode "
-                            "(needs status.idle_display or arenas[].active_preview_mode)")
+                            "(needs status.display.idle_display or arenas[].active_preview_mode)")
         elif mode != "NONE":
             problems.append(f"{arena['arena_id']}: preview {mode!r} is active")
     scene = read["calibration_scene"]
@@ -579,6 +601,15 @@ def citrus_idle_clear_problems(read: dict[str, Any]) -> tuple[str, list[str]]:
     if read.get("active_projection_snapshot_status") == "active":
         problems.append("Citrus's active projection snapshot is active (a calibration-grid preview or run)")
     return "arena_preview_and_calibration_scene", problems
+
+
+def display_frame_index_range(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any] | None:
+    indexes = [r.get("idle_display", {}).get("display_frame_index") if isinstance(r.get("idle_display"), dict)
+               else None for r in (before, after)]
+    if indexes == [None, None]:
+        return None
+    return {"before_capture": indexes[0], "after_capture": indexes[1],
+            "frames": indexes[1] - indexes[0] if all(isinstance(i, int) for i in indexes) else None}
 
 
 def citrus_display_contradictions(read: dict[str, Any]) -> list[str]:
@@ -592,8 +623,13 @@ def citrus_display_contradictions(read: dict[str, Any]) -> list[str]:
     if read.get("active_projection_snapshot_status") == "active":
         problems.append("Citrus's active projection snapshot is active")
     idle = read.get("idle_display")
-    if isinstance(idle, dict) and idle.get("source") not in (None, "idle_clear"):
-        problems.append(f"status.idle_display.source is {idle.get('source')!r}")
+    if isinstance(idle, dict):
+        if idle.get("source") in ("canvas_fill", "preview", "arenas_running"):
+            problems.append(f"idle_display.source is {idle.get('source')!r}")
+        if idle.get("canvas_fill_overlay"):
+            problems.append("a canvas fill overlay is shown")
+        if idle.get("preview_arena_ids"):
+            problems.append(f"arenas previewing: {idle.get('preview_arena_ids')!r}")
     return problems
 
 
@@ -3673,8 +3709,11 @@ class Orchestrator:
         after = self.read_citrus_display("after_capture")
         display_declaration = record["stimulus_display_declaration"]
         display_declaration["evidence"]["after_capture"] = after
+        display_declaration["display_frame_index_range"] = display_frame_index_range(
+            display_declaration["evidence"]["before_capture"], after)
         if display_declaration["source"] == "citrus_idle_clear":
-            used, display_problems = citrus_idle_clear_problems(after)
+            used, display_problems = citrus_idle_clear_problems(
+                after, display_declaration["evidence"]["before_capture"])
             display_declaration["evidence_used"]["after_capture"] = used
         else:
             display_problems = citrus_display_contradictions(after)

@@ -51,11 +51,17 @@ immediately before the capture and again once Orange reports it finished,
 and declares `stimulus_display_declaration` {source `citrus_idle_clear`,
 fill_rgba_u8 [0,0,0,255], citrus_build, evidence: both reads (time, every
 arena's active_preview_mode, calibration_scene, photodiode marker or
-`not_reported`, idle_display), evidence_used per read} in the capture record.
+`not_reported`, idle_display), evidence_used per read,
+display_frame_index_range} in the capture record.
 Orange's descriptor gets `{state: on, shown: {kind: solid_color, rgba8:
 [0,0,0,255]}}` and a note naming the Citrus build. Evidence: Citrus's
-`status.idle_display` (source `idle_clear`, fill [0,0,0,255]) when reported
-(citrus-agent PR, not installed); otherwise every arena's
+`status.display.idle_display` when reported (written by its render thread
+after each swap; citrus-agent branch `agent/citrus/idle-display-status`
+3431c3a, not installed): in both reads source `idle_clear`, fill_rgba_u8
+[0,0,0,255], no `canvas_fill_overlay`, empty `preview_arena_ids`,
+`photodiode_marker_patches_rendered` false (lit marker patches are not solid
+black, so true refuses), and `display_frame_index` advancing from the first
+read to the second (the display is live); otherwise every arena's
 `active_preview_mode` must be `NONE` and no calibration scene active. Citrus
 027d292 reports neither (its `arenas[]` carry no `active_preview_mode`; the
 mode appears only in `active_projection_snapshot` for calibration-grid

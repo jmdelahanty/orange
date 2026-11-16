@@ -4688,9 +4688,16 @@ def background_orange_status(base: dict[str, Any], capture: dict[str, Any] | Non
 
 
 CITRUS_BUILD = {"git_commit_hash": "027d292", "git_dirty": False}
-# The field citrus-agent is adding (status.idle_display), as the fake reports it.
-IDLE_DISPLAY_STATUS = {"idle_display": {"source": "idle_clear", "fill_rgba_u8": [0, 0, 0, 255]},
-                       "citrus_build": CITRUS_BUILD}
+def idle_display(index: int, **changes: Any) -> dict[str, Any]:
+    """status.display.idle_display as citrus-agent's branch (3431c3a) reports it."""
+    value = {"source": "idle_clear", "display_frame_index": index, "fill_rgba_u8": [0, 0, 0, 255],
+             "canvas_fill_overlay": None, "preview_arena_ids": [], "photodiode_marker_patches_rendered": False}
+    value.update(changes)
+    return {"display": {"idle_display": value}, "citrus_build": CITRUS_BUILD}
+
+
+IDLE_DISPLAY_STATUS = idle_display(1000)
+IDLE_DISPLAY_STATUS_AFTER = idle_display(1240)
 # Without the field: the inference from every arena's preview and the calibration scene.
 INFERRED_IDLE_STATUS = {"arenas": [{"arena_id": "arena_1", "active_preview_mode": "NONE"},
                                    {"arena_id": "arena_2", "active_preview_mode": "NONE"}],
@@ -4746,7 +4753,10 @@ def run_background_fake(
         return response_for(request, status)
 
     before = IDLE_DISPLAY_STATUS if citrus_display_before is None else citrus_display_before
-    after = before if citrus_display_after is None else citrus_display_after
+    if citrus_display_after is not None:
+        after = citrus_display_after
+    else:
+        after = IDLE_DISPLAY_STATUS_AFTER if before is IDLE_DISPLAY_STATUS else before
 
     def handle_citrus(request: dict[str, Any]) -> dict[str, Any]:
         if citrus_sent is not None and request.get("method") != "status":
@@ -4814,8 +4824,10 @@ def test_empty_background_capture_confirmation_and_start() -> None:
                 f"the capture declares Citrus's idle clear to Orange: {sent[0]}")
         declared = summary["empty_background"]["stimulus_display_declaration"]
         require(declared["source"] == "citrus_idle_clear" and declared["fill_rgba_u8"] == [0, 0, 0, 255]
-                and declared["evidence_used"] == {"before_capture": "status.idle_display",
-                                                  "after_capture": "status.idle_display"}
+                and declared["evidence_used"] == {"before_capture": "status.display.idle_display",
+                                                  "after_capture": "status.display.idle_display"}
+                and declared["display_frame_index_range"] == {"before_capture": 1000, "after_capture": 1240,
+                                                              "frames": 240}
                 and declared["citrus_build"] == CITRUS_BUILD
                 and set(declared["evidence"]) == {"before_capture", "after_capture"}
                 and declared["evidence"]["before_capture"]["read_at_utc"]
@@ -5001,19 +5013,31 @@ def test_empty_background_display_from_citrus() -> None:
         refused_before("calibration", {**INFERRED_IDLE_STATUS,
                                        "calibration_scene": {"state": "presenting", "active": True}},
                        "calibration scene active")
-        refused_before("idle_preview", {"idle_display": {"source": "preview", "fill_rgba_u8": [0, 0, 0, 255]}},
+        refused_before("idle_preview", idle_display(5, source="preview", preview_arena_ids=["arena_2"]),
                        "not 'idle_clear'")
-        refused_before("idle_grey", {"idle_display": {"source": "idle_clear", "fill_rgba_u8": [40, 40, 40, 255]}},
-                       "fill_rgba_u8")
+        refused_before("idle_grey", idle_display(5, fill_rgba_u8=[40, 40, 40, 255]), "fill_rgba_u8")
+        refused_before("overlay", idle_display(5, canvas_fill_overlay={"rgba_u8": [255, 255, 255, 255]}),
+                       "canvas fill overlay")
+        refused_before("previewing", idle_display(5, preview_arena_ids=["arena_1"]), "arenas previewing")
+        refused_before("markers", idle_display(5, photodiode_marker_patches_rendered=True),
+                       "photodiode_marker_patches_rendered")
+        refused_before("no_index", idle_display(5, display_frame_index=None), "not an integer")
 
-        # A change between the two reads: the capture is never named.
-        summary, sent = run_background_fake(
-            module, base / "changed", blank, citrus_display_before=IDLE_DISPLAY_STATUS,
-            citrus_display_after={"idle_display": {"source": "canvas_fill", "fill_rgba_u8": [255, 255, 255, 255]}})
-        require(summary["result"] == "fail" and "after the capture" in summary["error"]
-                and [r["method"] for r in sent] == ["capture_empty_background"]
-                and summary["empty_background"]["state"] == "display_changed_during_capture",
-                f"a display change during the capture refuses the start: {summary['error']}")
+        # After the capture: a change, or a display that did not advance, is never named.
+        for name, after_status, text in (
+            ("changed", idle_display(1240, source="canvas_fill", fill_rgba_u8=[255, 255, 255, 255]),
+             "'canvas_fill'"),
+            ("frozen", idle_display(1000), "did not advance"),
+        ):
+            summary, sent = run_background_fake(module, base / name, blank, citrus_display_before=IDLE_DISPLAY_STATUS,
+                                                citrus_display_after=after_status)
+            require(summary["result"] == "fail" and "after the capture" in summary["error"] and text in summary["error"]
+                    and [r["method"] for r in sent] == ["capture_empty_background"]
+                    and summary["empty_background"]["state"] == "display_changed_during_capture",
+                    f"{name}: refuses the start: {summary['error']}")
+        frozen_range = summary["empty_background"]["stimulus_display_declaration"]["display_frame_index_range"]
+        require(frozen_range == {"before_capture": 1000, "after_capture": 1000, "frames": 0},
+                f"the index range is recorded on a refusal too: {frozen_range}")
 
         # The operator override: recorded as such, read twice, never contradicted.
         override = ["--background-stimulus-display", '{"state": "off"}']
