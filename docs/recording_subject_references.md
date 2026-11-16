@@ -187,7 +187,10 @@ cb373326 after `GET /version` joined the slice), repo
   check passed after the service restart (below). Re-pinned 2026-11-15 to
   agent-contracts PR 128 (f0810590, `consumers.json` e45d0e1e…; MetaZebrobot
   ecaa247, consumer_openapi 97c581df…, additive usage-link `members`): pinned
-  and live checks PASS.
+  and live checks PASS. Re-pinned 2026-11-16 to agent-contracts PR 140 (bfdae228,
+  `consumers.json` 364c5831…; MetaZebrobot 7cedf98d, consumer_openapi
+  9b97bb72…, additive PUT /usage-links/{recording_ref}/members and
+  members_added_at/by; nothing Orange reads changed): pinned and live checks PASS.
 
 Orange's reliance set, every field of which is in the pinned slice:
 `/dishes/{dish_id}/citrus-snapshot` v2 top-level `dish_id`, `dish_uuid`,
