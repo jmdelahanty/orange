@@ -464,8 +464,12 @@ Orange/Citrus commissioning) are in git history of this file and in
   - Spec-declared headless runs (86d02fc, 26f1c53): `fixed.declaration` in
     an experiment spec; orange_client seals the exact spec bytes as
     `run_spec/<spec_sha256>.json` (requester.spec_copy_relative_path).
-    Palette refuses `confirmed_by: run_spec` until #442/#443 are deployed:
-    no spec may carry a declaration until then and Jeremy says so.
+    Palette #442 (f4a239de) and #443 (1badce6d) are live in intake since
+    2026-11-15 08:20Z (live 73ccf2c5 on 2026-11-16): it admits
+    `confirmed_by: run_spec` as spec_declared and requires the sealed copy.
+    Jeremy turned spec-declared runs ON on 2026-11-16: a spec may carry
+    `fixed.declaration`. Declaration v2 (orchard plans) also needs Palette's
+    v2 acceptance; check it is live before the first v2 spec run.
   - `--run-stamp` (8276f09): `run_detect_latency_spec.sh` no longer writes a
     stamped /tmp copy; orange_client stamps the spec in memory, so the run
     names the file in experiment_specs/. The benchmark wrapper must be the

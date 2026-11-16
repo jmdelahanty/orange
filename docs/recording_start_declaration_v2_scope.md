@@ -2,8 +2,9 @@
 
 Status: BUILT on the Orange dish branch (2026-11-15, Jeremy's go), not
 promoted; agreed with experiment-spec (orchard PR #6 emits it), Palette and
-pancake-plate. Nothing emits v2 in production until Palette's follow-up after
-#442/#443 is deployed and Jeremy says so. First build: a plan reaches Orange
+pancake-plate. 2026-11-16: Palette #442/#443 are live and Jeremy turned
+spec-declared runs on; the first v2 run waits only for confirmation that
+Palette's v2 acceptance (the #442/#443 follow-up) is live. First build: a plan reaches Orange
 only as a run spec (merge step `scripts/apply_declaration_to_template.py`);
 the socket accepts v2 only with kind `operator`.
 Field changes since the draft below: `source.session_id` is
