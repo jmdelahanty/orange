@@ -33,7 +33,6 @@ DECLARATION_DIR=""
 EMPTY_BACKGROUND=""
 FISH_FREE_TEST=0
 SCENE_CONFIRMATION_TIMEOUT=""
-BACKGROUND_STIMULUS_DISPLAY=""
 
 usage() {
   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
@@ -75,17 +74,14 @@ Options:
                            scripts/confirm_bound_run_scene.py --run-dir <out-dir> --confirmed-by <id>
                            (fish loaded, dishes not moved; or --abort). The runner records the
                            caller by SO_PEERCRED in scene_confirmation.json before the start
-                           names the capture.
+                           names the capture. The capture's display is declared only from
+                           Citrus's advertised status (idle clear, projector black rgba8 0,0,0,255,
+                           read before and after); a Citrus that does not advertise it refuses.
                            none: no background. Default: the plan's rule, else none.
   --fish-free-test         With capture_at_setup and no subjects declared: the runner confirms
                            the scene itself (recorded as fish_free_test_scene_unchanged).
   --scene-confirmation-timeout-seconds <n>
                            How long to wait for the operator after the capture (default 3600)
-  --background-stimulus-display <json>
-                           Operator override of the capture's display (state off|on|not_displayed),
-                           recorded as operator_override. Default: declared from Citrus's status
-                           (idle clear rgba8 0,0,0,255, read before and after the capture), or
-                           the capture is refused; never "unknown".
   --execute                Run it (default: print the plan only)
 
 Subjects: without --declaration-dir, Citrus autorun declares every arena blank,
@@ -112,7 +108,6 @@ while [[ $# -gt 0 ]]; do
     --empty-background) EMPTY_BACKGROUND="${2:?--empty-background needs capture_at_setup or none}"; shift 2 ;;
     --fish-free-test) FISH_FREE_TEST=1; shift ;;
     --scene-confirmation-timeout-seconds) SCENE_CONFIRMATION_TIMEOUT="${2:?}"; shift 2 ;;
-    --background-stimulus-display) BACKGROUND_STIMULUS_DISPLAY="${2:?}"; shift 2 ;;
     --execute) EXECUTE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -170,7 +165,6 @@ BACKGROUND_ARGS=(--run-dir "$OUT_DIR")
 [[ -n "$EMPTY_BACKGROUND" ]] && BACKGROUND_ARGS+=(--empty-background "$EMPTY_BACKGROUND")
 (( FISH_FREE_TEST )) && BACKGROUND_ARGS+=(--fish-free-test)
 [[ -n "$SCENE_CONFIRMATION_TIMEOUT" ]] && BACKGROUND_ARGS+=(--scene-confirmation-timeout-seconds "$SCENE_CONFIRMATION_TIMEOUT")
-[[ -n "$BACKGROUND_STIMULUS_DISPLAY" ]] && BACKGROUND_ARGS+=(--background-stimulus-display "$BACKGROUND_STIMULUS_DISPLAY")
 
 ORANGE_COMMAND="$REPO_ROOT/scripts/run_gui_fourcam_external_ipc_validation.sh --declared-start --citrus-display-safe"
 [[ -n "$CLIP_SECONDS" ]] && ORANGE_COMMAND+=" --clip-seconds $CLIP_SECONDS"

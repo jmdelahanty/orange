@@ -57,19 +57,20 @@ Orange's descriptor gets `{state: on, shown: {kind: solid_color, rgba8:
 [0,0,0,255]}}` and a note naming the Citrus build. Evidence: Citrus's
 `status.display.idle_display` when reported (written by its render thread
 after each swap; citrus-agent branch `agent/citrus/idle-display-status`
-3431c3a, not installed): in both reads source `idle_clear`, fill_rgba_u8
-[0,0,0,255], no `canvas_fill_overlay`, empty `preview_arena_ids`,
+17fbc41, not installed): in both reads source `idle_clear`, fill_rgba_u8
+[0,0,0,255], no `canvas_fill_overlay`, `preview_arena_count` 0,
 `photodiode_marker_patches_rendered` false (lit marker patches are not solid
 black, so true refuses), and `display_frame_index` advancing from the first
-read to the second (the display is live); otherwise every arena's
-`active_preview_mode` must be `NONE` and no calibration scene active. Citrus
-027d292 reports neither (its `arenas[]` carry no `active_preview_mode`; the
+read to the second (the display is live); every arena that reports
+`active_preview_mode` / `protocol_step_preview_active` must say `NONE` /
+false. Otherwise every arena must report both (`NONE`, false) and no
+calibration scene may be active. Citrus 027d292 reports neither (its `arenas[]` carry no `active_preview_mode`; the
 mode appears only in `active_projection_snapshot` for calibration-grid
-previews), so with it the capture is refused unless the operator overrides:
-`--background-stimulus-display '{"state": "off"|"on"|"not_displayed", ...}'`,
-recorded as source `operator_override`, still read twice and refused when
-Citrus positively reports a preview, a calibration scene or a non-idle
-display. A display that differs after the capture refuses the start (the
+previews), so with it the capture is refused, naming what Citrus must
+advertise (both land with Citrus `agent/citrus/idle-display-status`). There
+is no operator override (Jeremy, 2026-11-16): an automated runner never asks
+the operator to declare the display. Projector black is `state: on`,
+solid_color [0,0,0,255] (confirmed by Jeremy). A display that differs after the capture refuses the start (the
 capture stays in the store, never named). A failed
 camera or unreserved staging refuses before the fish go in. `--fish-free-test`
 lets the runner confirm itself (decision `fish_free_test_scene_unchanged`),

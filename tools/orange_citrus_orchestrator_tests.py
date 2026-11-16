@@ -4674,10 +4674,6 @@ def test_orchard_declaration_files_preset_and_citrus_gate() -> None:
         require("only applies to an empty background" in text, text)
         text = parse_error(module, ["--empty-background", "capture_at_setup", "--run-dir", str(base / "run")])
         require("declared start" in text, text)
-        text = parse_error(module, ["--declared-by", "delahantyj", "--intent", "recording_only", "--blank-subjects",
-                                    "--empty-background", "capture_at_setup", "--run-dir", str(base / "run"),
-                                    "--background-stimulus-display", '{"state": "bright"}'])
-        require("stimulus-display" in text, text)
 
 
 def background_orange_status(base: dict[str, Any], capture: dict[str, Any] | None,
@@ -4689,18 +4685,23 @@ def background_orange_status(base: dict[str, Any], capture: dict[str, Any] | Non
 
 CITRUS_BUILD = {"git_commit_hash": "027d292", "git_dirty": False}
 def idle_display(index: int, **changes: Any) -> dict[str, Any]:
-    """status.display.idle_display as citrus-agent's branch (3431c3a) reports it."""
+    """Citrus status as citrus-agent's branch (17fbc41) reports it: status.display.idle_display
+    and, per arena, active_preview_mode and protocol_step_preview_active."""
     value = {"source": "idle_clear", "display_frame_index": index, "fill_rgba_u8": [0, 0, 0, 255],
-             "canvas_fill_overlay": None, "preview_arena_ids": [], "photodiode_marker_patches_rendered": False}
+             "canvas_fill_overlay": None, "preview_arena_count": 0, "photodiode_marker_patches_rendered": False}
     value.update(changes)
-    return {"display": {"idle_display": value}, "citrus_build": CITRUS_BUILD}
+    return {"display": {"idle_display": value}, "citrus_build": CITRUS_BUILD,
+            "arenas": [{"arena_id": a, "active_preview_mode": "NONE", "protocol_step_preview_active": False}
+                       for a in ("arena_1", "arena_2")]}
 
 
 IDLE_DISPLAY_STATUS = idle_display(1000)
 IDLE_DISPLAY_STATUS_AFTER = idle_display(1240)
 # Without the field: the inference from every arena's preview and the calibration scene.
-INFERRED_IDLE_STATUS = {"arenas": [{"arena_id": "arena_1", "active_preview_mode": "NONE"},
-                                   {"arena_id": "arena_2", "active_preview_mode": "NONE"}],
+INFERRED_IDLE_STATUS = {"arenas": [{"arena_id": "arena_1", "active_preview_mode": "NONE",
+                                    "protocol_step_preview_active": False},
+                                   {"arena_id": "arena_2", "active_preview_mode": "NONE",
+                                    "protocol_step_preview_active": False}],
                         "calibration_scene": {"state": "idle", "active": False},
                         "active_projection_snapshot": {"status": "inactive"}, "citrus_build": CITRUS_BUILD}
 # Citrus 027d292 as installed: arenas without active_preview_mode, no idle_display.
@@ -4995,7 +4996,8 @@ def test_empty_background_display_from_citrus() -> None:
         require(summary["result"] == "pass" and declared["evidence_used"] == {
             "before_capture": "arena_preview_and_calibration_scene",
             "after_capture": "arena_preview_and_calibration_scene"}
-            and [a["active_preview_mode"] for a in declared["evidence"]["before_capture"]["arenas"]] == ["NONE"] * 2,
+            and [(a["active_preview_mode"], a["protocol_step_preview_active"])
+                 for a in declared["evidence"]["before_capture"]["arenas"]] == [("NONE", False)] * 2,
             f"the inference is recorded as the evidence used: {summary.get('error')} {declared}")
 
         def refused_before(name: str, display: dict[str, Any], text: str, extra: list[str] = ()) -> None:
@@ -5005,20 +5007,38 @@ def test_empty_background_display_from_citrus() -> None:
                     and summary["empty_background"]["state"] == "display_not_declarable",
                     f"{name}: refused before any capture: {summary['error']}")
 
-        # Citrus 027d292 as installed reports neither: never 'unknown', refused.
-        refused_before("installed_citrus", CITRUS_027D292_STATUS, "does not report active_preview_mode")
+        # Citrus 027d292 as installed advertises neither: never 'unknown', refused,
+        # naming what Citrus must report and where it lands.
+        refused_before("installed_citrus", CITRUS_027D292_STATUS, "status.display.idle_display nor as "
+                       "arenas[].active_preview_mode")
+        summary, _ = run_background_fake(module, base / "installed_citrus_text", blank,
+                                         citrus_display_before=CITRUS_027D292_STATUS)
+        require("agent/citrus/idle-display-status" in summary["error"]
+                and summary["empty_background"]["stimulus_display_declaration"]["evidence_used"]
+                == {"before_capture": "none"}, f"the refusal names the Citrus branch: {summary['error']}")
         refused_before("preview", {**INFERRED_IDLE_STATUS, "arenas": [
-            {"arena_id": "arena_1", "active_preview_mode": "NONE"},
-            {"arena_id": "arena_2", "active_preview_mode": "CHASER"}]}, "arena_2: preview 'CHASER' is active")
+            {"arena_id": "arena_1", "active_preview_mode": "NONE", "protocol_step_preview_active": False},
+            {"arena_id": "arena_2", "active_preview_mode": "CHASER", "protocol_step_preview_active": False}]},
+            "arena_2: preview 'CHASER' is active")
+        refused_before("step_preview", {**INFERRED_IDLE_STATUS, "arenas": [
+            {"arena_id": "arena_1", "active_preview_mode": "NONE", "protocol_step_preview_active": True}]},
+            "arena_1: a protocol step preview is active")
+        refused_before("no_step_field", {**INFERRED_IDLE_STATUS, "arenas": [
+            {"arena_id": "arena_1", "active_preview_mode": "NONE"}]},
+            "does not report protocol_step_preview_active")
+        step_with_idle = idle_display(5)
+        step_with_idle["arenas"][1]["protocol_step_preview_active"] = True
+        refused_before("idle_and_step_preview", step_with_idle, "arena_2: a protocol step preview is active")
         refused_before("calibration", {**INFERRED_IDLE_STATUS,
                                        "calibration_scene": {"state": "presenting", "active": True}},
                        "calibration scene active")
-        refused_before("idle_preview", idle_display(5, source="preview", preview_arena_ids=["arena_2"]),
+        refused_before("idle_preview", idle_display(5, source="preview", preview_arena_count=1),
                        "not 'idle_clear'")
         refused_before("idle_grey", idle_display(5, fill_rgba_u8=[40, 40, 40, 255]), "fill_rgba_u8")
         refused_before("overlay", idle_display(5, canvas_fill_overlay={"rgba_u8": [255, 255, 255, 255]}),
                        "canvas fill overlay")
-        refused_before("previewing", idle_display(5, preview_arena_ids=["arena_1"]), "arenas previewing")
+        refused_before("previewing", idle_display(5, preview_arena_count=2), "preview_arena_count is 2")
+        refused_before("no_count", idle_display(5, preview_arena_count=None), "preview_arena_count is None")
         refused_before("markers", idle_display(5, photodiode_marker_patches_rendered=True),
                        "photodiode_marker_patches_rendered")
         refused_before("no_index", idle_display(5, display_frame_index=None), "not an integer")
@@ -5039,23 +5059,10 @@ def test_empty_background_display_from_citrus() -> None:
         require(frozen_range == {"before_capture": 1000, "after_capture": 1000, "frames": 0},
                 f"the index range is recorded on a refusal too: {frozen_range}")
 
-        # The operator override: recorded as such, read twice, never contradicted.
-        override = ["--background-stimulus-display", '{"state": "off"}']
-        summary, sent = run_background_fake(module, base / "override", blank + override,
-                                            citrus_display_before=CITRUS_027D292_STATUS)
-        declared = summary["empty_background"]["stimulus_display_declaration"]
-        require(summary["result"] == "pass" and declared["source"] == "operator_override"
-                and declared["orange_stimulus_display"] == {"state": "off"}
-                and sent[0]["params"]["stimulus_display"] == {"state": "off"}
-                and "operator override" in sent[0]["params"]["note"]
-                and set(declared["evidence"]) == {"before_capture", "after_capture"},
-                f"override recorded with both reads: {summary.get('error')} {declared}")
-        refused_before("override_contradicted", {**INFERRED_IDLE_STATUS, "calibration_scene":
-                                                 {"state": "presenting", "active": True}},
-                       "calibration scene active", override)
+        # No operator override exists: the display comes from Citrus only.
         text = parse_error(module, blank + ["--run-dir", str(base / "x"),
-                                            "--background-stimulus-display", '{"state": "unknown"}'])
-        require("off, on or not_displayed" in text, f"unknown is never declared: {text}")
+                                            "--background-stimulus-display", '{"state": "off"}'])
+        require("unrecognized arguments: --background-stimulus-display" in text, f"no override: {text}")
 
 
 def test_bound_launcher_declaration_dir() -> None:
