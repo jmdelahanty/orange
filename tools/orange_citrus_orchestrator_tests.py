@@ -4695,8 +4695,10 @@ def run_background_fake(
     confirm: Callable[[Path], None] | None = None,
     camera_results: dict[str, str] | None = None,
     staging: dict[str, Any] | None = None,
+    allowed_uids: set[int] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """A GUI run against fake sockets whose Orange answers capture_empty_background."""
+    """A GUI run against fake sockets whose Orange answers capture_empty_background.
+    `confirm` runs once the runner listens on its confirmation socket."""
     cameras = camera_results or {"2010093": "captured", "2010094": "captured"}
     staging = staging or {serial: {"reserved": True, "bytes": 1, "error": None} for serial in cameras}
     state: dict[str, Any] = {"started": False, "stopped": False, "capture": None, "citrus_started": False,
@@ -4741,7 +4743,7 @@ def run_background_fake(
     if confirm is not None:
         def watch() -> None:
             deadline = time.monotonic() + 10
-            while time.monotonic() < deadline and not (root / module.CAPTURE_RECORD_NAME).exists():
+            while time.monotonic() < deadline and not (root / module.SCENE_CONFIRMATION_SOCKET_NAME).exists():
                 time.sleep(0.01)
             confirm(root)
         watcher = threading.Thread(target=watch)
@@ -4753,6 +4755,8 @@ def run_background_fake(
             "--citrus-terminal-timeout-seconds", "2", "--orange-finalize-timeout-seconds", "2",
             "--lifecycle-events", "off", "--run-dir", str(root), *argv])
         orchestrator = module.Orchestrator(args)
+        if allowed_uids is not None:
+            orchestrator.scene_allowed_uids = allowed_uids  # a foreign peer, without a second user
         try:
             summary = orchestrator.run()
         except module.OrchestratorError as exc:
@@ -4791,32 +4795,48 @@ def test_empty_background_capture_confirmation_and_start() -> None:
         confirmation = json.loads((base / "fish_free" / module.SCENE_CONFIRMATION_NAME).read_text())
         require(record["state"] == "confirmed" and record["scene_confirmation"]["content"] == confirmation
                 and confirmation["decision"] == module.SCENE_DECISION_FISH_FREE
-                and "fish-free-test" in confirmation["writer"]["tool"],
-                f"the summary records the self-confirmation as fish-free: {record}")
+                and confirmation["requester"]["transport"] == "runner_fish_free_test"
+                and not (base / "fish_free" / module.SCENE_CONFIRMATION_SOCKET_NAME).exists(),
+                f"the summary records the self-confirmation as fish-free, no socket opened: {record}")
         capture_record = json.loads((base / "fish_free" / module.CAPTURE_RECORD_NAME).read_text())
         require(capture_record["capture_id"] == "eb_20261116T000000Z_test"
                 and capture_record["descriptor_sha256"] == "sha256:" + "c" * 64
                 and set(capture_record["cameras"]) == {"2010093", "2010094"} and capture_record["recorded_at_utc"],
                 f"the capture record: {capture_record}")
 
-        # An operator confirmation, with the CLI, after the record appears.
+        # An operator confirmation, with the CLI over the run's socket.
+        seen: dict[str, Any] = {}
+
         def operator(run_dir: Path) -> None:
-            subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(run_dir),
-                            "--confirmed-by", "delahantyj"], check=True, capture_output=True, text=True)
+            seen["mode"] = (run_dir / module.SCENE_CONFIRMATION_SOCKET_NAME).stat().st_mode & 0o777
+            seen["owner"] = (run_dir / module.SCENE_CONFIRMATION_SOCKET_NAME).stat().st_uid
+            result = subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(run_dir),
+                                     "--confirmed-by", "delahantyj"], capture_output=True, text=True)
+            seen["result"] = result
 
         summary, sent = run_background_fake(module, base / "operator", blank, confirm=operator)
         require(summary["result"] == "pass", f"operator-confirmed run passes: {summary.get('error')}")
+        require(seen["mode"] == 0o600 and seen["owner"] == __import__("os").getuid(),
+                f"the socket is 0600 and the invoking user's: {oct(seen['mode'])}")
+        require(seen["result"].returncode == 0 and "recorded by the runner" in seen["result"].stdout,
+                f"the CLI reports the runner's acceptance: {seen['result']}")
         confirmation = summary["empty_background"]["scene_confirmation"]["content"]
+        peer = confirmation["requester"]["peer"]
         require(confirmation["decision"] == module.SCENE_DECISION_FISH_LOADED
                 and confirmation["confirmed_by"] == "delahantyj"
-                and confirmation["writer"]["tool"] == "scripts/confirm_bound_run_scene.py",
-                f"who confirmed, with which tool: {confirmation}")
+                and confirmation["requester"]["transport"] == "scene_confirmation_socket"
+                and peer["uid"] == __import__("os").getuid() and peer["pid"] != __import__("os").getpid()
+                and peer["user"] and peer["exe"] and any("confirm_bound_run_scene.py" in a for a in peer["cmdline"]),
+                f"the caller is named by SO_PEERCRED and /proc, not by itself: {confirmation['requester']}")
+        written = json.loads((base / "operator" / module.SCENE_CONFIRMATION_NAME).read_text())
+        require(written == confirmation and not (base / "operator" / module.SCENE_CONFIRMATION_SOCKET_NAME).exists(),
+                "the runner wrote the file it reports, and removed its socket")
         methods = [r["method"] for r in sent]
         require(methods.index("capture_empty_background") < methods.index("start_recording"),
                 f"the start follows the capture and its confirmation: {methods}")
         again = subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(base / "operator"),
                                 "--confirmed-by", "delahantyj", "--abort"], capture_output=True, text=True)
-        require(again.returncode == 2 and "never replaced" in again.stderr, f"one confirmation per run: {again}")
+        require(again.returncode == 2 and "not waiting" in again.stderr, f"no second confirmation: {again}")
         none_yet = subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(base / "empty"),
                                    "--confirmed-by", "delahantyj"], capture_output=True, text=True)
         require(none_yet.returncode == 2 and "no capture record" in none_yet.stderr, "nothing to confirm yet")
@@ -4840,18 +4860,45 @@ def test_empty_background_capture_confirmation_and_start() -> None:
                 and summary["empty_background"]["state"] == "confirmation_timed_out",
                 f"a missing confirmation refuses: {summary['error']}")
 
-        # A confirmation for another capture is refused.
-        def other_capture(run_dir: Path) -> None:
-            record = json.loads((run_dir / module.CAPTURE_RECORD_NAME).read_text())
-            module.write_json_exclusive(run_dir / module.SCENE_CONFIRMATION_NAME, module.build_scene_confirmation(
-                {**record, "capture_id": "eb_other"}, "delahantyj", module.SCENE_DECISION_FISH_LOADED, tool="test"))
+        # Bad requests are answered and recorded; the wait goes on until a good one.
+        replies: list[dict[str, Any]] = []
 
-        summary, sent = run_background_fake(module, base / "other", blank, confirm=other_capture)
-        require(summary["result"] == "fail" and "capture_id" in summary["error"]
-                and "start_recording" not in [r["method"] for r in sent], f"wrong capture refused: {summary['error']}")
-        forged = {"schema_id": module.SCENE_CONFIRMATION_SCHEMA_ID, "schema_version": 1, "decision": "yes"}
-        require(module.scene_confirmation_problems(forged, {"capture_id": "a", "descriptor_sha256": "b"}),
-                "a hand-written confirmation with an unknown decision is refused")
+        def bad_then_good(run_dir: Path) -> None:
+            record = json.loads((run_dir / module.CAPTURE_RECORD_NAME).read_text())
+            sock = run_dir / module.SCENE_CONFIRMATION_SOCKET_NAME
+            for request in (
+                module.build_scene_confirmation_request({**record, "capture_id": "eb_other"}, "delahantyj",
+                                                        module.SCENE_DECISION_FISH_LOADED),
+                module.build_scene_confirmation_request(record, "delahantyj", module.SCENE_DECISION_FISH_FREE),
+                {**module.build_scene_confirmation_request(record, "delahantyj", module.SCENE_DECISION_FISH_LOADED),
+                 "requester": {"uid": 0}},
+                module.build_scene_confirmation_request(record, "delahantyj", module.SCENE_DECISION_FISH_LOADED),
+            ):
+                replies.append(module.send_scene_confirmation_request(sock, request))
+
+        summary, sent = run_background_fake(module, base / "bad_then_good", blank, confirm=bad_then_good)
+        refused = summary["empty_background"]["scene_confirmation"]["refused_requests"]
+        require(summary["result"] == "pass" and [r["accepted"] for r in replies] == [False, False, False, True],
+                f"three refusals, then the good one: {replies}")
+        require(len(refused) == 3 and "capture_id" in refused[0]["problems"][0]
+                and "decision" in refused[1]["problems"][0] and "unknown field requester" in refused[2]["problems"]
+                and refused[0]["peer"]["pid"] == __import__("os").getpid(),
+                f"each refusal is recorded with its peer: {refused}")
+
+        # A peer whose uid is neither the invoking user's nor root's is refused.
+        foreign: dict[str, Any] = {}
+
+        def foreign_peer(run_dir: Path) -> None:
+            foreign["result"] = subprocess.run([sys.executable, str(confirm_script), "--run-dir", str(run_dir),
+                                                "--confirmed-by", "delahantyj"], capture_output=True, text=True)
+
+        summary, sent = run_background_fake(module, base / "foreign", blank +
+                                            ["--scene-confirmation-timeout-seconds", "1"],
+                                            confirm=foreign_peer, allowed_uids={987654})
+        refused = summary["empty_background"]["scene_confirmation"]["refused_requests"]
+        require(foreign["result"].returncode == 1 and "neither the invoking user" in foreign["result"].stderr
+                and summary["result"] == "fail" and "start_recording" not in [r["method"] for r in sent]
+                and refused and refused[0]["request"] is None, f"foreign uid refused unread: {summary['error']}")
 
         # A camera that failed its burst, or had no staging, refuses before the fish go in.
         summary, sent = run_background_fake(module, base / "failed_cam", blank + ["--fish-free-test"],

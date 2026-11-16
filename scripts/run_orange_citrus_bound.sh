@@ -70,9 +70,12 @@ Options:
                            orange.empty_background rule applies.
   --empty-background <m>   capture_at_setup: once Orange streams and Citrus is checked, capture
                            an empty-dish background (dishes filled, no fish), write
-                           <out-dir>/empty_background_capture.json and wait for the operator's
+                           <out-dir>/empty_background_capture.json and wait on
+                           <out-dir>/scene_confirmation.sock for the operator's
                            scripts/confirm_bound_run_scene.py --run-dir <out-dir> --confirmed-by <id>
-                           (fish loaded, dishes not moved) before the start names the capture.
+                           (fish loaded, dishes not moved; or --abort). The runner records the
+                           caller by SO_PEERCRED in scene_confirmation.json before the start
+                           names the capture.
                            none: no background. Default: the plan's rule, else none.
   --fish-free-test         With capture_at_setup and no subjects declared: the runner confirms
                            the scene itself (recorded as fish_free_test_scene_unchanged).

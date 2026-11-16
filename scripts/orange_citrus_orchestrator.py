@@ -515,30 +515,78 @@ def empty_background_capture_problems(capture: dict[str, Any], staging_cameras: 
     return problems
 
 
-def scene_confirmation_problems(confirmation: Any, capture_record: dict[str, Any]) -> list[str]:
-    """The operator's confirmation must answer this capture (id and sha256),
-    name who confirmed, and carry one of the known decisions."""
-    if not isinstance(confirmation, dict) or confirmation.get("schema_id") != SCENE_CONFIRMATION_SCHEMA_ID \
-            or confirmation.get("schema_version") != 1:
-        return [f"not an {SCENE_CONFIRMATION_SCHEMA_ID} v1"]
-    problems = []
+SCENE_CONFIRMATION_SOCKET_NAME = "scene_confirmation.sock"
+SCENE_CONFIRMATION_REQUEST_SCHEMA_ID = "orange_citrus.scene_confirmation_request"
+SCENE_CONFIRMATION_REQUEST_KEYS = {"schema_id", "schema_version", "capture_id", "descriptor_sha256",
+                                   "decision", "confirmed_by", "note"}
+SCENE_SOCKET_DECISIONS = (SCENE_DECISION_FISH_LOADED, SCENE_DECISION_ABORT)
+SCENE_REQUEST_MAX_BYTES = 16 * 1024
+
+
+def build_scene_confirmation_request(capture_record: dict[str, Any], confirmed_by: str, decision: str,
+                                     note: str = "") -> dict[str, Any]:
+    """What scripts/confirm_bound_run_scene.py sends over the run's socket."""
+    return {"schema_id": SCENE_CONFIRMATION_REQUEST_SCHEMA_ID, "schema_version": 1,
+            "capture_id": capture_record.get("capture_id"),
+            "descriptor_sha256": capture_record.get("descriptor_sha256"),
+            "decision": decision, "confirmed_by": confirmed_by, "note": note}
+
+
+def scene_confirmation_request_problems(request: Any, capture_record: dict[str, Any]) -> list[str]:
+    """A request must answer this capture (id and sha256), name who confirms,
+    and carry fish_loaded_scene_unchanged or abort (the fish-free decision is
+    the runner's own, never a caller's)."""
+    if not isinstance(request, dict) or request.get("schema_id") != SCENE_CONFIRMATION_REQUEST_SCHEMA_ID \
+            or request.get("schema_version") != 1:
+        return [f"not an {SCENE_CONFIRMATION_REQUEST_SCHEMA_ID} v1"]
+    problems = [f"unknown field {key}" for key in sorted(set(request) - SCENE_CONFIRMATION_REQUEST_KEYS)]
     for key in ("capture_id", "descriptor_sha256"):
-        if confirmation.get(key) != capture_record.get(key):
-            problems.append(f"{key} {confirmation.get(key)!r} is not this run's {capture_record.get(key)!r}")
-    if not IDENTITY_PATTERN.fullmatch(str(confirmation.get("confirmed_by", ""))):
+        if request.get(key) != capture_record.get(key):
+            problems.append(f"{key} {request.get(key)!r} is not this run's {capture_record.get(key)!r}")
+    if not IDENTITY_PATTERN.fullmatch(str(request.get("confirmed_by", ""))):
         problems.append("confirmed_by must match ^[a-z][a-z0-9_-]{0,31}$")
-    decision = confirmation.get("decision")
-    if decision not in SCENE_STATEMENTS:
-        problems.append(f"unknown decision {decision!r}")
-    elif confirmation.get("statement") != SCENE_STATEMENTS[decision]:
-        problems.append("the statement is not the one for its decision")
-    if str(confirmation.get("confirmed_at_utc", "")) < str(capture_record.get("recorded_at_utc", "")):
-        problems.append("confirmed before the capture was recorded")
+    if request.get("decision") not in SCENE_SOCKET_DECISIONS:
+        problems.append(f"decision must be one of {list(SCENE_SOCKET_DECISIONS)}, not {request.get('decision')!r}")
+    if not isinstance(request.get("note", ""), str):
+        problems.append("note must be a string")
     return problems
 
 
-def build_scene_confirmation(capture_record: dict[str, Any], confirmed_by: str, decision: str, *,
-                             tool: str, note: str = "") -> dict[str, Any]:
+def invoking_identity() -> tuple[int, int]:
+    """(uid, gid) of the person who launched the runner, through sudo too."""
+    try:
+        return int(os.environ["SUDO_UID"]), int(os.environ.get("SUDO_GID", os.getgid()))
+    except (KeyError, ValueError):
+        return os.getuid(), os.getgid()
+
+
+def socket_peer(connection: socket.socket) -> dict[str, Any]:
+    """The kernel's account of the caller (SO_PEERCRED), with its user name
+    and the process's exe and command line from /proc (null when gone)."""
+    import pwd
+    import struct
+    pid, uid, gid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                               struct.calcsize("3i")))
+    try:
+        user: str | None = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        user = None
+    try:
+        exe: str | None = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        exe = None
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        cmdline: list[str] | None = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+    except OSError:
+        cmdline = None
+    return {"pid": pid, "uid": uid, "gid": gid, "user": user, "exe": exe, "cmdline": cmdline}
+
+
+def build_scene_confirmation(capture_record: dict[str, Any], request: dict[str, Any], requester: dict[str, Any]
+                             ) -> dict[str, Any]:
+    """orange_citrus.scene_confirmation v1, written only by the runner."""
+    decision = request["decision"]
     return {
         "schema_id": SCENE_CONFIRMATION_SCHEMA_ID,
         "schema_version": 1,
@@ -546,12 +594,93 @@ def build_scene_confirmation(capture_record: dict[str, Any], confirmed_by: str, 
         "descriptor_sha256": capture_record.get("descriptor_sha256"),
         "decision": decision,
         "statement": SCENE_STATEMENTS[decision],
-        "confirmed_by": confirmed_by,
+        "confirmed_by": request["confirmed_by"],
         "confirmed_at_utc": utc_now(),
-        "note": note,
-        "writer": {"tool": tool, "uid": os.getuid(), "pid": os.getpid(),
-                   "user": os.environ.get("SUDO_USER") or os.environ.get("USER") or None},
+        "note": request.get("note", ""),
+        "requester": requester,
     }
+
+
+def send_scene_confirmation_request(socket_path: Path, request: dict[str, Any], timeout_seconds: float = 10.0
+                                    ) -> dict[str, Any]:
+    """Client side (scripts/confirm_bound_run_scene.py): one JSON line, one reply."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(timeout_seconds)
+        client.connect(str(socket_path))
+        client.sendall(json.dumps(request).encode() + b"\n")
+        client.shutdown(socket.SHUT_WR)
+        data = b""
+        while chunk := client.recv(65536):
+            data += chunk
+    return json.loads(data.decode())
+
+
+class SceneConfirmationListener:
+    """The run's confirmation socket (<run dir>/scene_confirmation.sock, mode
+    0600, owned by the invoking user). Each connection is one request; the
+    caller is identified by SO_PEERCRED, never by what it writes. A peer
+    whose uid is neither the invoking user's nor root's is refused."""
+
+    def __init__(self, path: Path, allowed_uids: set[int]):
+        if len(os.fsencode(path)) >= 108:
+            raise OrchestratorError(f"confirmation socket path too long for AF_UNIX: {path}")
+        if path.exists() or path.is_symlink():
+            raise OrchestratorError(f"{path} already exists; a run directory is used once")
+        self.path = path
+        self.allowed_uids = allowed_uids
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old_umask = os.umask(0o177)
+        try:
+            self.server.bind(str(path))
+        finally:
+            os.umask(old_umask)
+        os.chmod(path, 0o600)
+        uid, gid = invoking_identity()
+        if os.geteuid() == 0 and uid != 0:
+            os.chown(path, uid, gid)
+        self.server.listen(4)
+        self.server.settimeout(0.0)
+
+    def poll(self, wait_seconds: float) -> tuple[socket.socket, dict[str, Any]] | None:
+        """One pending connection with its peer, or None after wait_seconds."""
+        import select
+        ready, _, _ = select.select([self.server], [], [], max(0.0, wait_seconds))
+        if not ready:
+            return None
+        try:
+            connection, _ = self.server.accept()
+        except (BlockingIOError, InterruptedError):
+            return None
+        connection.settimeout(2.0)
+        return connection, socket_peer(connection)
+
+    @staticmethod
+    def read_request(connection: socket.socket) -> Any:
+        data = b""
+        while b"\n" not in data and len(data) <= SCENE_REQUEST_MAX_BYTES:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        if len(data) > SCENE_REQUEST_MAX_BYTES:
+            raise ValueError("request too large")
+        return json.loads(data.split(b"\n", 1)[0].decode())
+
+    @staticmethod
+    def reply(connection: socket.socket, payload: dict[str, Any]) -> None:
+        try:
+            connection.sendall(json.dumps(payload).encode() + b"\n")
+        except OSError:
+            pass
+        finally:
+            connection.close()
+
+    def close(self) -> None:
+        self.server.close()
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def write_json_exclusive(path: Path, payload: dict[str, Any]) -> None:
@@ -2792,6 +2921,7 @@ class Orchestrator:
         # Empty background (capture -> operator confirmation -> start params).
         self.empty_background_record: dict[str, Any] | None = None
         self.empty_background_start: dict[str, Any] | None = None
+        self.scene_refused_requests: list[dict[str, Any]] = []
         # Long waits follow Orange's and Citrus's lifecycle event logs (made
         # before either process starts, so earlier runs' rows are skipped).
         self.lifecycle_waker: LifecycleWaker | None = None
@@ -3479,6 +3609,7 @@ class Orchestrator:
             if args.camera_config else None,
             "plan": plan_record(args),
             "scene_confirmation_path": str(args.run_dir / SCENE_CONFIRMATION_NAME),
+            "scene_confirmation_socket": str(args.run_dir / SCENE_CONFIRMATION_SOCKET_NAME),
             "next_step": ("Load the fish without moving the dishes or changing anything else, then run "
                           f"scripts/confirm_bound_run_scene.py --run-dir {args.run_dir} --confirmed-by <identity> "
                           "(or --abort)."),
@@ -3492,38 +3623,24 @@ class Orchestrator:
 
         confirmation_path = args.run_dir / SCENE_CONFIRMATION_NAME
         step = self.step("wait_scene_confirmation")
+        if confirmation_path.exists():
+            raise OrchestratorError(f"{confirmation_path} exists before the capture's confirmation; not starting")
         if args.fish_free_test:
-            write_json_exclusive(confirmation_path, build_scene_confirmation(
-                capture_record, args.background_declared_by, SCENE_DECISION_FISH_FREE,
-                tool="orange_citrus_orchestrator.py --fish-free-test"))
-        deadline = time.monotonic() + args.scene_confirmation_timeout_seconds
-        last_orange_check = 0.0
-        while not confirmation_path.exists():
-            self.raise_if_started_process_exited("waiting for the operator's scene confirmation")
-            if time.monotonic() - last_orange_check >= 5.0:
-                last_orange_check = time.monotonic()
-                try:
-                    self.status("orange", ORANGE_REQUEST_SCHEMA_ID, args.orange_socket)
-                except (OSError, TimeoutError, json.JSONDecodeError, OrchestratorError):
-                    pass  # judged after the wait: Orange must be ready for the start
-            if time.monotonic() >= deadline:
-                step.finish(ok=False, timed_out=True, path=str(confirmation_path))
-                record["state"] = "confirmation_timed_out"
-                raise OrchestratorError(
-                    f"no scene confirmation at {confirmation_path} within "
-                    f"{args.scene_confirmation_timeout_seconds:g} s of the capture; not starting")
-            time.sleep(min(poll_interval_for(args, "scene_confirmation"), max(0.0, deadline - time.monotonic())))
-        try:
-            confirmation = json.loads(confirmation_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            confirmation, problems = None, [f"unreadable: {exc}"]
+            # The runner's own confirmation, recorded as such.
+            confirmation = build_scene_confirmation(
+                capture_record,
+                {"decision": SCENE_DECISION_FISH_FREE, "confirmed_by": args.background_declared_by,
+                 "note": "--fish-free-test"},
+                {"transport": "runner_fish_free_test",
+                 "peer": {"pid": os.getpid(), "uid": os.getuid(), "gid": os.getgid(),
+                          "user": os.environ.get("SUDO_USER") or os.environ.get("USER") or None,
+                          "exe": sys.executable, "cmdline": sys.argv}})
+            write_json_exclusive(confirmation_path, confirmation)
         else:
-            problems = scene_confirmation_problems(confirmation, capture_record)
-        record["scene_confirmation"] = {"path": str(confirmation_path), "content": confirmation, "problems": problems}
-        if problems:
-            step.finish(ok=False, problems=problems)
-            record["state"] = "confirmation_refused"
-            raise OrchestratorError(f"scene confirmation {confirmation_path} refused: " + "; ".join(problems))
+            confirmation = self.wait_for_scene_confirmation_request(capture_record, step)
+            write_json_exclusive(confirmation_path, confirmation)
+        record["scene_confirmation"] = {"path": str(confirmation_path), "content": confirmation,
+                                        "refused_requests": self.scene_refused_requests}
         if confirmation["decision"] == SCENE_DECISION_ABORT:
             step.finish(ok=False, decision=SCENE_DECISION_ABORT, confirmed_by=confirmation["confirmed_by"])
             record["state"] = "aborted_by_operator"
@@ -3535,6 +3652,69 @@ class Orchestrator:
             "scene_unchanged_confirmed": True,
         }
         record.update(state="confirmed", start_params=self.empty_background_start)
+
+    def wait_for_scene_confirmation_request(self, capture_record: dict[str, Any], step: StepLog
+                                            ) -> dict[str, Any]:
+        """Listens on <run dir>/scene_confirmation.sock until an allowed peer
+        sends a valid request for this capture, or the timeout. A refused
+        request is answered, recorded and the wait goes on."""
+        args = self.args
+        uid, _ = invoking_identity()
+        allowed = getattr(self, "scene_allowed_uids", None) or {uid, 0}
+        listener = SceneConfirmationListener(args.run_dir / SCENE_CONFIRMATION_SOCKET_NAME, allowed)
+        record = self.empty_background_record
+        record["scene_confirmation_socket"] = {"path": str(listener.path), "mode": "0600",
+                                               "allowed_uids": sorted(allowed)}
+        deadline = time.monotonic() + args.scene_confirmation_timeout_seconds
+        last_orange_check = 0.0
+        try:
+            while True:
+                self.raise_if_started_process_exited("waiting for the operator's scene confirmation")
+                if time.monotonic() - last_orange_check >= 5.0:
+                    last_orange_check = time.monotonic()
+                    try:
+                        self.status("orange", ORANGE_REQUEST_SCHEMA_ID, args.orange_socket)
+                    except (OSError, TimeoutError, json.JSONDecodeError, OrchestratorError):
+                        pass  # judged after the wait: Orange must be ready for the start
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    step.finish(ok=False, timed_out=True, refused_requests=self.scene_refused_requests)
+                    record["state"] = "confirmation_timed_out"
+                    record["scene_confirmation"] = {"refused_requests": self.scene_refused_requests}
+                    raise OrchestratorError(
+                        f"no scene confirmation on {listener.path} within "
+                        f"{args.scene_confirmation_timeout_seconds:g} s of the capture; not starting")
+                pending = listener.poll(min(poll_interval_for(args, "scene_confirmation") * 10, remaining, 0.5))
+                if pending is None:
+                    continue
+                connection, peer = pending
+                received_at = utc_now()
+                problems: list[str]
+                request: Any = None
+                try:
+                    request = listener.read_request(connection)
+                except (OSError, ValueError) as exc:
+                    problems = [f"unreadable request: {exc}"]
+                else:
+                    problems = scene_confirmation_request_problems(request, capture_record)
+                if peer["uid"] not in allowed:
+                    # Read (so the reply reaches the caller) but never trusted or kept.
+                    request = None
+                    problems = [f"peer uid {peer['uid']} is neither the invoking user's nor root's"]
+                if problems:
+                    self.scene_refused_requests.append({"received_at_utc": received_at, "peer": peer,
+                                                        "request": request, "problems": problems})
+                    listener.reply(connection, {"ok": False, "accepted": False, "problems": problems})
+                    continue
+                confirmation = build_scene_confirmation(capture_record, request, {
+                    "transport": "scene_confirmation_socket", "socket_path": str(listener.path),
+                    "peer": peer, "received_at_utc": received_at})
+                listener.reply(connection, {"ok": True, "accepted": True, "decision": request["decision"],
+                                            "statement": confirmation["statement"],
+                                            "scene_confirmation_path": str(args.run_dir / SCENE_CONFIRMATION_NAME)})
+                return confirmation
+        finally:
+            listener.close()
 
     def recheck_citrus_after_scene_wait(self) -> dict[str, Any]:
         """The wait for the operator can be long: Orange must still be ready,
@@ -4609,7 +4789,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--empty-background", choices=("auto",) + EMPTY_BACKGROUND_MODES, default="auto",
                         help="capture_at_setup: once Orange streams (and Citrus is checked), capture an empty-dish "
                              "background, write <run-dir>/" + CAPTURE_RECORD_NAME + ", then wait for the "
-                             "operator's <run-dir>/" + SCENE_CONFIRMATION_NAME + " (scripts/confirm_bound_run_scene.py) "
+                             "operator's confirmation on <run-dir>/" + SCENE_CONFIRMATION_SOCKET_NAME + " (scripts/confirm_bound_run_scene.py; "
+                             "the runner writes " + SCENE_CONFIRMATION_NAME + " with the SO_PEERCRED peer) "
                              "before the start names the capture. auto: what an orchard plan session's "
                              "orange.empty_background says, else none.")
     parser.add_argument("--run-dir", type=Path, default=None,
@@ -4824,6 +5005,7 @@ def empty_background_plan(args: argparse.Namespace) -> dict[str, Any]:
             empty_background_capture_params(args)),
         "capture_record_path": str(args.run_dir / CAPTURE_RECORD_NAME),
         "scene_confirmation_path": str(args.run_dir / SCENE_CONFIRMATION_NAME),
+        "scene_confirmation_socket": str(args.run_dir / SCENE_CONFIRMATION_SOCKET_NAME),
         "scene_confirmation_timeout_seconds": args.scene_confirmation_timeout_seconds,
         "confirmation": ("fish_free_test: the runner confirms, decision " + SCENE_DECISION_FISH_FREE
                          if args.fish_free_test else

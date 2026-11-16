@@ -32,11 +32,16 @@ Bound runner (spec-runner branch, 2026-11-16):
 plan session whose `orange.empty_background` is `capture_at_setup`) captures
 inside the same GUI process and stream as the recording: launch, Citrus
 checks, capture (the launch declares the dishes empty; display `unknown`
-unless given), `<out-dir>/empty_background_capture.json`, then a wait for
-`<out-dir>/scene_confirmation.json` from `scripts/confirm_bound_run_scene.py
---run-dir <out-dir> --confirmed-by <id>` (fish loaded, dishes not moved; or
-`--abort`). Only that file sets `scene_unchanged_confirmed`; a timeout, an
-abort or a confirmation for another capture refuses the start. A failed
+unless given), `<out-dir>/empty_background_capture.json`, then a wait on
+`<out-dir>/scene_confirmation.sock` (mode 0600, the invoking user's) for
+`scripts/confirm_bound_run_scene.py --run-dir <out-dir> --confirmed-by <id>`
+(fish loaded, dishes not moved; or `--abort`). The runner names the caller by
+SO_PEERCRED (pid, uid, gid, user, /proc exe and cmdline), refuses a uid that
+is neither the invoking user's nor root's, and itself writes
+`<out-dir>/scene_confirmation.json` once with `requester.peer`. A request for
+another capture or with another decision is answered, recorded
+(`refused_requests`) and the wait goes on. Only an accepted request sets
+`scene_unchanged_confirmed`; a timeout or an abort refuses the start. A failed
 camera or unreserved staging refuses before the fish go in. `--fish-free-test`
 lets the runner confirm itself (decision `fish_free_test_scene_unchanged`),
 refused when the declaration names subjects. Both files stay in the run's

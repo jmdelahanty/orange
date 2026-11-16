@@ -2,8 +2,9 @@
 """The operator's confirmation in a bound run with an empty background
 (scripts/run_orange_citrus_bound.sh --empty-background capture_at_setup).
 
-The runner captured the empty, filled dishes and now waits. Load the fish
-without moving the dishes or changing anything else, then run
+The runner captured the empty, filled dishes and now waits, listening on
+<run dir>/scene_confirmation.sock (mode 0600, owned by the invoking user).
+Load the fish without moving the dishes or changing anything else, then run
 
     scripts/confirm_bound_run_scene.py --run-dir <out dir> --confirmed-by <identity>
 
@@ -12,11 +13,15 @@ session is called off),
 
     scripts/confirm_bound_run_scene.py --run-dir <out dir> --confirmed-by <identity> --abort
 
-It writes <run dir>/scene_confirmation.json once (never replaced), naming the
-capture it answers (id and sha256 from <run dir>/empty_background_capture.json),
-the decision, its fixed statement, who confirmed and when. The runner then
-starts the recording with scene_unchanged_confirmed true, or refuses on
---abort. Nothing else sets that flag.
+This sends {capture_id, descriptor_sha256, decision, confirmed_by} for the
+capture in <run dir>/empty_background_capture.json over that socket. The
+runner identifies this process by the kernel (SO_PEERCRED pid/uid/gid, user
+name, /proc exe and cmdline), refuses a uid that is neither the invoking
+user's nor root's, and itself writes <run dir>/scene_confirmation.json once,
+with that peer as requester.peer. Then it starts the recording with
+scene_unchanged_confirmed true, or refuses on --abort. Nothing else sets that
+flag. Exit 0 accepted, 1 refused (the reply says why; the runner keeps
+waiting), 2 nothing to confirm.
 """
 
 from __future__ import annotations
@@ -31,11 +36,11 @@ from orange_citrus_orchestrator import (  # noqa: E402
     CAPTURE_RECORD_NAME,
     CAPTURE_RECORD_SCHEMA_ID,
     IDENTITY_PATTERN,
-    SCENE_CONFIRMATION_NAME,
+    SCENE_CONFIRMATION_SOCKET_NAME,
     SCENE_DECISION_ABORT,
     SCENE_DECISION_FISH_LOADED,
-    build_scene_confirmation,
-    write_json_exclusive,
+    build_scene_confirmation_request,
+    send_scene_confirmation_request,
 )
 
 
@@ -60,16 +65,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{record_path} is not a {CAPTURE_RECORD_SCHEMA_ID}", file=sys.stderr)
         return 2
     decision = SCENE_DECISION_ABORT if args.abort else SCENE_DECISION_FISH_LOADED
-    confirmation = build_scene_confirmation(record, args.confirmed_by, decision,
-                                            tool="scripts/confirm_bound_run_scene.py", note=args.note)
-    target = args.run_dir / SCENE_CONFIRMATION_NAME
+    socket_path = args.run_dir / SCENE_CONFIRMATION_SOCKET_NAME
     try:
-        write_json_exclusive(target, confirmation)
-    except FileExistsError:
-        print(f"{target} already exists; a confirmation is never replaced", file=sys.stderr)
+        reply = send_scene_confirmation_request(
+            socket_path, build_scene_confirmation_request(record, args.confirmed_by, decision, args.note))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"the runner is not waiting on {socket_path} ({exc})", file=sys.stderr)
         return 2
+    if not reply.get("accepted"):
+        print(f"refused: {'; '.join(reply.get('problems') or ['no reason given'])}", file=sys.stderr)
+        return 1
     print(f"{decision} for capture {record['capture_id']} ({record['descriptor_sha256']}) by "
-          f"{args.confirmed_by}: {confirmation['statement']}\nwritten {target}")
+          f"{args.confirmed_by}: {reply.get('statement')}\nrecorded by the runner in "
+          f"{reply.get('scene_confirmation_path')}")
     return 0
 
 
