@@ -22,22 +22,26 @@
 // /etc/pancakebatter/rigs/<rig_id>.yml for the recording's Citrus rig id. No
 // default: a missing file is recorded as not_installed. Never blocks a start.
 //
-// Schema: docs/schemas/orange_recording_rig_config_v2.schema.json (closed; v1 had
-// attestation_revision_matches instead of current_per_pancakebatter).
+// Schema: docs/schemas/orange_recording_rig_config_v3.schema.json (closed; v1 had
+// attestation_revision_matches instead of current_per_pancakebatter; v2 wrote every digest as
+// bare hex). Since v3 every digest is a digest_form_v1 token "sha256:<64 hex>": the file digests
+// Orange computes, and the orientation digests copied from the sidecar and the ledger (bare hex
+// there; the same 64 digits behind the prefix, the documents' bytes stay pinned by their sha256).
+// The sidecar's sha256 / events_sha256 lines are compared in token form.
 //   {
-//     "schema_id": "orange.recording.rig_config", "schema_version": 2,
+//     "schema_id": "orange.recording.rig_config", "schema_version": 3,
 //     "captured_at_utc": "...Z",
 //     "status": one of kRigConfigStatuses (below),
 //     "resolution": {"source": "environment"|"installed"|null, "environment_variable": "PANCAKEBATTER_RIG_CONFIG",
 //                    "recording_rig_id": str|null},
 //     "rig_id": str|null, "rig_geometry_revision": int|null,
-//     "rig_file": {"path", "sha256", "size_bytes"}|null,
-//     "events_file": {"path", "status": "pinned"|"missing"|"unreadable"|"invalid", "sha256", "size_bytes"}|null,
+//     "rig_file": {"path", "sha256": token, "size_bytes"}|null,
+//     "events_file": {"path", "status": "pinned"|"missing"|"unreadable"|"invalid", "sha256": token|null, "size_bytes"}|null,
 //     "source_sidecar": {"path", "status": "read"|"missing", "commit", "installed", "source", "events_source",
 //                        "rig_sha256_matches": bool|null, "events_sha256_matches": bool|null,
-//                        "orientation_sha256": str|null, "current_attestations": {<field>: [str]}|null}|null,
+//                        "orientation_sha256": token|null, "current_attestations": {<field>: [str]}|null}|null,
 //     "active_conditions": [<condition_observed event, corrections applied, as in the ledger>],
-//     "attestations": [{"event_id", "fields", "rig_geometry_revision", "orientation_sha256", "scene_id",
+//     "attestations": [{"event_id", "fields", "rig_geometry_revision", "orientation_sha256": token|null, "scene_id",
 //                       "current_per_pancakebatter": bool|null}],
 //     "warnings": [str]
 //   }
@@ -50,7 +54,7 @@
 namespace orange::recording {
 
 inline constexpr const char* kRigConfigPinSchemaId = "orange.recording.rig_config";
-inline constexpr int kRigConfigPinSchemaVersion = 2;
+inline constexpr int kRigConfigPinSchemaVersion = 3;
 inline constexpr const char* kRigConfigEnvironmentVariable = "PANCAKEBATTER_RIG_CONFIG";
 inline constexpr const char* kInstalledRigConfigDir = "/etc/pancakebatter/rigs";
 // Sidecar lines with pancakebatter's verdict, one per attestable field:

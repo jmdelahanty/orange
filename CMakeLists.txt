@@ -1351,6 +1351,11 @@ if(BUILD_TESTING)
     add_executable(rig_config_pin_tests "tools/rig_config_pin_tests.cpp")
     target_link_libraries(rig_config_pin_tests PRIVATE orange_rig_config_pin)
     add_test(NAME rig_config_pin_tests COMMAND rig_config_pin_tests "${CMAKE_SOURCE_DIR}/tools/fixtures/rig_config")
+    add_test(
+        NAME rig_config_pin_schema_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/writer_samples_schema_tests.py"
+                --expect "orange.recording.rig_config v3" --
+                $<TARGET_FILE:rig_config_pin_tests> "${CMAKE_SOURCE_DIR}/tools/fixtures/rig_config" --samples)
 
     add_executable(effective_configuration_tests
         "tools/effective_configuration_tests.cpp"
@@ -1359,6 +1364,11 @@ if(BUILD_TESTING)
     target_include_directories(effective_configuration_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(effective_configuration_tests PRIVATE cxx_std_17)
     add_test(NAME effective_configuration_tests COMMAND effective_configuration_tests)
+    add_test(
+        NAME effective_configuration_schema_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/writer_samples_schema_tests.py"
+                --expect "orange.effective_configuration v2" --
+                $<TARGET_FILE:effective_configuration_tests>)
 
     add_executable(lens_write_verify_tests
         "tools/lens_write_verify_tests.cpp"

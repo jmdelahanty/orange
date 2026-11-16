@@ -26,7 +26,7 @@ which path set a knob.
 
 | Key | Content |
 | --- | --- |
-| `schema_id`, `schema_version` | `orange.effective_configuration`, 1 |
+| `schema_id`, `schema_version` | `orange.effective_configuration`, 2 (`docs/schemas/orange_effective_configuration_v2.schema.json`; since 2026-11-16 `app_config.sha256` is a `sha256:<hex>` token per digest_form_v1, v1 wrote bare hex) |
 | `captured_at_utc` | capture time (record start, before acquisition) |
 | `process` | `pid`, `executable` (`/proc/self/exe`), `cwd` |
 | `app_config` | `path`, `status` (`loaded`, `not_configured`, `missing`, `unreadable`, `invalid_json`), `sha256` of the file bytes, `size_bytes`, `contents` (the parsed JSON, as loaded), `error` |

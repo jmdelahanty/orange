@@ -512,9 +512,9 @@ space.
 ### Rig documents (`session.rig_config`)
 
 `recording_snapshot_start.json` `session.rig_config` (schema
-`orange.recording.rig_config` v2,
-`docs/schemas/orange_recording_rig_config_v2.schema.json`, closed; v1 until
-2026-11-12) pins the
+`orange.recording.rig_config` v3,
+`docs/schemas/orange_recording_rig_config_v3.schema.json`, closed; v1 until
+2026-11-12, v2 until 2026-11-16) pins the
 pancakebatter rig documents in effect when the recording started, so a
 recording says which rig description and which open part conditions it was
 made under (for example the shelf scratches at arenas 2 and 3 on omnifin0).
@@ -535,6 +535,13 @@ headless client just before the start snapshot is sealed.
   `orientation_sha256` and pancakebatter's verdict `current_attestations`
   (field -> event ids, from the sidecar's `current_attestations.<field>`
   lines; null when an older sidecar has none).
+- **Digest form (v3).** Every digest is a digest_form_v1 token
+  `sha256:<64 hex>`: the file digests Orange computes, and the orientation
+  digests copied from the sidecar and the ledger, which pancakebatter writes as
+  bare hex (the same 64 digits behind the prefix; strip it to compare with the
+  source documents, whose bytes stay pinned by the file digests). A copied
+  value that is not a 64-hex digest is null with a warning. v2 wrote bare hex
+  throughout.
 - **Conditions.** Every `condition_observed` event with corrections applied
   and no later `condition_cleared`, copied in full as the ledger has it (a
   port of `rig_events.active_conditions`, tested against `rig_events.py`

@@ -1211,7 +1211,7 @@
   "schemas": [
    [
     "orange.effective_configuration",
-    "1"
+    "2"
    ]
   ]
  },
@@ -6507,7 +6507,7 @@
   "schemas": [
    [
     "orange.recording.rig_config",
-    "2"
+    "3"
    ]
   ]
  },

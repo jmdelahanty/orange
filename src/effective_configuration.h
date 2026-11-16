@@ -12,12 +12,17 @@
 // library path). Values of variables whose names look like secrets are
 // redacted. Nothing here is read back by Orange.
 //
+// Schema: docs/schemas/orange_effective_configuration_v2.schema.json. v2 adopts
+// agent-contracts orange-palette/digest_form_v1: app_config.sha256 (SHA-256 of
+// the file's exact bytes) is a "sha256:<64 hex>" token; v1 (unpublished) wrote
+// bare hex. Nothing else changed.
+//
 //   {
-//     "schema_id": "orange.effective_configuration", "schema_version": 1,
+//     "schema_id": "orange.effective_configuration", "schema_version": 2,
 //     "captured_at_utc": "...Z",
 //     "process": {"pid", "executable", "cwd"},
 //     "app_config": {"path": str|null, "status": "loaded"|"not_configured"|"missing"|"unreadable"|"invalid_json",
-//                    "sha256": hex|null, "size_bytes": int|null, "contents": object|null, "error": str|null},
+//                    "sha256": "sha256:<hex>"|null, "size_bytes": int|null, "contents": object|null, "error": str|null},
 //     "environment": {"<NAME>": {"value": str, "source": "environment"|"app_config", "redacted"?: true}},
 //     "exported_from_app_config": [names the bridge exported, sorted]
 //   }
@@ -31,7 +36,7 @@
 namespace orange::recording {
 
 inline constexpr const char* kEffectiveConfigurationSchemaId = "orange.effective_configuration";
-inline constexpr int kEffectiveConfigurationSchemaVersion = 1;
+inline constexpr int kEffectiveConfigurationSchemaVersion = 2;
 
 // Called by the app-config-to-environment bridge for every variable it sets,
 // so the capture can tell bridge exports from operator-set variables.

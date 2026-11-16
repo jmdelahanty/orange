@@ -10,6 +10,8 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <unistd.h>
 
@@ -122,7 +124,11 @@ void test_statuses(const fs::path& fixtures)
     require(pin.at("source_sidecar").at("rig_sha256_matches") == true, "rig sha agrees with the sidecar");
     require(pin.at("source_sidecar").at("events_sha256_matches") == true, "events sha agrees with the sidecar");
     require(pin.at("events_file").at("sha256") ==
-                "fc949ac247840a1eb0d9e49e99ceedde4f1090508d5cafedbf70d571dc2f7018", "events sha256");
+                "sha256:fc949ac247840a1eb0d9e49e99ceedde4f1090508d5cafedbf70d571dc2f7018",
+            "events sha256 as a digest_form_v1 token (the sidecar's bare hex compared in token form)");
+    require(pin.at("rig_file").at("sha256") ==
+                "sha256:c46020d2a5bf4c63104b89ca705ac2080f49ca199dbe4e04ce31abcef6389ca8",
+            "rig sha256 as a digest_form_v1 token");
     require(pin.at("active_conditions").size() == 1 &&
                 pin.at("active_conditions")[0].at("condition_id") == "c1" &&
                 pin.at("active_conditions")[0].at("arenas") == json::array({"arena_2", "arena_3"}),
@@ -139,8 +145,13 @@ void test_statuses(const fs::path& fixtures)
     // pancakebatter's verdict in the sidecar is copied, never recomputed.
     const std::string sidecar = read_text(dir / "omnifin0.yml.source");
     const std::string digest = pin.at("attestations")[0].at("orientation_sha256").get<std::string>();
+    const std::string ledger_digest = RigEventsAttestations(
+        RigYamlToJson(read_text(dir / "omnifin0.events.yml")).at("events"))[0].at("orientation_sha256");
+    require(digest == "sha256:" + ledger_digest && ledger_digest.size() == 64,
+            "the ledger's bare-hex orientation digest is sealed as a token with the same digits: " + digest);
+    // The sidecar writes bare hex, as pancakebatter's rig_install.py does.
     write_text(dir / "omnifin0.yml.source",
-               sidecar + "orientation_sha256: " + digest + "\ncurrent_attestations.room_orientation: e3\n");
+               sidecar + "orientation_sha256: " + ledger_digest + "\ncurrent_attestations.room_orientation: e3\n");
     pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
     check_closed(pin);
     require(pin.at("status") == "pinned" && pin.at("attestations")[0].at("current_per_pancakebatter") == true,
@@ -148,6 +159,26 @@ void test_statuses(const fs::path& fixtures)
     require(pin.at("source_sidecar").at("current_attestations") == json({{"room_orientation", {"e3"}}}) &&
                 pin.at("source_sidecar").at("orientation_sha256") == digest,
             "verdict lines copied into source_sidecar");
+    // A sidecar orientation value that is not a digest is not sealed as one.
+    write_text(dir / "omnifin0.yml.source", sidecar + "orientation_sha256: not-a-digest\n");
+    pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
+    require(pin.at("status") == "pinned" && pin.at("source_sidecar").at("orientation_sha256").is_null() &&
+                pin.at("warnings").size() == 1,
+            "malformed sidecar orientation digest: null with a warning: " + pin.dump());
+    // A sidecar already in token form compares the same.
+    {
+        std::string tokens = sidecar;
+        for (const char* key : {"sha256: ", "events_sha256: "}) {
+            const auto at = tokens.find(std::string("\n") + key);
+            require(at != std::string::npos, std::string("fixture sidecar has ") + key);
+            tokens.insert(at + 1 + std::char_traits<char>::length(key), "sha256:");
+        }
+        write_text(dir / "omnifin0.yml.source", tokens);
+        pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
+        require(pin.at("status") == "pinned" && pin.at("source_sidecar").at("rig_sha256_matches") == true &&
+                    pin.at("source_sidecar").at("events_sha256_matches") == true,
+                "token-form sidecar digests match: " + pin.dump());
+    }
     write_text(dir / "omnifin0.yml.source", sidecar + "current_attestations.room_orientation: e1, e3 ,e9\n");
     pin = BuildRigConfigPin("omnifin0", "", dir.string(), t);
     require(pin.at("source_sidecar").at("current_attestations").at("room_orientation") == json::array({"e1", "e3", "e9"}) &&
@@ -230,6 +261,32 @@ void test_statuses(const fs::path& fixtures)
     require(seen.size() >= 7, "most statuses exercised");
 }
 
+// Pins of several statuses, for scripts/validate_output_schemas.py (tools/writer_samples_schema_tests.py):
+// each as a root document and inside a recording start snapshot, so the digest-form check sees the
+// snapshot paths. The pinned one carries pancakebatter's verdict and orientation digest in the sidecar.
+void write_samples(const fs::path& fixtures, const fs::path& out)
+{
+    const fs::path tmp = fs::temp_directory_path() / ("rig_config_pin_samples_" + std::to_string(::getpid()));
+    const std::string t = "2026-11-16T00:00:00Z";
+    fs::path dir = copy_installed(fixtures, tmp);
+    const std::string ledger_digest = RigEventsAttestations(
+        RigYamlToJson(read_text(dir / "omnifin0.events.yml")).at("events"))[0].at("orientation_sha256");
+    write_text(dir / "omnifin0.yml.source", read_text(dir / "omnifin0.yml.source") + "orientation_sha256: " +
+                                                ledger_digest + "\ncurrent_attestations.room_orientation: e3\n");
+    std::vector<std::pair<std::string, json>> samples = {
+        {"pinned", BuildRigConfigPin("omnifin0", "", dir.string(), t)},
+        {"not_installed", BuildRigConfigPin("otherrig", "", dir.string(), t)},
+    };
+    fs::remove(dir / "omnifin0.events.yml");
+    samples.emplace_back("events_missing", BuildRigConfigPin("omnifin0", "", dir.string(), t));
+    for (const auto& [name, pin] : samples) {
+        write_text(out / ("rig_config_" + name + ".json"), pin.dump(2) + "\n");
+        write_text(out / ("recording_snapshot_start.rig_config_" + name + ".json"),
+                   json({{"session", {{"rig_config", pin}}}}).dump(2) + "\n");
+    }
+    fs::remove_all(tmp);
+}
+
 void test_rig_id_from_geometry()
 {
     require(RecordingRigIdFromGeometryContract({{"selection", {{"rig_id", "omnifin0"}}}}) == "omnifin0",
@@ -241,11 +298,16 @@ void test_rig_id_from_geometry()
 
 int main(int argc, char** argv)
 {
-    if (argc < 2 || argc > 3) {
-        std::cerr << "usage: rig_config_pin_tests <tools/fixtures/rig_config> [<rig_id>: print this host's pin]\n";
+    if (argc < 2 || argc > 4) {
+        std::cerr << "usage: rig_config_pin_tests <tools/fixtures/rig_config> [<rig_id>: print this host's pin]\n"
+                     "       rig_config_pin_tests <tools/fixtures/rig_config> --samples <dir>\n";
         return 2;
     }
     const fs::path fixtures = argv[1];
+    if (argc == 4 && std::string(argv[2]) == "--samples") {
+        write_samples(fixtures, argv[3]);
+        return 0;
+    }
     if (argc == 3) {
         std::cout << BuildRigConfigPinForRecording(argv[2], "2026-10-28T00:00:00Z").dump(2) << "\n";
         return 0;

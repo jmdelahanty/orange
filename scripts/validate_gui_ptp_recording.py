@@ -1736,13 +1736,17 @@ def check_effective_configuration(reporter: Reporter, snapshot: dict[str, Any]) 
         reporter.warn("recording start snapshot has no session.effective_configuration (build predates the block)")
         return
     problems: list[str] = []
-    if block.get("schema_id") != "orange.effective_configuration" or block.get("schema_version") != 1:
+    # v1 wrote app_config.sha256 as bare hex, v2 as a digest_form_v1 token.
+    version = block.get("schema_version")
+    if block.get("schema_id") != "orange.effective_configuration" or version not in (1, 2):
         problems.append("schema_id/schema_version")
+    digest_form = re.compile(r"^[0-9a-f]{64}$" if version == 1 else r"^sha256:[0-9a-f]{64}$")
     app = block.get("app_config") if isinstance(block.get("app_config"), dict) else {}
     status = app.get("status")
     if status not in ("loaded", "not_configured", "missing", "unreadable", "invalid_json"):
         problems.append(f"app_config.status {status!r}")
-    if status == "loaded" and not (isinstance(app.get("sha256"), str) and len(app["sha256"]) == 64 and isinstance(app.get("contents"), dict)):
+    if status == "loaded" and not (isinstance(app.get("sha256"), str) and digest_form.match(app["sha256"])
+                                   and isinstance(app.get("contents"), dict)):
         problems.append("loaded app_config without sha256/contents")
     env = block.get("environment")
     exported = set(block.get("exported_from_app_config") or [])

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "effective_configuration.h"
+#include "outputs/common/digest.h"
 
 using orange::recording::BuildEffectiveConfiguration;
 using orange::recording::BuildEffectiveConfigurationFrom;
@@ -28,7 +29,29 @@ std::filesystem::path temp_file(const std::string& name, const std::string& byte
 }
 }  // namespace
 
-int main() {
+// Sample blocks of every app_config status, for scripts/validate_output_schemas.py
+// (tools/writer_samples_schema_tests.py). Each is a root document and a recording start
+// snapshot carrying it, so the digest-form check sees the snapshot paths.
+static void write_samples(const std::filesystem::path& dir,
+                   const std::vector<std::pair<std::string, std::string>>& env,
+                   const std::vector<std::string>& exported) {
+    const auto cfg = temp_file("sample_app.json", "{\"recording\": {\"clip_seconds\": 900}}");
+    const auto bad = temp_file("sample_bad.json", "{not json");
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"loaded", cfg.string()}, {"invalid_json", bad.string()}, {"missing", "/nonexistent/app.json"},
+        {"not_configured", ""}};
+    for (const auto& [name, path] : cases) {
+        const auto block = BuildEffectiveConfigurationFrom(env, exported, path, "2026-11-16T00:00:00Z");
+        ValidateEmittedEffectiveConfiguration(block);
+        std::ofstream(dir / ("effective_configuration_" + name + ".json")) << block.dump(2) << "\n";
+        std::ofstream(dir / ("recording_snapshot_start.effective_configuration_" + name + ".json"))
+            << nlohmann::json({{"session", {{"effective_configuration", block}}}}).dump(2) << "\n";
+    }
+    std::filesystem::remove(cfg);
+    std::filesystem::remove(bad);
+}
+
+int main(int argc, char** argv) {
     const std::vector<std::pair<std::string, std::string>> env = {
         {"ORANGE_EXTERNAL_RECORDER_OWNER_PUSH", "1"},
         {"ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2"},
@@ -38,6 +61,10 @@ int main() {
         {"PATH", "/usr/bin"},
     };
     const std::vector<std::string> exported = {"ORANGE_EXTERNAL_RECORDER_OWNER_PUSH"};
+    if (argc == 2) {
+        write_samples(argv[1], env, exported);
+        return 0;
+    }
 
     // 1. loaded app config
     const std::string cfg_bytes = "{\"recording\": {\"external_ipc\": {\"owner_push\": true}}}";
@@ -45,7 +72,8 @@ int main() {
     auto b = BuildEffectiveConfigurationFrom(env, exported, cfg.string(), "2026-10-05T22:00:00Z");
     check(!throws(b), "loaded block validates");
     check(b["app_config"]["status"] == "loaded", "app_config loaded");
-    check(b["app_config"]["sha256"].get<std::string>().size() == 64, "sha256 present");
+    check(b["app_config"]["sha256"] == orange::outputs::sha256_token(cfg_bytes),
+          "sha256 is the digest_form_v1 token of the file bytes");
     check(b["app_config"]["contents"]["recording"]["external_ipc"]["owner_push"] == true, "contents copied");
     check(b["app_config"]["size_bytes"] == static_cast<std::int64_t>(cfg_bytes.size()), "size_bytes");
     check(b["environment"].size() == 4, "ORANGE_* and CUDA captured, HOME/PATH not");
@@ -75,8 +103,10 @@ int main() {
     check(throws(t), "source disagreeing with exported list refused");
     t = b; t["environment"]["ORANGE_FAKE_API_TOKEN"]["value"] = "hunter2";
     check(throws(t), "unredacted secret refused");
-    t = b; t["schema_version"] = 2;
-    check(throws(t), "wrong schema_version refused");
+    t = b; t["schema_version"] = 1;
+    check(throws(t), "schema_version 1 (bare-hex digest) refused");
+    t = b; t["app_config"]["sha256"] = b["app_config"]["sha256"].get<std::string>().substr(7);
+    check(throws(t), "bare-hex app_config.sha256 refused");
     t = b; t["app_config"]["status"] = "loaded"; t["app_config"]["contents"] = nullptr;
     check(throws(t), "loaded without contents refused");
 

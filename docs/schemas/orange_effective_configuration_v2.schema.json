@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.effective_configuration.v2",
+  "title": "Orange effective configuration provenance (version 2)",
+  "description": "recording_snapshot_start.json session.effective_configuration: the app configuration file as loaded (path, SHA-256 of its exact bytes, size, contents), every ORANGE_* variable present at record start with its source (the real environment, or the app-config bridge), and a short list of process-shaping variables; secret-looking names are redacted. Written by BuildEffectiveConfiguration (src/effective_configuration.cpp) and checked by ValidateEmittedEffectiveConfiguration. v2 adopts agent-contracts orange-palette/digest_form_v1: app_config.sha256 is a token sha256:<64 hex>; v1 (no published schema) wrote bare hex, nothing else differs. Orange never reads the block back. contents is the app config file verbatim and stays open.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "schema_version", "captured_at_utc", "process", "app_config", "environment", "exported_from_app_config"],
+  "properties": {
+    "schema_id": {"const": "orange.effective_configuration"},
+    "schema_version": {"const": 2},
+    "captured_at_utc": {"type": "string", "minLength": 1},
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "executable", "cwd"],
+      "properties": {
+        "pid": {"type": "integer"},
+        "executable": {"type": ["string", "null"]},
+        "cwd": {"type": ["string", "null"]}
+      }
+    },
+    "app_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "status", "sha256", "size_bytes", "contents", "error"],
+      "properties": {
+        "path": {"type": ["string", "null"]},
+        "status": {"enum": ["loaded", "not_configured", "missing", "unreadable", "invalid_json"]},
+        "sha256": {
+          "oneOf": [{"type": "null"}, {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}],
+          "description": "SHA-256 of the file's exact bytes; set for loaded and invalid_json, null otherwise."
+        },
+        "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "contents": {"type": ["object", "null"], "description": "The parsed file when status is loaded, else null."},
+        "error": {"type": ["string", "null"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "loaded"}}},
+         "then": {"properties": {"sha256": {"type": "string"}, "contents": {"type": "object"}}}},
+        {"if": {"properties": {"status": {"const": "not_configured"}}},
+         "then": {"properties": {"path": {"type": "null"}}}}
+      ]
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["value", "source"],
+        "properties": {
+          "value": {"type": "string"},
+          "source": {"enum": ["environment", "app_config"]},
+          "redacted": {"const": true}
+        }
+      }
+    },
+    "exported_from_app_config": {"type": "array", "items": {"type": "string"}}
+  }
+}

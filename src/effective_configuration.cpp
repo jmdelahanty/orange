@@ -10,7 +10,7 @@
 #include <set>
 #include <stdexcept>
 
-#include "gui/spatial_layout/sha256.h"
+#include "outputs/common/digest.h"
 
 extern char** environ;
 
@@ -67,7 +67,7 @@ nlohmann::json describe_app_config(const std::string& path) {
         out["error"] = "read failed";
         return out;
     }
-    out["sha256"] = orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+    out["sha256"] = orange::outputs::sha256_token(bytes);
     out["size_bytes"] = static_cast<std::int64_t>(bytes.size());
     try {
         out["contents"] = nlohmann::json::parse(bytes);
@@ -176,7 +176,8 @@ void ValidateEmittedEffectiveConfiguration(const nlohmann::json& b) {
                 status == "invalid_json",
             "app_config.status");
     if (status == "loaded") {
-        require(a.at("sha256").is_string() && a.at("sha256").get<std::string>().size() == 64, "loaded needs sha256");
+        require(a.at("sha256").is_string() && orange::outputs::is_sha256_token(a.at("sha256").get<std::string>()),
+                "loaded needs a sha256: token");
         require(a.at("contents").is_object(), "loaded needs contents");
     }
     if (status == "not_configured") require(a.at("path").is_null(), "not_configured needs null path");

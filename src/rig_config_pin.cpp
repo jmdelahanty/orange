@@ -236,8 +236,24 @@ fs::path events_path_for(const fs::path& rig_file)
 json file_entry(const fs::path& path, const std::string& bytes)
 {
     return {{"path", path.string()},
-            {"sha256", orange::outputs::sha256_hex(bytes)},
+            {"sha256", orange::outputs::sha256_token(bytes)},
             {"size_bytes", static_cast<std::uint64_t>(bytes.size())}};
+}
+
+// A digest copied from a pancakebatter document (the sidecar or a ledger event, where it is bare
+// hex) in the digest_form_v1 token form: the same 64 hex digits behind "sha256:". The documents'
+// own bytes stay pinned by rig_file.sha256 / events_file.sha256. A value that is already a token
+// is kept; null stays null; anything else is not a digest and becomes null with a warning.
+json foreign_digest_token(const json& value, const std::string& where, json* warnings)
+{
+    if (value.is_null()) return nullptr;
+    if (value.is_string()) {
+        const std::string text = value.get<std::string>();
+        if (orange::outputs::is_sha256_token(text)) return text;
+        if (orange::outputs::is_sha256_hex(text)) return orange::outputs::kSha256TokenPrefix + text;
+    }
+    warnings->push_back(where + " is not a sha256 digest (" + value.dump() + "); recorded as null");
+    return nullptr;
 }
 
 }  // namespace
@@ -406,8 +422,12 @@ json BuildRigConfigPin(const std::string& recording_rig_id,
     bool sidecar_mismatch = false;
     if (sidecar.value("status", "") == "read") {
         const json fields = sidecar.value("fields", json::object());
-        for (const char* key : {"commit", "installed", "source", "events_source", "orientation_sha256"}) {
+        for (const char* key : {"commit", "installed", "source", "events_source"}) {
             if (fields.contains(key)) sidecar_out[key] = fields[key];
+        }
+        if (fields.contains("orientation_sha256")) {
+            sidecar_out["orientation_sha256"] = foreign_digest_token(
+                fields["orientation_sha256"], sidecar_path.string() + " orientation_sha256", &pin["warnings"]);
         }
         // One "current_attestations.<field>: e3,e7" line per attestable field.
         const std::string prefix = kSidecarCurrentAttestationsPrefix;
@@ -417,12 +437,17 @@ json BuildRigConfigPin(const std::string& recording_rig_id,
             sidecar_out["current_attestations"][key.substr(prefix.size())] =
                 sidecar_event_id_list(value.get<std::string>());
         }
+        // The sidecar writes bare hex; compared in token form (a token there compares the same).
         if (fields.contains("sha256")) {
-            sidecar_out["rig_sha256_matches"] = fields["sha256"] == pin["rig_file"]["sha256"];
+            sidecar_out["rig_sha256_matches"] =
+                foreign_digest_token(fields["sha256"], sidecar_path.string() + " sha256", &pin["warnings"]) ==
+                pin["rig_file"]["sha256"];
             sidecar_mismatch = sidecar_mismatch || !sidecar_out["rig_sha256_matches"].get<bool>();
         }
         if (fields.contains("events_sha256") && events_entry["sha256"].is_string()) {
-            sidecar_out["events_sha256_matches"] = fields["events_sha256"] == events_entry["sha256"];
+            sidecar_out["events_sha256_matches"] =
+                foreign_digest_token(fields["events_sha256"], sidecar_path.string() + " events_sha256",
+                                     &pin["warnings"]) == events_entry["sha256"];
             sidecar_mismatch = sidecar_mismatch || !sidecar_out["events_sha256_matches"].get<bool>();
         }
     } else if (pin["resolution"]["source"] == "installed") {
@@ -440,6 +465,9 @@ json BuildRigConfigPin(const std::string& recording_rig_id,
                                    sidecar_out["events_sha256_matches"] == true;
         json attestations = RigEventsAttestations(events);
         for (json& attestation : attestations) {
+            attestation["orientation_sha256"] = foreign_digest_token(
+                attestation["orientation_sha256"],
+                "events ledger attestation " + attestation["event_id"].dump() + " orientation_sha256", &pin["warnings"]);
             attestation["current_per_pancakebatter"] =
                 verdict_bound ? attestation_current(verdict, attestation) : json();
         }
