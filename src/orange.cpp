@@ -4270,6 +4270,9 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             orange::session::CheckDeclarationCoversCameras(remote_start->declaration, recording_serials);
             recording_session->declaration_files = remote_start->declaration_files;
         }
+        // GUI button and local-control start alike: refused before anything is prepared.
+        orange::recording::RequireZebrobotForDeclaredDishes(recording_session->subject_references,
+                                                            recording_session->zebrobot, &camera_serials);
     } catch (const std::exception& ex) {
         const std::string error = ex.what();
         if (recording_preflight_errors) {

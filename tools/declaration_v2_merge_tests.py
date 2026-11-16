@@ -42,6 +42,9 @@ def make_template_repo(base: Path, must_not_exist: Path) -> Path:
     spec = json.loads(BASE_SPEC.read_text())
     spec["fixed"]["recording_contexts"] = CONTEXTS
     spec["fixed"]["output_root"] = str(must_not_exist)
+    # The plan declares dishes, so the template names MetaZebrobot (a declared
+    # dish without a base_url is refused, 2026-11-16).
+    spec["fixed"]["zebrobot"] = {"base_url": "http://zebrobot.invalid"}
     template = repo / "experiment_specs" / "templates" / "fourcam_plan_template.json"
     template.parent.mkdir(parents=True)
     template.write_text(json.dumps(spec, indent=2) + "\n")
@@ -115,6 +118,10 @@ def main() -> int:
             "v1_with_blank": lambda v: v["fixed"]["declaration"].update(schema_version=1) or
                 v["fixed"]["declaration"].pop("source"),
         }
+        # A template without zebrobot cannot run a plan that declares dishes.
+        result = variant("no_zebrobot", lambda v: v["fixed"].pop("zebrobot"))
+        require(result.returncode != 0 and "zebrobot_not_configured" in (result.stdout + result.stderr),
+                f"a declared dish without zebrobot must be refused:\n{result.stdout}\n{result.stderr}")
         for name, mutate in cases.items():
             result = variant(name, mutate)
             require(result.returncode != 0 and "declaration" in (result.stdout + result.stderr),
@@ -126,7 +133,7 @@ def main() -> int:
         result = validate(client, merged)
         require(result.returncode != 0 and "does not hash" in (result.stdout + result.stderr),
                 f"a tampered plan copy is refused:\n{result.stderr}")
-    print(f"declaration_v2_merge_tests passed ({len(cases) + 4} refusals checked)")
+    print(f"declaration_v2_merge_tests passed ({len(cases) + 5} refusals checked)")
     return 0
 
 

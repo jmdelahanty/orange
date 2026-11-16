@@ -32,6 +32,17 @@ bool subject_confirmed = false;
 json subject_confirmation;  // orange.recording_subject_confirmation v1
 std::vector<std::string> subject_cross_check_mismatches;
 bool subject_cross_check_ran = false;
+// The panel refuses to confirm a dish that the record start would refuse
+// (recording::RequireZebrobotForDeclaredDishes): same rule, same message.
+bool zebrobot_ready_for(const std::vector<std::string>& camera_serials, std::string* err) {
+    try {
+        recording::RequireZebrobotForDeclaredDishes(subject_references, zebrobot_lookup, &camera_serials);
+        return true;
+    } catch (const std::exception& ex) {
+        *err = ex.what();
+        return false;
+    }
+}
 void clear_subject_confirmation() {
     subject_confirmed = false;
     subject_confirmation = nullptr;
@@ -282,7 +293,8 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
     }
     {
         std::string err;
-        if (ImGui::Button("Confirm dishes for the next recording") && apply_subject_fields_to_config(&err)) {
+        if (ImGui::Button("Confirm dishes for the next recording") && apply_subject_fields_to_config(&err) &&
+            zebrobot_ready_for(camera_serials, &err)) {
             subject_confirmation = session::BuildSubjectConfirmation(
                 subject_references, camera_serials, session::kConfirmedByGuiOperator, nullptr,
                 gui_panel_requester(), orange::timing::utc_iso8601_now());
@@ -358,7 +370,7 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
         ImGui::TextWrapped("Lookup at record start: %s (timeout %d ms); Orange records dish/fish identifiers as served, no biological fields.",
                            zebrobot_lookup.base_url.c_str(), zebrobot_lookup.timeout_ms);
     else
-        ImGui::TextWrapped("recording.zebrobot.base_url is not configured: a declared dish will be recorded as lookup_failed (zebrobot_not_configured); recording still starts.");
+        ImGui::TextWrapped("recording.zebrobot.base_url is not configured: a start that declares a dish is refused (zebrobot_not_configured); blank or undeclared cameras still start.");
     if (!subject_references.configured())
         ImGui::TextWrapped("No dish declared: every camera is recorded as not_collected (no_dish_declared). Palette admits declared absence.");
     ImGui::TextWrapped("Subject count is the number of animals this camera records, declared by you; it is never derived from the dish registry. Null (0) means Palette publishes subject metadata without an experiment setup.");

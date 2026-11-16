@@ -8724,6 +8724,15 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    // A declared dish (fixed.subject_references or the declaration's) needs
+    // MetaZebrobot: refused here, before any run, by the rule every start uses.
+    // The recording cameras are not known yet, so any dish_id counts.
+    try {
+        orange::recording::RequireZebrobotForDeclaredDishes(spec->subject_references, spec->zebrobot, nullptr);
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = std::string("subject references: ") + ex.what();
+        return false;
+    }
     if (fixed.contains("master_frame_journal")) {
         try {
             spec->master_frame_journal = orange::recording::MasterAcquisitionConfig::Parse(

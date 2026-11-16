@@ -295,6 +295,39 @@ void test_read_declaration_files(const fs::path& dir)
 
 }  // namespace
 
+// 2026-11-16: a declared dish with no zebrobot.base_url refuses before any
+// file exists; blank and undeclared cameras still need no MetaZebrobot.
+void test_declared_dish_without_zebrobot_writes_nothing(const fs::path& dir)
+{
+    const fs::path folder = dir / "dish_no_zebrobot";
+    fs::create_directories(folder);
+    RecordingDeclarationArtifacts a = base_artifacts();
+    a.subject_references = orange::recording::SubjectReferencesConfig::Parse(
+        {{"schema_version", 2}, {"cameras", {{"2010093", {{"dish_id", "19220_1"}, {"subject_count", 5}}},
+                                             {"2010094", {{"blank", true}}}}}});
+    a.subject_confirmation = BuildSubjectConfirmation(a.subject_references, a.recording_serials,
+                                                      kConfirmedByGuiOperator, nullptr,
+                                                      {{"transport", "gui_panel"}, {"user", "jeremy"}}, "t");
+    std::string message;
+    try {
+        WriteRecordingDeclarationArtifacts(folder.string(), a, fake_snapshot_update(), "t");
+    } catch (const std::exception& ex) {
+        message = ex.what();
+    }
+    EXPECT(message.rfind("zebrobot_not_configured: ", 0) == 0, "refused with the one reason");
+    EXPECT(fs::is_empty(folder), "nothing is written for a refused start");
+
+    RecordingDeclarationArtifacts blank = base_artifacts();
+    blank.subject_references = orange::recording::SubjectReferencesConfig::Parse(
+        {{"schema_version", 2}, {"default", {{"subject_count", 2}}}, {"cameras", {{"2010094", {{"blank", true}}}}}});
+    const fs::path blank_folder = dir / "blank_no_zebrobot";
+    fs::create_directories(blank_folder);
+    WriteRecordingDeclarationArtifacts(blank_folder.string(), blank, fake_snapshot_update(), "t");
+    const json refs = json::parse(read_file(blank_folder / "recording_snapshot.json"))["session"]["subject_references"];
+    EXPECT(refs["2010093"]["reason"] == "no_dish_declared" && refs["2010094"]["reason"] == "declared_blank",
+           "blank and count-only cameras start without MetaZebrobot");
+}
+
 int main()
 {
     const fs::path dir = fs::temp_directory_path() / ("orange_declaration_artifacts_" + std::to_string(::getpid()));
@@ -307,6 +340,7 @@ int main()
     test_v2_routes_and_coverage();
     test_writer_seals_run_plan_copies(dir);
     test_read_declaration_files(dir);
+    test_declared_dish_without_zebrobot_writes_nothing(dir);
     std::error_code ec;
     fs::remove_all(dir, ec);
     if (g_failures) {

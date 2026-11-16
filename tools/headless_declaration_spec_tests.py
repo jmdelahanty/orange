@@ -36,23 +36,33 @@ DECLARATION = {
 def main() -> int:
     client = Path(sys.argv[1]).resolve()
     base = json.loads(BASE_SPEC.read_text())
-    cases: list[tuple[str, dict, bool]] = []
+    cases: list[tuple[str, dict, bool, str]] = []
 
-    def case(name: str, accepted: bool, *, declaration=DECLARATION, contexts=CONTEXTS, subjects=None) -> None:
+    def case(name: str, accepted: bool, *, declaration=DECLARATION, contexts=CONTEXTS, subjects=None,
+             zebrobot=None, refusal="declaration") -> None:
         spec = copy.deepcopy(base)
         fixed = spec["fixed"]
+        if zebrobot is not None:
+            fixed["zebrobot"] = zebrobot
         if contexts is not None:
             fixed["recording_contexts"] = copy.deepcopy(contexts)
         if declaration is not None:
             fixed["declaration"] = copy.deepcopy(declaration)
         if subjects is not None:
             fixed["subject_references"] = subjects
-        cases.append((name, spec, accepted))
+        cases.append((name, spec, accepted, refusal))
 
     case("no_declaration", True, declaration=None)
     case("blank_declaration", True)
-    case("declared_dish", True, declaration={**DECLARATION, "subject_references": {
-        "schema_version": 1, "cameras": {"2010096": {"dish_id": "dish-1", "subject_count": 1}}}})
+    dish_declaration = {**DECLARATION, "subject_references": {
+        "schema_version": 1, "cameras": {"2010096": {"dish_id": "dish-1", "subject_count": 1}}}}
+    # A declared dish needs MetaZebrobot (2026-11-16): refused without a base_url.
+    case("declared_dish", True, declaration=dish_declaration, zebrobot={"base_url": "http://zebrobot.invalid"})
+    case("declared_dish_without_zebrobot", False, declaration=dish_declaration, refusal="zebrobot_not_configured")
+    case("subject_references_dish_without_zebrobot", False, declaration=None,
+         subjects={"schema_version": 1, "default": {"dish_id": "dish-1"}}, refusal="zebrobot_not_configured")
+    case("count_only_without_zebrobot", True, declaration={**DECLARATION, "subject_references": {
+        "schema_version": 1, "default": {"subject_count": 3}}})
     case("declaration_and_subject_references", False, subjects={"schema_version": 1})
     case("declaration_without_contexts", False, contexts=None)
     case("missing_declared_by", False, declaration={k: v for k, v in DECLARATION.items() if k != "declared_by"})
@@ -62,7 +72,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="orange_declaration_spec_") as tmp:
         directory = Path(tmp)
-        for name, spec, accepted in cases:
+        for name, spec, accepted, refusal in cases:
             spec["fixed"]["output_root"] = str(directory / "must_not_exist")
             path = directory / f"{name}.json"
             path.write_text(json.dumps(spec))
@@ -71,8 +81,8 @@ def main() -> int:
                 capture_output=True, text=True, timeout=20, check=False)
             if (result.returncode == 0) != accepted:
                 raise AssertionError(f"{name}: exit {result.returncode}\n{result.stdout}\n{result.stderr}")
-            if not accepted and "declaration" not in (result.stdout + result.stderr):
-                raise AssertionError(f"{name}: the refusal should name the declaration\n{result.stderr}")
+            if not accepted and refusal not in (result.stdout + result.stderr):
+                raise AssertionError(f"{name}: the refusal should name {refusal}\n{result.stderr}")
             if (directory / "must_not_exist").exists():
                 raise AssertionError("admission entered recording startup")
             if accepted and "declaration" in spec["fixed"]:

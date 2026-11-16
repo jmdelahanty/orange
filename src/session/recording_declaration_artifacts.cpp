@@ -32,6 +32,10 @@ void WriteRecordingDeclarationArtifacts(const std::string& recording_folder,
                                         const std::string& queried_at_utc,
                                         const recording::HttpGetFn& http_get)
 {
+    // A declared dish needs MetaZebrobot configured (every start path checks
+    // this earlier; this is the last check before any file exists).
+    recording::RequireZebrobotForDeclaredDishes(artifacts.subject_references, artifacts.zebrobot,
+                                                &artifacts.recording_serials);
     const bool spec_copy = !artifacts.spec_copy_relative_path.empty();
     if (spec_copy) {
         // Refuse an inconsistent copy before any file exists.

@@ -25,10 +25,13 @@
 // hash-checked as load_experiment_spec does; then, before step 4 and the seal,
 // session::WriteRecordingDeclarationArtifacts writes the production
 // subject_references block, subject_confirmation.json v2, the exact spec bytes
-// as run_spec/<sha256>.json and the run_plan/ copies. No MetaZebrobot lookup
-// runs (no base_url; the HTTP hook refuses), so declared dishes are emitted as
-// lookup_failed / zebrobot_not_configured and stated blanks as
-// not_collected / declared_blank, exactly as an unconfigured rig would.
+// as run_spec/<sha256>.json and the run_plan/ copies. The spec's fixed.zebrobot
+// is read as orange_client reads it, and a declared dish without a base_url is
+// refused (as every start refuses it). No network is ever used: the HTTP hook
+// fails every request, so declared dishes are emitted as lookup_failed /
+// dish_lookup_transport_failure against the spec's base_url (a synthetic spec
+// names a placeholder such as http://zebrobot.invalid), and stated blanks as
+// not_collected / declared_blank.
 //
 // Synthetic geometry inputs come either from --fixture-rig (a self-contained
 // synthetic Citrus rig/canvas/commissioning/daily-registration tree written by
@@ -217,6 +220,7 @@ struct SpecDeclaration {
     std::vector<orange::session::RecordingDeclarationArtifacts::SealedFile> files;
     json declaration_template = nullptr;
     std::string files_root;
+    orange::recording::ZebrobotLookupConfig zebrobot;
 };
 
 SpecDeclaration load_spec_declaration(const fs::path& spec_path)
@@ -239,6 +243,10 @@ SpecDeclaration load_spec_declaration(const fs::path& spec_path)
     }
     out.declaration = orange::session::ParseRecordingStartDeclaration(fixed.at("declaration"));
     orange::session::CheckDeclarationRoute(out.declaration, orange::session::kConfirmedByRunSpec);
+    if (fixed.contains("zebrobot")) {
+        if (fixed.at("zebrobot").is_null()) throw std::runtime_error("zebrobot must be an object, not null");
+        out.zebrobot = orange::recording::ZebrobotLookupConfig::Parse(fixed.at("zebrobot"));
+    }
     const auto copies = orange::session::DeclarationFileCopies(out.declaration);
     if (copies.empty()) {
         if (fixed.contains("declaration_files_root")) {
@@ -616,6 +624,8 @@ int main(int argc, char** argv)
         if (!o.run_spec.empty()) {
             spec_declaration = load_spec_declaration(o.run_spec);
             orange::session::CheckDeclarationCoversCameras(spec_declaration->declaration, o.cameras);
+            orange::recording::RequireZebrobotForDeclaredDishes(spec_declaration->declaration.subject_references,
+                                                                spec_declaration->zebrobot, &o.cameras);
         }
         if (fs::exists(o.out) && !fs::is_empty(o.out)) {
             throw std::runtime_error("output folder exists and is not empty: " + o.out.string());
@@ -724,6 +734,7 @@ int main(int argc, char** argv)
             orange::session::RecordingDeclarationArtifacts artifacts;
             artifacts.recording_serials = o.cameras;
             artifacts.subject_references = d.subject_references;
+            artifacts.zebrobot = spec_declaration->zebrobot;
             artifacts.declaration_files = spec_declaration->files;
             artifacts.subject_confirmation = orange::session::BuildSubjectConfirmation(
                 d.subject_references, o.cameras, orange::session::kConfirmedByRunSpec, d.ToJson(),
@@ -754,7 +765,8 @@ int main(int argc, char** argv)
                 {"declaration_files_root", spec_declaration->files_root.empty() ? json(nullptr) : json(spec_declaration->files_root)},
                 {"run_plan_files", files},
                 {"subject_confirmation", sha_reference(o.out, "subject_confirmation.json")},
-                {"zebrobot_lookups", "not performed (no base_url; synthetic)"}};
+                {"zebrobot", spec_declaration->zebrobot.configured() ? spec_declaration->zebrobot.ToJson() : json(nullptr)},
+                {"zebrobot_lookups", "no network: every request fails in the synthetic HTTP hook"}};
         } else {
             for (const auto& serial : o.cameras) subject_references[serial] = orange::recording::NotCollectedSubjectReference("synthetic_bundle");
         }

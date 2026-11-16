@@ -485,9 +485,10 @@ json BuildSubjectReference(const SubjectDeclaration& declaration,
         entry["reason"] = reason;
         return entry;
     };
-    if (!zebrobot.configured()) {
-        return fail(transport_error("zebrobot base_url is not configured"), "zebrobot_not_configured");
-    }
+    // Unreachable through a start: RequireZebrobotForDeclaredDishes refuses it
+    // first. A lookup_failed entry would carry base_url "" (not ^http://).
+    require(zebrobot.configured(), std::string(kZebrobotNotConfiguredReason) +
+                                       ": a dish is declared but zebrobot.base_url is not configured");
 
     // Dish identity.
     const HttpGetResult dish = http_get(zebrobot.base_url + endpoint, zebrobot.timeout_ms);
@@ -549,6 +550,28 @@ json BuildSubjectReference(const SubjectDeclaration& declaration,
     entry["dish_fish"] = dish_fish;
     fish_lookup = {{"status", "complete"}, {"http_status", fish.status}, {"error", nullptr}};
     return entry;
+}
+
+void RequireZebrobotForDeclaredDishes(const SubjectReferencesConfig& config, const ZebrobotLookupConfig& zebrobot,
+                                      const std::vector<std::string>* recording_serials)
+{
+    if (zebrobot.configured()) return;
+    std::vector<std::string> declaring;
+    if (recording_serials) {
+        for (const auto& [serial, d] : config.Resolve(*recording_serials))
+            if (!d.blank && d.dish_id) declaring.push_back("camera " + serial + " dish " + *d.dish_id);
+    } else {
+        if (config.default_declaration && config.default_declaration->dish_id)
+            declaring.push_back("default dish " + *config.default_declaration->dish_id);
+        for (const auto& [serial, d] : config.cameras)
+            if (!d.blank && d.dish_id) declaring.push_back("camera " + serial + " dish " + *d.dish_id);
+    }
+    if (declaring.empty()) return;
+    std::string list;
+    for (const auto& item : declaring) list += (list.empty() ? "" : ", ") + item;
+    throw std::runtime_error(std::string(kZebrobotNotConfiguredReason) + ": the start declares a dish (" + list +
+                             ") but zebrobot.base_url is not configured; set recording.zebrobot.base_url in the app "
+                             "config (GUI) or fixed.zebrobot.base_url in the run spec, or declare no dish");
 }
 
 json BuildSubjectReferences(const std::map<std::string, SubjectDeclaration>& declarations,
@@ -630,6 +653,9 @@ void validate_entry(const std::string& serial, const json& e)
     require(z.at("base_url").is_string() && z.at("endpoint").is_string() && z.at("fish_endpoint").is_string() &&
                 z.at("queried_at_utc").is_string(),
             what + " zebrobot string fields");
+    // The published subject reference schemas (v1..v3): base_url ^http://.
+    require(z.at("base_url").get<std::string>().rfind("http://", 0) == 0,
+            what + " zebrobot base_url must start with http://");
     require(z.at("api_schema_version").is_number_integer() && z.at("api_schema_version") == kZebrobotApiSchemaVersion,
             what + " zebrobot api_schema_version must be 2");
     require(z.at("http_status").is_null() || z.at("http_status").is_number_integer(), what + " zebrobot http_status");

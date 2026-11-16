@@ -4,7 +4,8 @@
 // dish_uuid, revision, updated_at, and the fish subjects registered to the dish
 // with their revisions), exactly as the MetaZebrobot API served them. Orange
 // never copies biological fields, never fills a default, never blocks a record
-// start on the lookup, and never refreshes the block: it is frozen into the
+// start on the lookup (a declared dish with no base_url configured is refused
+// before the start instead, RequireZebrobotForDeclaredDishes), and never refreshes the block: it is frozen into the
 // sealed recording start snapshot and copied verbatim into every
 // recording_session.json by the common manifest writer. Palette re-fetches the
 // record at intake, pins biology by (dish_uuid, revision) and compares.
@@ -117,7 +118,9 @@ struct ZebrobotVersion {
 ZebrobotVersion ReadZebrobotVersion(const ZebrobotLookupConfig& zebrobot, const HttpGetFn& http_get = HttpGet);
 
 // One camera's reference. No dish_id -> not_collected / no_dish_declared.
-// With a dish but no base_url -> lookup_failed (transport, zebrobot_not_configured).
+// With a dish but no base_url: throws (kZebrobotNotConfiguredReason); every
+// start refuses that case first (RequireZebrobotForDeclaredDishes), since a
+// lookup_failed entry would carry base_url "" against the schema's ^http://.
 // Performs the dish GET (/dishes/<id>/citrus-snapshot) and, when that
 // succeeded, the fish GET (/dishes/<id>/fish); each bounded by timeout_ms.
 // subject_count is carried through from the declaration (null when undeclared).
@@ -128,6 +131,17 @@ nlohmann::json BuildSubjectReference(const SubjectDeclaration& declaration,
                                      const std::string& queried_at_utc,
                                      const HttpGetFn& http_get = HttpGet,
                                      const ZebrobotVersion* version = nullptr);
+
+// A start that declares a dish (a non-blank camera with a dish_id) while
+// zebrobot.base_url is not configured is refused before anything is written
+// (Jeremy, 2026-11-16). With recording_serials: the config resolved for those
+// cameras; without (a run spec validated before its cameras are known): any
+// dish_id in default or a camera entry. Blank, undeclared and count-only
+// cameras never need MetaZebrobot. Throws std::runtime_error whose message
+// starts with kZebrobotNotConfiguredReason.
+inline constexpr const char* kZebrobotNotConfiguredReason = "zebrobot_not_configured";
+void RequireZebrobotForDeclaredDishes(const SubjectReferencesConfig& config, const ZebrobotLookupConfig& zebrobot,
+                                      const std::vector<std::string>* recording_serials);
 
 // All recording cameras (one entry each, keyed by serial); /version is read
 // once when any camera declares a dish.

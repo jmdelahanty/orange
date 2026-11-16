@@ -188,7 +188,8 @@ def check_run_spec_declaration(binary: Path, root: Path) -> None:
         "declaration": declaration,
         "declaration_template": {"repo": "jmdelahanty/orange", "commit": "0" * 40,
                                  "path": "experiment_specs/templates/t.json", "sha256": "0" * 64},
-        "declaration_files_root": str(files_root)}}
+        "declaration_files_root": str(files_root),
+        "zebrobot": {"base_url": "http://zebrobot.invalid"}}}
     spec_path = root / "merged_run_spec.json"
     spec_path.write_text(json.dumps(spec, indent=2) + "\n")
     spec_sha = hashlib.sha256(spec_path.read_bytes()).hexdigest()
@@ -216,15 +217,26 @@ def check_run_spec_declaration(binary: Path, root: Path) -> None:
     assert refs["2010096"]["subject_count"] is None
     assert confirmation["cameras"]["2010096"] == {"dish_id": None, "subject_count": None}
     for serial in ("2010093", "2010094", "2010095"):
-        assert refs[serial]["status"] == "lookup_failed" and refs[serial]["reason"] == "zebrobot_not_configured"
+        # No network in the tool: the placeholder base_url's lookup fails in transport.
+        assert refs[serial]["status"] == "lookup_failed" and refs[serial]["reason"] == "dish_lookup_transport_failure"
+        assert refs[serial]["zebrobot"]["base_url"] == "http://zebrobot.invalid"
         assert refs[serial]["subject_count"] == declaration["subject_references"]["cameras"][serial]["subject_count"]
     # The declaration's intent replaces the spec contexts' recording_only.
     assert all(c["recording_intent"] == "stimulus_experiment" for c in start["session"]["recording_contexts"].values())
     assert load(out / "recording_session.json")["subject_references"] == refs
     assert summary["start_declaration"]["source_kind"] == "orchard_run_plan"
 
-    # Refused before anything is written: a stray run_plan file, a tampered copy,
-    # a camera the plan does not declare.
+    # Refused before anything is written: a declared dish without zebrobot, a
+    # stray run_plan file, a tampered copy, a camera the plan does not declare.
+    no_zb = json.loads(spec_path.read_text())
+    no_zb["fixed"].pop("zebrobot")
+    no_zb_path = root / "merged_no_zebrobot.json"
+    no_zb_path.write_text(json.dumps(no_zb))
+    result = subprocess.run([str(binary), "--out", str(root / "refused_zebrobot"), "--fixture-rig", str(root / "rig_z"),
+                             *(f for c in CAMERAS for f in ("--camera", c)), "--run-spec", str(no_zb_path)],
+                            capture_output=True, text=True)
+    assert result.returncode != 0 and "zebrobot_not_configured" in result.stderr, result.stderr
+    assert not (root / "refused_zebrobot").exists()
     stray = files_root / "run_plan" / "extra.json"
     stray.write_text("{}\n")
     result = subprocess.run([str(binary), "--out", str(root / "refused_stray"), "--fixture-rig", str(root / "rig_f"),

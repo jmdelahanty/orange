@@ -1067,8 +1067,13 @@ std::filesystem::path run_prearm_subject_cross_check(const std::string& operator
     operator95.dish_id = "19234_2"; operator95.subject_count = 1;
     operator96.dish_id = operator96_dish; operator96.subject_count = 1;
     session["subject_references"] = orange::recording::BuildSubjectReferences(
-        {{"2010095", operator95}, {"2010096", operator96}}, orange::recording::ZebrobotLookupConfig{},
-        "2026-08-13T16:00:00Z");
+        {{"2010095", operator95}, {"2010096", operator96}},
+        orange::recording::ZebrobotLookupConfig::Parse({{"base_url", "http://zebrobot.invalid"}}),
+        "2026-08-13T16:00:00Z", [](const std::string&, int) {
+            orange::recording::HttpGetResult unreachable;  // lookup_failed, no network
+            unreachable.error = "test: no network";
+            return unreachable;
+        });
     const auto root = make_materialization_fixture(resolved_geometry(), session);
     if (!subject_confirmation.is_null()) {
         write_file(root / "subject_confirmation.json", subject_confirmation.dump(2) + "\n");

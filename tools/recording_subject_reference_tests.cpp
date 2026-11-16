@@ -137,12 +137,57 @@ void test_builder_outcomes()
     // A count without a dish is still a declaration (independent of status).
     const json co = BuildSubjectReference(count_only, kZb, kNow, fake({}));
     EXPECT(co.at("status") == "not_collected" && co.at("subject_count") == 4);
-    // Declared but no base_url: declared failure, never a refusal.
-    const json nc = BuildSubjectReference(dish, ZebrobotLookupConfig{}, kNow, fake({}));
-    EXPECT(nc.at("status") == "lookup_failed" && nc.at("reason") == "zebrobot_not_configured" &&
-           nc.at("zebrobot").at("error").at("kind") == "transport" && nc.at("zebrobot").at("http_status").is_null());
-    EXPECT(nc.at("zebrobot").at("service_commit").is_null() && nc.at("zebrobot").at("service_commit_dirty").is_null() &&
-           nc.at("zebrobot").at("consumer_schema_sha256").is_null());
+    // Declared but no base_url (2026-11-16): never emitted (it would carry
+    // base_url "" against the schemas' ^http://); every start refuses first.
+    {
+        std::string message;
+        try { (void)BuildSubjectReference(dish, ZebrobotLookupConfig{}, kNow, fake({})); }
+        catch (const std::exception& ex) { message = ex.what(); }
+        EXPECT(message.rfind("zebrobot_not_configured", 0) == 0);
+    }
+    // A transport failure with a configured base_url is still declared, never a refusal.
+    const json nc = BuildSubjectReference(dish, kZb, kNow, fake({{"/citrus-snapshot", down("connect refused")}}));
+    EXPECT(nc.at("status") == "lookup_failed" && nc.at("reason") == "dish_lookup_transport_failure" &&
+           nc.at("zebrobot").at("base_url") == "http://zb.test" && nc.at("zebrobot").at("error").at("kind") == "transport");
+    // The emitted-block validator holds base_url to ^http:// (published schemas v1..v3).
+    {
+        json bad = {{"2010093", nc}};
+        ValidateEmittedSubjectReferences(bad);
+        bad["2010093"]["zebrobot"]["base_url"] = "";
+        bool refused = false;
+        try { ValidateEmittedSubjectReferences(bad); } catch (const std::exception&) { refused = true; }
+        EXPECT(refused);
+        bad["2010093"]["zebrobot"]["base_url"] = "https://zb.test";
+        refused = false;
+        try { ValidateEmittedSubjectReferences(bad); } catch (const std::exception&) { refused = true; }
+        EXPECT(refused);
+    }
+    // The start rule: a declared dish needs a base_url; blanks, undeclared and
+    // count-only cameras do not.
+    {
+        auto refused = [](const json& config, const ZebrobotLookupConfig& zb, const std::vector<std::string>* serials) {
+            try { RequireZebrobotForDeclaredDishes(SubjectReferencesConfig::Parse(config), zb, serials); }
+            catch (const std::exception& ex) { return std::string(ex.what()).rfind("zebrobot_not_configured: ", 0) == 0; }
+            return false;
+        };
+        const std::vector<std::string> cams = {"2010093", "2010096"};
+        const json with_dish = {{"schema_version", 2}, {"cameras", {{"2010093", {{"dish_id", "19220_1"}}}, {"2010096", {{"blank", true}}}}}};
+        EXPECT(refused(with_dish, ZebrobotLookupConfig{}, &cams));
+        EXPECT(refused(with_dish, ZebrobotLookupConfig{}, nullptr));
+        EXPECT(!refused(with_dish, kZb, &cams) && !refused(with_dish, kZb, nullptr));
+        EXPECT(refused({{"schema_version", 1}, {"default", {{"dish_id", "19220_1"}}}}, ZebrobotLookupConfig{}, &cams));
+        const json no_dish = {{"schema_version", 2}, {"default", {{"subject_count", 3}}},
+                              {"cameras", {{"2010096", {{"blank", true}}}}}};
+        EXPECT(!refused(no_dish, ZebrobotLookupConfig{}, &cams) && !refused(no_dish, ZebrobotLookupConfig{}, nullptr));
+        EXPECT(!refused({{"schema_version", 1}}, ZebrobotLookupConfig{}, &cams));
+        // A blank camera replaces a default dish; a dish on a camera that does
+        // not record needs no lookup once the cameras are known.
+        const json blank_over_default = {{"schema_version", 2}, {"default", {{"dish_id", "19220_1"}}},
+                                         {"cameras", {{"2010093", {{"blank", true}}}, {"2010096", {{"blank", true}}}}}};
+        EXPECT(!refused(blank_over_default, ZebrobotLookupConfig{}, &cams));
+        const json other_camera = {{"schema_version", 1}, {"cameras", {{"2010095", {{"dish_id", "19220_1"}}}}}};
+        EXPECT(!refused(other_camera, ZebrobotLookupConfig{}, &cams) && refused(other_camera, ZebrobotLookupConfig{}, nullptr));
+    }
     // Collected with two registered fish; biological fields are not copied.
     std::vector<std::string> calls;
     const json c = BuildSubjectReference(dish_counted, kZb, kNow,
