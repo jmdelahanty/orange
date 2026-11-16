@@ -60,8 +60,8 @@ after each swap; citrus-agent branch `agent/citrus/idle-display-status`
 Citrus PR #129, installed as 25934e8): in both reads `consistent` true
 (false is a torn snapshot; missing refuses too), source `idle_clear`, fill_rgba_u8
 [0,0,0,255], no `canvas_fill_overlay`, `preview_arena_count` 0,
-`photodiode_marker_patches_rendered` false (lit marker patches are not solid
-black, so true refuses), and `display_frame_index` advancing from the first
+`photodiode_marker_patches_rendered` 0 (a count of rendered marker patches;
+lit patches are not solid black, so any other value refuses), and `display_frame_index` advancing from the first
 read to the second (the display is live). Before Citrus's first swap after
 launch it reports source `none`: the read before the capture (only) is
 repeated every 0.5 s for up to 10 s while it says `none`, the attempts

@@ -4689,7 +4689,7 @@ def idle_display(index: int, **changes: Any) -> dict[str, Any]:
     and, per arena, active_preview_mode and protocol_step_preview_active."""
     value = {"source": "idle_clear", "consistent": True, "display_frame_index": index,
              "fill_rgba_u8": [0, 0, 0, 255],
-             "canvas_fill_overlay": None, "preview_arena_count": 0, "photodiode_marker_patches_rendered": False}
+             "canvas_fill_overlay": None, "preview_arena_count": 0, "photodiode_marker_patches_rendered": 0}
     value.update(changes)
     return {"display": {"idle_display": value}, "citrus_build": CITRUS_BUILD,
             "arenas": [{"arena_id": a, "active_preview_mode": "NONE", "protocol_step_preview_active": False}
@@ -5049,7 +5049,11 @@ def test_empty_background_display_from_citrus() -> None:
                        "canvas fill overlay")
         refused_before("previewing", idle_display(5, preview_arena_count=2), "preview_arena_count is 2")
         refused_before("no_count", idle_display(5, preview_arena_count=None), "preview_arena_count is None")
-        refused_before("markers", idle_display(5, photodiode_marker_patches_rendered=True),
+        refused_before("markers", idle_display(5, photodiode_marker_patches_rendered=1),
+                       "photodiode_marker_patches_rendered")
+        refused_before("markers_bool", idle_display(5, photodiode_marker_patches_rendered=False),
+                       "photodiode_marker_patches_rendered")
+        refused_before("markers_count", idle_display(5, photodiode_marker_patches_rendered=2),
                        "photodiode_marker_patches_rendered")
         refused_before("no_index", idle_display(5, display_frame_index=None), "not an integer")
         refused_before("torn", idle_display(5, consistent=False), "idle_display.consistent is False")

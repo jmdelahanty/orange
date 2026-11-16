@@ -581,10 +581,11 @@ def citrus_idle_clear_problems(read: dict[str, Any], before: dict[str, Any] | No
         if not isinstance(count, int) or isinstance(count, bool) or count != 0:
             problems.append(f"idle_display.preview_arena_count is {count!r} (must be 0)")
         problems += arena_preview_problems(read, required=False)
-        if idle.get("photodiode_marker_patches_rendered") is not False:
-            # Marker patches are lit pixels on the projector: not solid black.
-            problems.append("photodiode_marker_patches_rendered is "
-                            f"{idle.get('photodiode_marker_patches_rendered')!r} (must be false)")
+        markers = idle.get("photodiode_marker_patches_rendered")
+        # A count (Citrus displayed_frame_cell.h, uint16_t). Marker patches are
+        # lit pixels on the projector, not solid black: only exactly 0 passes.
+        if not isinstance(markers, int) or isinstance(markers, bool) or markers != 0:
+            problems.append(f"idle_display.photodiode_marker_patches_rendered is {markers!r} (must be 0)")
         index = idle.get("display_frame_index")
         if not isinstance(index, int) or isinstance(index, bool):
             problems.append(f"idle_display.display_frame_index is {index!r}, not an integer")
