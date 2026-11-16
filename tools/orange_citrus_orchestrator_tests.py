@@ -4687,7 +4687,8 @@ CITRUS_BUILD = {"git_commit_hash": "027d292", "git_dirty": False}
 def idle_display(index: int, **changes: Any) -> dict[str, Any]:
     """Citrus status as citrus-agent's branch (17fbc41) reports it: status.display.idle_display
     and, per arena, active_preview_mode and protocol_step_preview_active."""
-    value = {"source": "idle_clear", "display_frame_index": index, "fill_rgba_u8": [0, 0, 0, 255],
+    value = {"source": "idle_clear", "consistent": True, "display_frame_index": index,
+             "fill_rgba_u8": [0, 0, 0, 255],
              "canvas_fill_overlay": None, "preview_arena_count": 0, "photodiode_marker_patches_rendered": False}
     value.update(changes)
     return {"display": {"idle_display": value}, "citrus_build": CITRUS_BUILD,
@@ -5042,12 +5043,17 @@ def test_empty_background_display_from_citrus() -> None:
         refused_before("markers", idle_display(5, photodiode_marker_patches_rendered=True),
                        "photodiode_marker_patches_rendered")
         refused_before("no_index", idle_display(5, display_frame_index=None), "not an integer")
+        refused_before("torn", idle_display(5, consistent=False), "idle_display.consistent is False")
+        unmarked = idle_display(5)
+        del unmarked["display"]["idle_display"]["consistent"]
+        refused_before("unmarked", unmarked, "idle_display.consistent is 'missing'")
 
         # After the capture: a change, or a display that did not advance, is never named.
         for name, after_status, text in (
             ("changed", idle_display(1240, source="canvas_fill", fill_rgba_u8=[255, 255, 255, 255]),
              "'canvas_fill'"),
-            ("frozen", idle_display(1000), "did not advance"),
+            ("torn_after", idle_display(1240, consistent=False), "consistent is False"),
+            ("frozen", idle_display(1000), "did not advance"),  # last: its range is checked below
         ):
             summary, sent = run_background_fake(module, base / name, blank, citrus_display_before=IDLE_DISPLAY_STATUS,
                                                 citrus_display_after=after_status)

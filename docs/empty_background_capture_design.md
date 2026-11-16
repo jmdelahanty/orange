@@ -57,7 +57,8 @@ Orange's descriptor gets `{state: on, shown: {kind: solid_color, rgba8:
 [0,0,0,255]}}` and a note naming the Citrus build. Evidence: Citrus's
 `status.display.idle_display` when reported (written by its render thread
 after each swap; citrus-agent branch `agent/citrus/idle-display-status`
-17fbc41, not installed): in both reads source `idle_clear`, fill_rgba_u8
+17fbc41, Citrus PR #129, not installed): in both reads `consistent` true
+(false is a torn snapshot; missing refuses too), source `idle_clear`, fill_rgba_u8
 [0,0,0,255], no `canvas_fill_overlay`, `preview_arena_count` 0,
 `photodiode_marker_patches_rendered` false (lit marker patches are not solid
 black, so true refuses), and `display_frame_index` advancing from the first

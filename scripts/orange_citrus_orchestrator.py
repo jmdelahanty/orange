@@ -556,8 +556,8 @@ def citrus_idle_clear_problems(read: dict[str, Any], before: dict[str, Any] | No
     """(evidence used, problems) for 'the display shows Citrus's idle clear,
     rgba8 0,0,0,255'. status.display.idle_display (recorded by Citrus's render
     thread after each swap) is preferred: source idle_clear, fill
-    [0,0,0,255], no canvas fill overlay, no previewing arena, no photodiode
-    marker patches; with `before` (the read before the capture) its
+    [0,0,0,255], consistent true (not torn), no canvas fill overlay, no
+    previewing arena, no photodiode marker patches; with `before` (the read before the capture) its
     display_frame_index must have advanced (the display is live). Without the
     field, every arena must report active_preview_mode NONE and no
     calibration scene may be active. Empty problems = declared exactly."""
@@ -567,6 +567,10 @@ def citrus_idle_clear_problems(read: dict[str, Any], before: dict[str, Any] | No
         if not isinstance(idle, dict):
             return used, ["status.display.idle_display is not an object"]
         problems = []
+        if idle.get("consistent") is not True:
+            # false = a torn snapshot (Citrus PR #129); missing counts as not true.
+            problems.append(f"idle_display.consistent is {idle.get('consistent', 'missing')!r} (must be true; "
+                            "a torn or unmarked snapshot says nothing)")
         if idle.get("source") != "idle_clear":
             problems.append(f"idle_display.source is {idle.get('source')!r}, not 'idle_clear'")
         if idle.get("fill_rgba_u8") != CITRUS_IDLE_FILL_RGBA_U8:
