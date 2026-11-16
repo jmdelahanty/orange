@@ -2080,6 +2080,7 @@ if(BUILD_TESTING)
     target_include_directories(orange_local_control_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(orange_local_control_tests PRIVATE cxx_std_17)
     target_link_libraries(orange_local_control_tests PRIVATE Threads::Threads)
+    target_compile_definitions(orange_local_control_tests PRIVATE ORANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_test(NAME orange_local_control_tests COMMAND orange_local_control_tests)
 
     add_executable(recording_declaration_artifacts_tests

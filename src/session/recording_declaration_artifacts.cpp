@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 
 #include "fsuid_guard.h"
@@ -69,6 +71,37 @@ void WriteRecordingDeclarationArtifacts(const std::string& recording_folder,
     for (const auto& file : artifacts.declaration_files) {
         write_bytes(root / file.relative_path, file.bytes);
     }
+}
+
+std::vector<RecordingDeclarationArtifacts::SealedFile> ReadDeclarationFiles(const RecordingStartDeclaration& declaration,
+                                                                           const std::filesystem::path& files_root)
+{
+    std::vector<RecordingDeclarationArtifacts::SealedFile> files;
+    const auto copies = DeclarationFileCopies(declaration);
+    if (copies.empty()) return files;
+    if (files_root.empty() || !files_root.is_absolute())
+        throw std::runtime_error("the declaration files root must be an absolute path");
+    std::set<std::string> named;
+    for (const auto& copy : copies) named.insert(copy.relative_path);
+    std::error_code walk_ec;
+    for (std::filesystem::recursive_directory_iterator it(files_root / "run_plan", walk_ec), end;
+         !walk_ec && it != end; it.increment(walk_ec)) {
+        if (!it->is_regular_file()) continue;
+        const std::string relative = std::filesystem::relative(it->path(), files_root).generic_string();
+        if (!named.count(relative)) throw std::runtime_error("run_plan file not named by the declaration: " + relative);
+    }
+    for (const auto& copy : copies) {
+        std::ifstream input(files_root / copy.relative_path, std::ios::binary);
+        if (!input) throw std::runtime_error("missing declaration file " + copy.relative_path);
+        std::ostringstream contents;
+        contents << input.rdbuf();
+        const std::string bytes = contents.str();
+        if (outputs::sha256_hex(bytes) != copy.sha256)
+            throw std::runtime_error("declaration file " + copy.relative_path +
+                                     " does not hash to the sha256 the declaration names");
+        files.push_back({copy.relative_path, bytes, copy.sha256});
+    }
+    return files;
 }
 
 }  // namespace orange::session

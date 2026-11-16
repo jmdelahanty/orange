@@ -246,14 +246,18 @@ inline RecordingStartDeclaration ParseRecordingStartDeclaration(const nlohmann::
 }
 
 // Which start routes may carry a declaration of each kind (agreed with
-// Palette 2026-11-15; Palette refuses a mismatch). v1 has no source and any
-// route. In this first build an orchard plan reaches Orange only through a
-// run spec: the GUI/orchestrator route needs the run_plan files, not built.
+// Palette 2026-11-15, docs/recording_start_declaration_v2_scope.md; Palette
+// refuses a mismatch). v1 has no source and any route. An orchard plan
+// reaches Orange as a run spec (orange_client) or as a local-control start
+// (the orchestrator's GUI start, scripts/run_orange_citrus_bound.sh), which
+// must name the generator's folder (params.declaration_files_root) so the
+// run_plan/ copies are sealed as for a run spec.
 inline void CheckDeclarationRoute(const RecordingStartDeclaration& d, const std::string& confirmed_by)
 {
     if (d.schema_version < kRecordingStartDeclarationSchemaVersionV2) return;
     const std::string kind = d.source_kind();
-    const bool ok = (kind == kSourceKindOrchardRunPlan && confirmed_by == kConfirmedByRunSpec) ||
+    const bool ok = (kind == kSourceKindOrchardRunPlan &&
+                     (confirmed_by == kConfirmedByRunSpec || confirmed_by == kConfirmedByLocalControl)) ||
                     (kind == kSourceKindOrangeRunSpec && confirmed_by == kConfirmedByRunSpec) ||
                     (kind == kSourceKindOperator &&
                      (confirmed_by == kConfirmedByGuiOperator || confirmed_by == kConfirmedByLocalControl));

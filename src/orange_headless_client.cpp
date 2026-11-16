@@ -8684,28 +8684,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                 if (!template_ok)
                     throw std::runtime_error("fixed.declaration_template must be {repo owner/name, commit 40 hex, "
                                              "path repo-relative, sha256 64 hex}");
-                std::set<std::string> named;
-                for (const auto& copy : copies) named.insert(copy.relative_path);
-                std::error_code walk_ec;
-                for (std::filesystem::recursive_directory_iterator it(files_root / "run_plan", walk_ec), end;
-                     !walk_ec && it != end; it.increment(walk_ec)) {
-                    if (!it->is_regular_file()) continue;
-                    const std::string relative =
-                        std::filesystem::relative(it->path(), files_root).generic_string();
-                    if (!named.count(relative))
-                        throw std::runtime_error("run_plan file not named by the declaration: " + relative);
-                }
-                for (const auto& copy : copies) {
-                    std::ifstream input(files_root / copy.relative_path, std::ios::binary);
-                    if (!input) throw std::runtime_error("missing declaration file " + copy.relative_path);
-                    std::ostringstream contents;
-                    contents << input.rdbuf();
-                    const std::string bytes = contents.str();
-                    if (orange::outputs::sha256_hex(bytes) != copy.sha256)
-                        throw std::runtime_error("declaration file " + copy.relative_path +
-                                                 " does not hash to the sha256 the declaration names");
-                    spec->declaration_files.push_back({copy.relative_path, bytes, copy.sha256});
-                }
+                spec->declaration_files = orange::session::ReadDeclarationFiles(*spec->declaration, files_root);
             }
             spec->subject_references = spec->declaration->subject_references;
             if (spec->recording_contexts.default_context)

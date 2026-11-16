@@ -1465,6 +1465,68 @@ void test_confirm_daily_registration()
             "the confirmation reaches the GUI thread with its params and the SO_PEERCRED peer");
 }
 
+void test_start_recording_orchard_plan_needs_files_root()
+{
+    const auto socket_path = temp_path("start_orchard.sock");
+    std::filesystem::remove(socket_path);
+
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.allow_gui_start_recording_commands = true;
+    std::string error;
+    require(server.Start(options, &error), "server start should allow start_recording mode");
+    wait_until_running(&server);
+    LocalControlStatusSnapshot status = healthy_status();
+    status.recording_active = false;
+    status.active_recorders = 0;
+    status.local_control_recording_start.enabled = true;
+    server.UpdateStatus(status);
+
+    const std::filesystem::path fixture_dir =
+        std::filesystem::path(ORANGE_SOURCE_DIR) / "tools/fixtures/declaration_v2/orchard_v2";
+    nlohmann::json plan;
+    for (const auto& entry : std::filesystem::directory_iterator(fixture_dir)) {
+        const std::string name = entry.path().filename().string();
+        if (name.size() > 24 && name.compare(name.size() - 24, 24, ".orange_declaration.json") == 0) {
+            std::ifstream in(entry.path());
+            plan = nlohmann::json::parse(in);
+        }
+    }
+    require(plan.is_object(), "the orchard fixture declaration is found");
+    const std::string root = fixture_dir.string();
+
+    const nlohmann::json no_root = send_request(
+        socket_path, request_json("start_recording", "plan-noroot", "plan-op-noroot", {{"declaration", plan}}));
+    const nlohmann::json relative_root = send_request(
+        socket_path, request_json("start_recording", "plan-rel", "plan-op-rel",
+                                  {{"declaration", plan}, {"declaration_files_root", "tools/fixtures"}}));
+    const nlohmann::json v1_with_root = send_request(
+        socket_path, request_json("start_recording", "v1-root", "v1-op-root",
+                                  {{"declaration", blank_recording_only_declaration()},
+                                   {"declaration_files_root", root}}));
+    const nlohmann::json root_alone = send_request(
+        socket_path, request_json("start_recording", "root-alone", "root-op-alone",
+                                  {{"declaration_files_root", root}}));
+    const nlohmann::json accepted = send_request(
+        socket_path, request_json("start_recording", "plan-ok", "plan-op-ok",
+                                  {{"declaration", plan}, {"declaration_files_root", root}}));
+    const std::vector<PendingLocalControlCommand> pending = server.DrainPendingCommands();
+    server.Stop();
+
+    require(!no_root["ok"].get<bool>() &&
+                no_root["error"]["message"].get<std::string>().find("declaration_files_root") != std::string::npos,
+            "an orchard declaration without its files root is refused in the response: " + no_root.dump());
+    require(!relative_root["ok"].get<bool>(), "a relative files root is refused");
+    require(!v1_with_root["ok"].get<bool>(), "a files root is only for an orchard declaration");
+    require(!root_alone["ok"].get<bool>(), "a files root without a declaration is refused");
+    require(accepted["ok"].get<bool>() && accepted["queued_for_gui_thread"].get<bool>(),
+            "an orchard declaration with its files root is queued (the orchestrator's GUI start)");
+    require(pending.size() == 1 && pending[0].params["declaration"] == plan &&
+                pending[0].params["declaration_files_root"] == root,
+            "the declaration and its files root reach the GUI thread unchanged");
+}
+
 void test_start_recording_carries_declaration_and_peer()
 {
     const auto socket_path = temp_path("start_declaration.sock");
@@ -2087,6 +2149,8 @@ int main()
          test_start_recording_queues_when_start_mode_enabled},
         {"start_recording_carries_declaration_and_peer",
          test_start_recording_carries_declaration_and_peer},
+        {"start_recording_orchard_plan_needs_files_root",
+         test_start_recording_orchard_plan_needs_files_root},
         {"empty_background_capture_and_start_selection",
          test_empty_background_capture_and_start_selection},
         {"confirm_daily_registration",

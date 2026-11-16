@@ -1,6 +1,7 @@
 #pragma once
 #include "empty_background.h"
 #include "gui_recording_evidence.h"
+#include "session/recording_declaration_artifacts.h"
 #include "session/recording_start_declaration.h"
 
 #include <optional>
@@ -34,6 +35,11 @@ struct RemoteRecordStart {
     // against the store (empty_background::SelectionFromLocalControl). Copied
     // into the recording at start, or the start is refused.
     std::optional<empty_background::BindingSelection> empty_background;
+    // An orchard plan's run_plan/ copies, read once from
+    // params.declaration_files_root and checked against the sha256s the
+    // declaration names (session::ReadDeclarationFiles); sealed verbatim at the
+    // recording root. Empty for every other declaration.
+    std::vector<session::RecordingDeclarationArtifacts::SealedFile> declaration_files;
 };
 // The contexts a record start uses: RecordingContextsForStream(), with every
 // entry's recording_intent replaced by a remote start's declared intent.

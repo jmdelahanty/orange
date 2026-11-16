@@ -17,12 +17,14 @@
 // No camera, GPU or process state is touched, so tests run it on a
 // temporary folder.
 
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
 
 #include "json.hpp"
 #include "recording_subject_reference.h"
+#include "session/recording_start_declaration.h"
 
 namespace orange::session {
 
@@ -61,5 +63,16 @@ void WriteRecordingDeclarationArtifacts(const std::string& recording_folder,
                                         const SnapshotSessionUpdate& update_snapshot,
                                         const std::string& queried_at_utc,
                                         const recording::HttpGetFn& http_get = recording::HttpGet);
+
+// Reads the run_plan/ files an orchard declaration names
+// (DeclarationFileCopies) from `files_root` (the generator's --out folder,
+// which holds run_plan/), for an orange_client spec
+// (fixed.declaration_files_root) and a local-control start
+// (params.declaration_files_root) alike. Refuses a missing file, a file whose
+// bytes do not hash to the sha256 the declaration names, and any file under
+// files_root/run_plan that the declaration does not name. Empty for a
+// declaration of any other kind. Throws std::runtime_error naming the problem.
+std::vector<RecordingDeclarationArtifacts::SealedFile> ReadDeclarationFiles(const RecordingStartDeclaration& declaration,
+                                                                           const std::filesystem::path& files_root);
 
 }  // namespace orange::session

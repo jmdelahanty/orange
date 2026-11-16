@@ -10,6 +10,7 @@
 #include "recording_media_plan.h"
 #include "recording_context.h"
 #include "recording_subject_reference.h"
+#include "session/recording_declaration_artifacts.h"
 #include "video_capture.h"
 #include "json.hpp"
 
@@ -51,6 +52,9 @@ struct RecordingSessionState {
     // recording (orange.recording_subject_confirmation), written next to the
     // start snapshot; null when the start did not require one (headless).
     nlohmann::json subject_confirmation;
+    // A remote start's orchard plan copies (run_plan/...), sealed at the
+    // recording root with the confirmation; empty otherwise.
+    std::vector<RecordingDeclarationArtifacts::SealedFile> declaration_files;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<ResolvedRecordingConfig> resolved_recording_configs;
     std::string recording_sink_mode = "real";

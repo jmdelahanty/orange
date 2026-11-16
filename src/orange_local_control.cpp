@@ -791,13 +791,30 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
         // A remote start's declaration is refused here, before it is queued,
         // so the caller learns of a malformed one in the response.
         try {
-            orange::session::CheckDeclarationRoute(
-                orange::session::ParseRecordingStartDeclaration(parsed.params.at("declaration")),
-                orange::session::kConfirmedByLocalControl);
+            const auto declaration =
+                orange::session::ParseRecordingStartDeclaration(parsed.params.at("declaration"));
+            orange::session::CheckDeclarationRoute(declaration, orange::session::kConfirmedByLocalControl);
+            // An orchard plan's run_plan/ copies are read by the GUI from the
+            // generator's folder; any other declaration names no folder.
+            const bool plan = !orange::session::DeclarationFileCopies(declaration).empty();
+            const auto root = parsed.params.find("declaration_files_root");
+            if (plan && (root == parsed.params.end() || !root->is_string() ||
+                         root->get<std::string>().empty() || root->get<std::string>().front() != '/')) {
+                throw std::runtime_error("an orchard_run_plan declaration needs params.declaration_files_root "
+                                         "(the absolute folder holding its run_plan/ files)");
+            }
+            if (!plan && root != parsed.params.end()) {
+                throw std::runtime_error("params.declaration_files_root is only for an orchard_run_plan declaration");
+            }
         } catch (const std::exception& ex) {
             set_error(error_out, std::string("start_recording params.declaration: ") + ex.what());
             return false;
         }
+    }
+    if (parsed.method == "start_recording" && !parsed.params.contains("declaration") &&
+        parsed.params.contains("declaration_files_root")) {
+        set_error(error_out, "start_recording params.declaration_files_root needs params.declaration");
+        return false;
     }
     if (parsed.method == "start_recording" && parsed.params.contains("empty_background")) {
         // A start that names an empty-dish background must declare itself too:

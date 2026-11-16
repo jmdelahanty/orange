@@ -174,8 +174,8 @@ void test_v2_routes_and_coverage()
     EXPECT(plan.schema_version == 2 && plan.source_kind() == kSourceKindOrchardRunPlan, "the fixture is a v2 plan");
     EXPECT(plan.subject_references.cameras.at("2010096").blank, "the fixture states a blank camera");
     EXPECT(!refuses([&] { CheckDeclarationRoute(plan, kConfirmedByRunSpec); }), "a plan reaches Orange as a run spec");
-    EXPECT(refuses([&] { CheckDeclarationRoute(plan, kConfirmedByLocalControl); }),
-           "a plan over the socket is refused in the first build");
+    EXPECT(!refuses([&] { CheckDeclarationRoute(plan, kConfirmedByLocalControl); }),
+           "a plan over the socket (the orchestrator's GUI start)");
     EXPECT(refuses([&] { CheckDeclarationRoute(plan, kConfirmedByGuiOperator); }), "never from the panel");
     EXPECT(!refuses([&] { CheckDeclarationCoversCameras(plan, {"2010093", "2010094", "2010095", "2010096"}); }),
            "all four cameras listed");
@@ -255,6 +255,44 @@ void test_writer_seals_run_plan_copies(const fs::path& dir)
            "a copy not named by its bytes' sha256 is refused before any write");
 }
 
+void test_read_declaration_files(const fs::path& dir)
+{
+    const auto plan = ParseRecordingStartDeclaration(load_fixture_declaration());
+    const fs::path fixture_root = fs::path(ORANGE_SOURCE_DIR) / "tools/fixtures/declaration_v2/orchard_v2";
+    const auto files = ReadDeclarationFiles(plan, fixture_root);
+    EXPECT(files.size() == 3, "the three run_plan copies are read");
+    for (const auto& file : files) {
+        EXPECT(read_file(fixture_root / file.relative_path) == file.bytes &&
+                   orange::outputs::sha256_hex(file.bytes) == file.sha256,
+               "each file is the exact bytes, hashing to the declared sha256");
+    }
+
+    // A copy of the generator's folder to break in each way.
+    auto copy_fixture = [&](const std::string& name) {
+        const fs::path root = dir / name;
+        fs::create_directories(root);
+        fs::copy(fixture_root / "run_plan", root / "run_plan", fs::copy_options::recursive);
+        return root;
+    };
+    const fs::path extra = copy_fixture("read_extra");
+    std::ofstream(extra / "run_plan" / "notes.txt") << "x";
+    EXPECT(refuses([&] { ReadDeclarationFiles(plan, extra); }), "a file the declaration does not name is refused");
+    const fs::path tampered = copy_fixture("read_tampered");
+    const auto sign_off = plan.source.at("sign_off_copy_relative_path").get<std::string>();
+    std::ofstream(tampered / sign_off, std::ios::app) << " ";
+    EXPECT(refuses([&] { ReadDeclarationFiles(plan, tampered); }), "bytes that do not hash to the name are refused");
+    const fs::path missing = copy_fixture("read_missing");
+    fs::remove(missing / sign_off);
+    EXPECT(refuses([&] { ReadDeclarationFiles(plan, missing); }), "a missing copy is refused");
+    EXPECT(refuses([&] { ReadDeclarationFiles(plan, fs::path("relative/root")); }), "a relative root is refused");
+
+    json op = load_fixture_declaration();
+    op["source"] = {{"kind", "operator"}};
+    for (auto& [serial, entry] : op["subject_references"]["cameras"].items()) entry = {{"blank", true}};
+    EXPECT(ReadDeclarationFiles(ParseRecordingStartDeclaration(op), fs::path()).empty(),
+           "an operator declaration reads nothing");
+}
+
 }  // namespace
 
 int main()
@@ -268,6 +306,7 @@ int main()
     test_inconsistent_spec_copy_writes_nothing(dir);
     test_v2_routes_and_coverage();
     test_writer_seals_run_plan_copies(dir);
+    test_read_declaration_files(dir);
     std::error_code ec;
     fs::remove_all(dir, ec);
     if (g_failures) {

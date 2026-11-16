@@ -3451,6 +3451,7 @@ PreparedRecordingRunStart prepare_recording_run(
             artifacts.subject_references = state->subject_references;
             artifacts.zebrobot = state->zebrobot;
             artifacts.subject_confirmation = state->subject_confirmation;
+            artifacts.declaration_files = state->declaration_files;
             WriteRecordingDeclarationArtifacts(recording_folder, artifacts,
                                                update_recording_snapshot_session_artifacts,
                                                get_current_utc_timestamp());

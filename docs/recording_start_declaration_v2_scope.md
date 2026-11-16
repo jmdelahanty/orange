@@ -6,7 +6,11 @@ pancake-plate. 2026-11-16: Palette #442/#443 are live and Jeremy turned
 spec-declared runs on; the first v2 run waits only for confirmation that
 Palette's v2 acceptance (the #442/#443 follow-up) is live. First build: a plan reaches Orange
 only as a run spec (merge step `scripts/apply_declaration_to_template.py`);
-the socket accepts v2 only with kind `operator`.
+the socket accepts v2 only with kind `operator`. Spec-runner branch
+(`agent/gui/spec-runner-20261116`): the socket also takes `orchard_run_plan`
+with `params.declaration_files_root` (the GUI seals the same `run_plan/`
+copies), so the bound runner's `--declaration-dir` declares a plan session
+(`confirmed_by` `local_control`, the mapping below).
 Field changes since the draft below: `source.session_id` is
 `plan_session_id`; `plan_hash_rule` is exactly
 `orchard_run_plan_v1_plan_sha256`; the plan copy is always `.yaml`;

@@ -538,6 +538,27 @@ recording, on every retry). Citrus resending the same request is the poll.
 - Citrus's done test: `status` `finalized` and `binding_status` `bound` and
   `context_count` equal to the number of receipts.
 
+### `start_recording` `params.declaration` and `params.declaration_files_root`
+
+A start may carry its own declaration (`orange.recording_start_declaration`
+v1 or v2, `src/session/recording_start_declaration.h`) instead of the Subject
+panel's Confirm; `subject_confirmation.json` then says `confirmed_by`
+`local_control` with the socket peer as `requester`. A v2 declaration's
+`source.kind` must be `operator` or `orchard_run_plan`.
+
+An `orchard_run_plan` declaration (orchard `tools/declare.py --out DIR`) also
+needs `params.declaration_files_root`: the absolute folder holding its
+`run_plan/` files. The GUI reads each file named by
+`source.*_copy_relative_path` once when the command is drained, refuses the
+start unless its bytes hash to the sha256 in its name and `run_plan/` holds no
+other file (`session::ReadDeclarationFiles`, the rule orange_client applies to
+`fixed.declaration_files_root`), and seals the exact bytes at the same
+relative paths in the recording root, as a spec-declared run does. The plan
+must name every recording camera. The key is refused on any other
+declaration and without one. Client: `scripts/orange_citrus_orchestrator.py
+--declaration-file F --declaration-files-root DIR` (the bound runner's
+`--declaration-dir`).
+
 ### `capture_empty_background` and `start_recording` `params.empty_background`
 
 An empty-dish background for an unattended session: capture it with empty

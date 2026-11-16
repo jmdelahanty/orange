@@ -1448,6 +1448,13 @@ void gui_drain_local_control_commands(
                          {"operation_id", command.operation_id},
                          {"command_source", command.source},
                          {"received_at_utc", command.received_at_utc}}};
+                    if (!orange::session::DeclarationFileCopies(remote->declaration).empty()) {
+                        // The server required the folder; the files are read here,
+                        // once, and must hash to what the declaration names.
+                        remote->declaration_files = orange::session::ReadDeclarationFiles(
+                            remote->declaration,
+                            std::filesystem::path(command.params.at("declaration_files_root").get<std::string>()));
+                    }
                     if (command.params.contains(orange::empty_background::kLocalControlStartKey)) {
                         // The named capture is checked now (store, id, sha256) so a bad
                         // selection refuses the start before anything is prepared, and
@@ -4250,6 +4257,19 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         }
         recording_session->subject_references = orange::gui::SubjectReferencesForRecordStart(
             &recording_session->subject_confirmation, camera_serials, remote_start);
+        recording_session->declaration_files.clear();
+        if (remote_start) {
+            // An orchard plan names every recording camera (declared or blank).
+            std::vector<std::string> recording_serials;
+            if (cameras_params != nullptr) {
+                for (int i = 0; i < num_cameras; ++i) {
+                    if (cameras_select == nullptr || cameras_select[i].record)
+                        recording_serials.push_back(cameras_params[i].camera_serial);
+                }
+            }
+            orange::session::CheckDeclarationCoversCameras(remote_start->declaration, recording_serials);
+            recording_session->declaration_files = remote_start->declaration_files;
+        }
     } catch (const std::exception& ex) {
         const std::string error = ex.what();
         if (recording_preflight_errors) {
