@@ -3,7 +3,7 @@
 declaration into a committed template, then orange_client --validate-experiment-spec.
 
 Uses tools/fixtures/declaration_v2/orchard_v2 (orchard declare.py output at
-11c2632, run plan v2, the committed example plan revision 4, session S1).
+ccbdd67, run plan v2, the committed example plan revision 5, session S1).
 """
 
 from __future__ import annotations

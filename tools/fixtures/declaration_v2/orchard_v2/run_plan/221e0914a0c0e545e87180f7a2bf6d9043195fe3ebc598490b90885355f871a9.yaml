@@ -4,7 +4,7 @@
 # results) is in the run record beside it: example_one_session.record.yaml.
 schema_id: orchard.run_plan.v2
 plan_id: omnifin0-dot-contrast-corners-example
-revision: 4
+revision: 5
 created: 2026-11-14
 created_by: experiment-spec
 note: Format example. Shows a group from a dish, a single fish from a plate well, a single larva drawn from a dish, and a blank.
@@ -65,7 +65,7 @@ sessions:
         request_sha256: null
         placement_algorithm: latin_square_splitmix64_v1
         placement_seed: 1
-        placement_sha256: 7a5d6471daa77d539ccc1e0cac6e31d46209c5b1fe7ffa7b3d436301b17cad12
+        placement_sha256: 1e76c4602cf3246765c55ac92999ba69a9604a99cd5408438b88f02c4022d570
     arenas:
       # A group of larvae picked from one dish. They have no ids yet: each is minted as a registered fish
       # in the source dish when picked, and the load record carries the ids. Citrus and Orange declare
