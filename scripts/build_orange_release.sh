@@ -157,8 +157,12 @@ for t in "${SHIPPED[@]}"; do
 done
 install -m 0755 "$NATIVE_BUILD/external_recorder_ipc_probe_native" "$STAGE.partial/bin/"
 install -m 0644 "$NATIVE_BUILD/native_nv12_write.ptx" "$STAGE.partial/bin/"
-git archive --format=tar HEAD fonts scripts docs/schemas contracts | tar -x -C "$STAGE.partial/share/orange"
+git archive --format=tar "$COMMIT" fonts scripts docs/schemas contracts | tar -x -C "$STAGE.partial/share/orange"
 
+# The build stamps whatever HEAD is at build time: a commit or checkout in this
+# tree during the build would make the binaries disagree with $COMMIT.
+[[ "$(git rev-parse HEAD)" == "$COMMIT" && -z "$(git status --porcelain --untracked-files=no)" ]] \
+  || die "the checkout changed during the build (HEAD or tracked files); rebuild without touching this tree"
 for b in "$STAGE.partial"/bin/*; do
   [[ "$b" == *.ptx ]] && continue
   if ldd "$b" | grep -q "not found"; then
