@@ -170,7 +170,8 @@ for b in "$STAGE.partial"/bin/*; do
   fi
 done
 for b in orange orange_client; do
-  strings "$STAGE.partial/bin/$b" | grep -q "$COMMIT" || die "$b does not carry the build stamp $COMMIT"
+  # Not `strings | grep -q`: grep -q exits early and pipefail then fails the pipe.
+  grep -qF "$COMMIT" <(strings "$STAGE.partial/bin/$b") || die "$b does not carry the build stamp $COMMIT"
 done
 
 DRIVER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || true)"
