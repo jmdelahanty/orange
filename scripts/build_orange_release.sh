@@ -12,7 +12,9 @@
 #   - HEAD is on a branch of the fork (origin/*, after a fetch);
 #   - no orange, orange_client or recorder process is running (builds on the
 #     rig cost camera frames; send HOLD to the other sessions first).
-# Then, in fresh build folders under targets/release-build/<tag>/:
+# Then, in fresh build folders targets/release-<tag> (main project; directly
+# under targets/ like targets/release, so the binaries find the tree's support
+# files during ctest) and targets/native-<tag>:
 #   - configures the main project with the production cache settings (Release,
 #     sm_86, /opt/orange libs, TensorRT 10.0.1.6, host fast math) and builds
 #     every shipped binary;
@@ -96,10 +98,11 @@ if existing="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}")"; then
 fi
 
 STAGE="$ROOT/targets/releases/$TAG"
-BUILD="$ROOT/targets/release-build/$TAG"
+BUILD="$ROOT/targets/release-$TAG"
+NATIVE_BUILD="$ROOT/targets/native-$TAG"
 [[ ! -e "$STAGE" ]] || die "staged release already exists: $STAGE (remove it to rebuild)"
-rm -rf "$BUILD"
-mkdir -p "$BUILD"
+rm -rf "$BUILD" "$NATIVE_BUILD"
+mkdir -p "$BUILD" "$NATIVE_BUILD"
 echo "[release] tag=$TAG commit=$COMMIT fork_branch=$ON_FORK"
 
 # --- main project ---------------------------------------------------------------
@@ -119,41 +122,41 @@ CMAKE_SETTINGS=(
   -DORANGE_ENABLE_YOLO_PROFILE=OFF
 )
 SHIPPED=(orange orange_client evt_stream_smoke evt_camera_ready evt_force_reboot physical_target_fit_cli)
-cmake -S "$ROOT" -B "$BUILD/main" "${CMAKE_SETTINGS[@]}" > "$BUILD/configure.log" 2>&1 \
-  || { tail -20 "$BUILD/configure.log" >&2; die "configure failed ($BUILD/configure.log)"; }
-nice -n 10 cmake --build "$BUILD/main" -j "$JOBS" > "$BUILD/build_all.log" 2>&1 \
-  || { tail -30 "$BUILD/build_all.log" >&2; die "build failed ($BUILD/build_all.log)"; }
-nice -n 10 cmake --build "$BUILD/main" -j "$JOBS" --target "${SHIPPED[@]}" > "$BUILD/build_shipped.log" 2>&1 \
-  || { tail -30 "$BUILD/build_shipped.log" >&2; die "shipped targets failed ($BUILD/build_shipped.log)"; }
+cmake -S "$ROOT" -B "$BUILD" "${CMAKE_SETTINGS[@]}" > "$BUILD.configure.log" 2>&1 \
+  || { tail -20 "$BUILD.configure.log" >&2; die "configure failed ($BUILD.configure.log)"; }
+nice -n 10 cmake --build "$BUILD" -j "$JOBS" > "$BUILD.build_all.log" 2>&1 \
+  || { tail -30 "$BUILD.build_all.log" >&2; die "build failed ($BUILD.build_all.log)"; }
+nice -n 10 cmake --build "$BUILD" -j "$JOBS" --target "${SHIPPED[@]}" > "$BUILD.build_shipped.log" 2>&1 \
+  || { tail -30 "$BUILD.build_shipped.log" >&2; die "shipped targets failed ($BUILD.build_shipped.log)"; }
 echo "[release] built main project"
 
-( cd "$BUILD/main" && nice -n 10 ctest -j 8 --output-on-failure ) > "$BUILD/ctest.log" 2>&1 \
-  || { grep -E "tests passed|Failed|\*\*\*" "$BUILD/ctest.log" | tail -20 >&2; die "ctest failed ($BUILD/ctest.log)"; }
-CTEST_LINE="$(grep -E "tests passed" "$BUILD/ctest.log" | tail -1)"
+( cd "$BUILD" && nice -n 10 ctest -j 8 --output-on-failure ) > "$BUILD.ctest.log" 2>&1 \
+  || { grep -E "tests passed|Failed|\*\*\*" "$BUILD.ctest.log" | tail -20 >&2; die "ctest failed ($BUILD.ctest.log)"; }
+CTEST_LINE="$(grep -E "tests passed" "$BUILD.ctest.log" | tail -1)"
 echo "[release] ctest: $CTEST_LINE"
 
 # --- native recorder ------------------------------------------------------------
 CUDA_13_ROOT="${CUDA_13_ROOT:-$HOME/.local/opt/cuda-13.1.1-nvenc}"
 NVENC_13_INTERFACE_DIR="${NVENC_13_INTERFACE_DIR:-$HOME/.local/opt/nvenc-interface-13.1.15/Video_Codec_Interface_13.1.15/Interface}"
 for d in "$CUDA_13_ROOT" "$NVENC_13_INTERFACE_DIR"; do [[ -d "$d" ]] || die "missing directory: $d"; done
-cmake -S "$ROOT/tools/nvenc_native_probe" -B "$BUILD/native" \
+cmake -S "$ROOT/tools/nvenc_native_probe" -B "$NATIVE_BUILD" \
   -DORANGE_SOURCE_ROOT="$ROOT" -DCUDA_13_ROOT="$CUDA_13_ROOT" \
   -DNVENC_13_INTERFACE_DIR="$NVENC_13_INTERFACE_DIR" \
-  -DBUILD_NATIVE_RECORDER=ON -DBUILD_NATIVE_KERNEL=ON > "$BUILD/native_configure.log" 2>&1 \
-  || { tail -20 "$BUILD/native_configure.log" >&2; die "native configure failed"; }
-nice -n 10 cmake --build "$BUILD/native" --target external_recorder_ipc_probe_native native_nv12_write_ptx -j "$JOBS" \
-  > "$BUILD/native_build.log" 2>&1 \
-  || { tail -30 "$BUILD/native_build.log" >&2; die "native recorder build failed"; }
+  -DBUILD_NATIVE_RECORDER=ON -DBUILD_NATIVE_KERNEL=ON > "$NATIVE_BUILD.configure.log" 2>&1 \
+  || { tail -20 "$NATIVE_BUILD.configure.log" >&2; die "native configure failed"; }
+nice -n 10 cmake --build "$NATIVE_BUILD" --target external_recorder_ipc_probe_native native_nv12_write_ptx -j "$JOBS" \
+  > "$NATIVE_BUILD.build.log" 2>&1 \
+  || { tail -30 "$NATIVE_BUILD.build.log" >&2; die "native recorder build failed"; }
 echo "[release] built native recorder"
 
 # --- stage ------------------------------------------------------------------------
 mkdir -p "$STAGE.partial/bin" "$STAGE.partial/share/orange"
 trap 'rm -rf "$STAGE.partial"' EXIT
 for t in "${SHIPPED[@]}"; do
-  install -m 0755 "$BUILD/main/$t" "$STAGE.partial/bin/$t"
+  install -m 0755 "$BUILD/$t" "$STAGE.partial/bin/$t"
 done
-install -m 0755 "$BUILD/native/external_recorder_ipc_probe_native" "$STAGE.partial/bin/"
-install -m 0644 "$BUILD/native/native_nv12_write.ptx" "$STAGE.partial/bin/"
+install -m 0755 "$NATIVE_BUILD/external_recorder_ipc_probe_native" "$STAGE.partial/bin/"
+install -m 0644 "$NATIVE_BUILD/native_nv12_write.ptx" "$STAGE.partial/bin/"
 git archive --format=tar HEAD fonts scripts docs/schemas contracts | tar -x -C "$STAGE.partial/share/orange"
 
 for b in "$STAGE.partial"/bin/*; do
@@ -215,7 +218,7 @@ mv "$STAGE.partial" "$STAGE"
 trap - EXIT
 
 git tag "$TAG" "$COMMIT" 2>/dev/null || true
-[[ "$KEEP_BUILD" == 1 ]] || rm -rf "$BUILD"
+[[ "$KEEP_BUILD" == 1 ]] || rm -rf "$BUILD" "$NATIVE_BUILD"
 
 echo "[release] staged $STAGE"
 echo "[release]   orange        $(sha256sum "$STAGE/bin/orange" | cut -c1-16)"
