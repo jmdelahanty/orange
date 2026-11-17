@@ -1,6 +1,11 @@
 # Installing Orange under /opt: plan (2026-11-14)
 
-Status: **plan only.** Nothing described here has been built or installed.
+Status (2026-11-17): steps a-c are done (P1). Steps d and e are written and
+tested off the rig: `scripts/build_orange_release.sh`,
+`scripts/install_orange_release.sh`, release-aware wrappers and launchers,
+`tools/release_install_tests.py`. A test release (238 files, 44 MB) built,
+passed ctest and installed into a scratch prefix. Nothing is installed under
+`/opt/orange/releases` yet; the P2 runbook is in section 5a.
 Jeremy's decisions of 2026-11-14 are in section 7. Items still marked
 **Decision** need Jeremy.
 
@@ -262,6 +267,45 @@ sudo.
 Every install follows the recording rules: HOLD to the other agents, no
 recording in progress, nothing heavy during runs, and the summary sent
 afterwards.
+
+## 5a. P2 runbook (first install and rig comparison)
+
+Prerequisites: the commit to release is promoted and pushed to the fork (the
+build refuses an unpushed HEAD); HOLD sent; no recording running.
+
+1. Build and stage, as jeremy, in the production checkout (nothing else may
+   commit or check out in that tree while it builds; the script refuses if
+   HEAD or tracked files change):
+   `scripts/build_orange_release.sh` -> `targets/releases/orange-vYYYY.MM.DD`,
+   local tag of the same name.
+2. Install (Jeremy, sudo):
+   `sudo scripts/install_orange_release.sh --release-dir targets/releases/<tag> --link-recorder`.
+   `--link-recorder` keeps the old `/opt/orange/bin/external_recorder_ipc_probe_native`
+   as `.pre-release.<time>` and links the path to the release's recorder, so
+   every Orange (dev tree included) records with the release recorder from then on.
+3. Reinstall the wrappers (Jeremy, sudo): `scripts/install_orange_gui_validation_wrapper.sh`,
+   `scripts/install_orange_local_benchmark_wrapper.sh`,
+   `scripts/install_orange_evt_stream_smoke_wrapper.sh`. They now also accept a
+   root-owned release binary; the dev tree stays their default.
+4. Comparison runs from the release (launchers under
+   `/opt/orange/current/share/orange/scripts/`, which take their binaries from
+   the release they belong to), each against the same run from the dev tree:
+   stream smoke (`--evt-stream-smoke-bin /opt/orange/current/bin/evt_stream_smoke`),
+   the 60 s headless gate (spec passed as an absolute path from the dev tree's
+   `experiment_specs/`), a bound GUI recording, and one guided capture.
+   Check `source_version.install` names the release and the commit matches.
+5. Practise `sudo scripts/install_orange_release.sh --rollback` once (with a
+   second release installed) and roll forward again.
+
+Notes found while building P2:
+- A release run's GUI starts in the user's Orange data root, not in the
+  release: Orange runs as root and writes `imgui.ini` to its current folder,
+  and root ignores the release's read-only bits.
+- The native recorder's RUNPATH names `~/.local/opt/cuda-13.1.1-nvenc/lib` (the
+  CUDA 13 runtime in jeremy's home). Fine for P2/P3; P4 (other operators) needs
+  that runtime under `/opt/orange/lib`.
+- Specs and camera configs are still read from the dev tree / data root; the
+  release does not ship `experiment_specs/`.
 
 ## 6. Multi-user (phase 4; mostly open)
 
