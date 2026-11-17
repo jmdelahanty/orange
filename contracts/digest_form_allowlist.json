@@ -1,5 +1,5 @@
 {
-  "$comment": "Digest fields scripts/validate_output_schemas.py accepts although they break agent-contracts orange-palette/digest_form_v1 (bare hex, or a digest under a non-digest name). Each entry: a file name glob, a JSON path regex (paths look like /a/b[]/c; serials become <serial>, 64-hex path segments <hex>), and the reason. The list only shrinks for Orange's own families: remove entries when their family converts. Family G (foreign documents Orange copies verbatim) stays until the owner renames its fields; Orange never rewrites another system's document to satisfy this rule.",
+  "$comment": "Digest fields scripts/validate_output_schemas.py accepts although they break agent-contracts orange-palette/digest_form_v1 (bare hex, or a digest under a non-digest name). Each entry: a file name glob, a JSON path regex (paths look like /a/b[]/c; serials become <serial>, 64-hex path segments <hex>), and the reason. The list only shrinks: remove entries when their family converts.",
   "allowed": [
     {
       "schema_id": "orange.tensorrt_engine_manifest",
@@ -60,11 +60,6 @@
       "file": "recording_session.json",
       "path": "^/shaman_v2_recording_identity/recording_identity_token$",
       "reason": "SHAMAN v2 recording identity token: a sha256 token under its fixed wire-field name (shaman-ipc Slot.recording_identity_token); renaming needs a SHAMAN layout change (family E)."
-    },
-    {
-      "file": "recording_snapshot*.json",
-      "path": "^/citrus_runtime_geometry/rig_canvas_commissioning/canvas_configuration_compatibility/(accepted|current)_(experimental_region_)?geometry_fingerprint$",
-      "reason": "Citrus's citrus.runtime_rig_canvas_commissioning_compatibility v1 status block, copied verbatim from the Citrus control-socket response (src/gui/recording_snapshots.cpp update_gui_citrus_runtime_geometry_snapshot). Citrus names these *_fingerprint and already writes sha256: tokens (Citrus src/runtime/calibration_canvas_compatibility.h); only the field names break the rule, and renaming them is Citrus's change (family G, foreign verbatim copy)."
     },
     {
       "file": "*.json",

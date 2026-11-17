@@ -177,26 +177,6 @@ def test_digest_form() -> None:
         result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
         require(result.returncode == 1 and "other.manifest.json" in result.stdout,
                 f"the schema_id entry must not cover another schema in a like-named file: {result.stdout}")
-        (folder / "other.manifest.json").unlink()
-        # Family G: Citrus's canvas compatibility block, copied verbatim into the start snapshot,
-        # names its sha256: tokens *_fingerprint. Exempt there, and only there.
-        compatibility = {f"{side}_{kind}geometry_fingerprint": TOKEN
-                         for side in ("accepted", "current") for kind in ("", "experimental_region_")}
-        compatibility["accepted_canvas_sha256"] = TOKEN
-        snapshot = {"citrus_runtime_geometry": {"rig_canvas_commissioning": {
-            "schema_id": "citrus.runtime_rig_canvas_commissioning_compatibility", "schema_version": 1,
-            "canvas_configuration_compatibility": compatibility}}}
-        (folder / "recording_snapshot_start.json").write_text(json.dumps(snapshot))
-        result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
-        require(result.returncode == 0, f"verbatim Citrus compatibility fingerprints pass: {result.stdout}")
-        (folder / "recording_session.json").write_text(json.dumps(snapshot))
-        result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
-        require(result.returncode == 1 and "recording_session.json" in result.stdout,
-                f"the Citrus exemption covers the snapshot only: {result.stdout}")
-        (folder / "recording_session.json").unlink()
-        (folder / "recording_snapshot_start.json").write_text(json.dumps({"other": {"geometry_fingerprint": TOKEN}}))
-        result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
-        require(result.returncode == 1, f"a *_fingerprint digest elsewhere in the snapshot still fails: {result.stdout}")
     print("[PASS] digest form")
 
 
