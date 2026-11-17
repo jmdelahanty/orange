@@ -11,6 +11,32 @@ DRY_RUN=0
 PTP_STACK_MODE="off"
 ENV_ITEMS=()
 
+# Installed releases (docs/opt_install_plan_2026-11-14.md, step e): a binary
+# under /opt/orange/releases/<tag>/bin is accepted only when every folder from
+# /opt down to it, and the binary itself, is root-owned and not writable by
+# group or others, and the release holds INSTALLED.json.
+ORANGE_RELEASES_ROOT="/opt/orange/releases"
+ORANGE_RELEASE_DIR=""
+installed_release_dir_for_bin() {
+  local bin="$1" name="$2" rel tag p perms
+  case "$bin" in
+    "$ORANGE_RELEASES_ROOT"/*/bin/"$name") ;;
+    *) return 1 ;;
+  esac
+  rel="${bin%/bin/"$name"}"
+  tag="${rel##*/}"
+  [[ "$tag" =~ ^orange-v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]] || return 1
+  [[ "$rel" == "$ORANGE_RELEASES_ROOT/$tag" && -f "$rel/INSTALLED.json" ]] || return 1
+  for p in /opt /opt/orange "$ORANGE_RELEASES_ROOT" "$rel" "$rel/bin" "$bin" \
+           "$rel/share" "$rel/share/orange" "$rel/share/orange/scripts"; do
+    [[ -e "$p" && ! -L "$p" ]] || return 1
+    [[ "$(stat -c '%u' "$p")" == 0 ]] || return 1
+    perms="$(stat -c '%a' "$p")"
+    (( (8#$perms & 8#022) == 0 )) || return 1
+  done
+  printf '%s\n' "$rel"
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -94,6 +120,13 @@ validate_path_under_allowed_roots() {
 
 resolve_ptp_stack_script_path() {
   local candidate
+  if [[ -n "$ORANGE_RELEASE_DIR" ]]; then
+    # A release uses its own scripts, never a home checkout's.
+    candidate="$ORANGE_RELEASE_DIR/share/orange/scripts/ptp_stack.sh"
+    [[ -x "$candidate" ]] || return 1
+    printf '%s\n' "$candidate"
+    return 0
+  fi
   case "$ORANGE_BIN" in
     "$DEFAULT_ORANGE_BIN")
       candidate="$DEFAULT_ORANGE_ROOT/scripts/ptp_stack.sh"
@@ -571,8 +604,15 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "--orange-bin requires a value." >&2; exit 2; }
       ORANGE_BIN="$(realpath -e "$1")"
+      ORANGE_RELEASE_DIR=""
       case "$ORANGE_BIN" in
         "$DEFAULT_ORANGE_BIN"|"$EXPERIMENT_ORANGE_BIN")
+          ;;
+        "$ORANGE_RELEASES_ROOT"/*)
+          ORANGE_RELEASE_DIR="$(installed_release_dir_for_bin "$ORANGE_BIN" orange)" || {
+            echo "Refusing Orange GUI binary: not in a root-owned, read-only installed release: $ORANGE_BIN" >&2
+            exit 2
+          }
           ;;
         *)
           echo "Refusing to use Orange GUI binary outside allowed paths: $ORANGE_BIN" >&2
@@ -637,6 +677,7 @@ done
 
 echo "[sudo-wrapper] running Orange GUI validation"
 echo "[sudo-wrapper] orange_bin=$ORANGE_BIN"
+echo "[sudo-wrapper] release=${ORANGE_RELEASE_DIR:-none (development tree)}"
 echo "[sudo-wrapper] ptp_stack_mode=$PTP_STACK_MODE"
 
 # Host stall monitor (scripts/host_stall_monitor.py from the same source tree
@@ -653,6 +694,9 @@ if [[ "${ORANGE_HOST_STALL_MONITOR:-1}" == "1" && "$DRY_RUN" != "1" ]]; then
   case "$ORANGE_BIN" in
     "$DEFAULT_ORANGE_BIN") stall_monitor_script="$DEFAULT_ORANGE_ROOT/scripts/host_stall_monitor.py" ;;
   esac
+  if [[ -n "$ORANGE_RELEASE_DIR" ]]; then
+    stall_monitor_script="$ORANGE_RELEASE_DIR/share/orange/scripts/host_stall_monitor.py"
+  fi
   if [[ -f "$stall_monitor_script" ]]; then
     stall_monitor_dir="/home/jeremy/orange_data/diagnostics/host_stall"
     mkdir -p "$stall_monitor_dir"

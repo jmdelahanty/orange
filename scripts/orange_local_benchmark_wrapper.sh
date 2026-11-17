@@ -6,6 +6,32 @@ DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/targets/release/orange_client"
 EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange"
 EXPERIMENT_ORANGE_CLIENT="$EXPERIMENT_ORANGE_ROOT/targets/release/orange_client"
 ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
+
+# Installed releases (docs/opt_install_plan_2026-11-14.md, step e): a binary
+# under /opt/orange/releases/<tag>/bin is accepted only when every folder from
+# /opt down to it, and the binary itself, is root-owned and not writable by
+# group or others, and the release holds INSTALLED.json.
+ORANGE_RELEASES_ROOT="/opt/orange/releases"
+ORANGE_RELEASE_DIR=""
+installed_release_dir_for_bin() {
+  local bin="$1" name="$2" rel tag p perms
+  case "$bin" in
+    "$ORANGE_RELEASES_ROOT"/*/bin/"$name") ;;
+    *) return 1 ;;
+  esac
+  rel="${bin%/bin/"$name"}"
+  tag="${rel##*/}"
+  [[ "$tag" =~ ^orange-v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]] || return 1
+  [[ "$rel" == "$ORANGE_RELEASES_ROOT/$tag" && -f "$rel/INSTALLED.json" ]] || return 1
+  for p in /opt /opt/orange "$ORANGE_RELEASES_ROOT" "$rel" "$rel/bin" "$bin" \
+           "$rel/share" "$rel/share/orange" "$rel/share/orange/scripts"; do
+    [[ -e "$p" && ! -L "$p" ]] || return 1
+    [[ "$(stat -c '%u' "$p")" == 0 ]] || return 1
+    perms="$(stat -c '%a' "$p")"
+    (( (8#$perms & 8#022) == 0 )) || return 1
+  done
+  printf '%s\n' "$rel"
+}
 DRY_RUN=0
 ACQUIRE_WORK_ENTRIES_MAX=""
 ENCODER_ENTRY_POOL_SIZE=""
@@ -118,8 +144,15 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "--orange-client requires a value." >&2; exit 2; }
       ORANGE_CLIENT="$(realpath -e "$1")"
+      ORANGE_RELEASE_DIR=""
       case "$ORANGE_CLIENT" in
         "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT")
+          ;;
+        "$ORANGE_RELEASES_ROOT"/*)
+          ORANGE_RELEASE_DIR="$(installed_release_dir_for_bin "$ORANGE_CLIENT" orange_client)" || {
+            echo "Refusing orange_client: not in a root-owned, read-only installed release: $ORANGE_CLIENT" >&2
+            exit 2
+          }
           ;;
         *)
           echo "Refusing to use orange_client outside allowed binaries: $ORANGE_CLIENT" >&2
@@ -389,7 +422,7 @@ if [[ "$1" == "--stream-only" ]]; then
   fi
 
   echo "[sudo-wrapper] running stream-only local check"
-  echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT"
+  echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT release=${ORANGE_RELEASE_DIR:-none (development tree)}"
   echo "[sudo-wrapper] config_folder=$CONFIG_FOLDER"
   echo "[sudo-wrapper] cameras=${CAMERAS[*]}"
   if [[ "${#GPU_IDS[@]}" -gt 0 ]]; then
@@ -462,7 +495,7 @@ OUTPUT_ROOT="${SPEC_FIELDS[1]}"
 EXPERIMENT_ROOT="$(realpath -m "$OUTPUT_ROOT/$EXPERIMENT_ID")"
 
 echo "[sudo-wrapper] running experiment_id=$EXPERIMENT_ID"
-echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT"
+echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT release=${ORANGE_RELEASE_DIR:-none (development tree)}"
 echo "[sudo-wrapper] spec=$SPEC_PATH"
 echo "[sudo-wrapper] output_root=$EXPERIMENT_ROOT"
 export_optional_runtime_env

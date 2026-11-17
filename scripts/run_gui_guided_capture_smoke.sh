@@ -513,8 +513,10 @@ fi
   exit 2
 }
 [[ -x "${CITRUS_BIN}" ]] || { echo "Missing Citrus binary: ${CITRUS_BIN}" >&2; exit 1; }
-[[ -x "${REPO_ROOT}/targets/release/orange" ]] || {
-  echo "Missing Orange GUI binary: ${REPO_ROOT}/targets/release/orange" >&2
+# shellcheck source=orange_bin_dir.sh
+source "${REPO_ROOT}/scripts/orange_bin_dir.sh"
+[[ -x "${ORANGE_BIN_DIR}/orange" ]] || {
+  echo "Missing Orange GUI binary: ${ORANGE_BIN_DIR}/orange" >&2
   exit 1
 }
 [[ -f "${CITRUS_CONFIG}" ]] || { echo "Missing Citrus config: ${CITRUS_CONFIG}" >&2; exit 1; }

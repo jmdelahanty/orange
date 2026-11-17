@@ -40,7 +40,9 @@ SPEC_ARG="${1:?spec name or path required}"
 BASELINE_JSON="${2:-}"
 if [[ -f "$SPEC_ARG" ]]; then SPEC_SRC="$(realpath "$SPEC_ARG")"; else SPEC_SRC="$REPO_ROOT/experiment_specs/${SPEC_ARG%.json}.json"; fi
 [[ -f "$SPEC_SRC" ]] || { echo "spec not found: $SPEC_SRC" >&2; exit 2; }
-CLIENT="${CLIENT_OVERRIDE:-$REPO_ROOT/targets/release/orange_client}"
+# shellcheck source=orange_bin_dir.sh
+source "$REPO_ROOT/scripts/orange_bin_dir.sh"
+CLIENT="${CLIENT_OVERRIDE:-$ORANGE_BIN_DIR/orange_client}"
 [[ -x "$CLIENT" ]] || { echo "build first: cmake --build targets/release --target orange_client external_recorder_ipc_probe" >&2; exit 2; }
 echo "[run] orange_client=$CLIENT"
 STAMP="$(date +%Y%m%d_%H%M%S)"

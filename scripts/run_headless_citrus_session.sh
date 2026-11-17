@@ -20,7 +20,9 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-ORANGE_CLIENT="$REPO_ROOT/targets/release/orange_client"
+# shellcheck source=orange_bin_dir.sh
+source "$REPO_ROOT/scripts/orange_bin_dir.sh"
+ORANGE_CLIENT="$ORANGE_BIN_DIR/orange_client"
 SPEC="fourcam_headless_citrus_validation"
 CITRUS_ROOT="/home/jeremy/citrus"
 CITRUS_BINARY=""

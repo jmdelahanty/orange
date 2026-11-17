@@ -2,7 +2,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ORANGE_BIN="${ORANGE_BIN:-${REPO_ROOT}/targets/release/orange}"
+# shellcheck source=orange_bin_dir.sh
+source "${REPO_ROOT}/scripts/orange_bin_dir.sh"
+ORANGE_BIN="${ORANGE_BIN:-${ORANGE_BIN_DIR}/orange}"
 CONFIG_DIR="${ORANGE_GUI_CONFIG_DIR:-/home/jeremy/orange_data/config/local/100_cam4_ptp}"
 CONFIG_NAME="${ORANGE_GUI_CONFIG_NAME:-$(basename "${CONFIG_DIR}")}"
 EXPECT_SYNC_MODE="${ORANGE_GUI_EXPECT_SYNC_MODE:-ptp_gate}"

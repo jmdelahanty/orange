@@ -1718,6 +1718,10 @@ if(BUILD_TESTING)
         NAME calibration_package_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/calibration_package_tests.py")
 
+    add_test(
+        NAME release_install_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/release_install_tests.py")
+
     add_executable(camera_frame_id_tests
         "tools/camera_frame_id_tests.cpp"
     )

@@ -48,7 +48,9 @@ PROJECTOR_INTENSITY_REPORT_EXPLICIT=0
 CITRUS_ROOT="${CITRUS_ROOT:-/home/jeremy/citrus}"
 CITRUS_BIN="${CITRUS_BIN:-${CITRUS_ROOT}/targets/citrus}"
 CITRUS_PROTOCOL="${CITRUS_ROOT}/protocols/good_cop_bad_cop_demo.json"
-ORANGE_GUI_BINARY="${ORANGE_GUI_BINARY:-${REPO_ROOT}/targets/release/orange}"
+# shellcheck source=orange_bin_dir.sh
+source "${REPO_ROOT}/scripts/orange_bin_dir.sh"
+ORANGE_GUI_BINARY="${ORANGE_GUI_BINARY:-${ORANGE_BIN_DIR}/orange}"
 CITRUS_SOCKET="/tmp/citrus_local_control.sock"
 ORANGE_SOCKET="/tmp/orange_local_control.sock"
 ORANGE_CONFIG_SOURCE="/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam"
