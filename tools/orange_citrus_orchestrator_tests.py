@@ -4167,6 +4167,15 @@ def test_receipt_build_error_settles_and_is_reported() -> None:
             f"the summary records both fields: {receipts}")
 
 
+def test_status_wait_detail_names_citrus_reason() -> None:
+    module = load_module()
+    detail = module.status_wait_detail({"readiness": {"ready_to_start": False, "reasons": [
+        "selected_daily_registration_stale_or_invalid_select_base_only_to_continue"], "start_blocked_reason": None}})
+    require("select_base_only_to_continue" in detail and "not ready" in detail, detail)
+    require(module.status_wait_detail({}) == "no status received", "empty status")
+    require("did not satisfy" in module.status_wait_detail({"readiness": {"reasons": []}}), "no reasons")
+
+
 def test_citrus_declare_subjects_and_executor_rule() -> None:
     module = load_module()
     fixture = next((REPO_ROOT / "tools" / "fixtures" / "declaration_v2" / "orchard_v2").glob("*.orange_declaration.json"))
@@ -5196,6 +5205,7 @@ def main() -> int:
         test_lifecycle_waker,
         test_long_wait_wakes_on_lifecycle_event,
         test_receipt_build_error_settles_and_is_reported,
+        test_status_wait_detail_names_citrus_reason,
         test_citrus_declare_subjects_and_executor_rule,
         test_camera_config_dir_digest_rule,
         test_bound_launcher_preset_pin_and_clip_seconds,

@@ -31,6 +31,7 @@ OUT_DIR=""
 EXECUTE=0
 DECLARATION_DIR=""
 EMPTY_BACKGROUND=""
+DAILY_REGISTRATION_MODE=""
 FISH_FREE_TEST=0
 SCENE_CONFIRMATION_TIMEOUT=""
 
@@ -46,6 +47,12 @@ Options:
   --canvas <name>          Citrus canvas (default shadow); Orange uses
                            <citrus>/targets/rigs/<rig>/<canvas>/<canvas>.json
   --expected-arenas <n>    Arenas Citrus must have selected (default 4; Citrus selects all)
+  --daily-registration-mode preserve|base_only
+                           Citrus runtime geometry before START (default: preserve, the
+                           operator's selection untouched). base_only switches Citrus to
+                           the commissioned base geometry (no daily correction) once
+                           Citrus is ready for it, e.g. when the selected daily
+                           registration has expired; recorded in the run summary.
   --citrus-bin <path>      Citrus executable to launch (default <citrus root>/targets/citrus).
                            The canvas and working directory stay on the citrus root
                            (CITRUS_ROOT, default ~/citrus); e.g. a branch build for a test.
@@ -105,6 +112,11 @@ while [[ $# -gt 0 ]]; do
     --clip-seconds) CLIP_SECONDS="${2:?--clip-seconds needs a value}"; shift 2 ;;
     --out-dir) OUT_DIR="${2:?}"; shift 2 ;;
     --declaration-dir) DECLARATION_DIR="${2:?--declaration-dir needs a folder}"; shift 2 ;;
+    --daily-registration-mode)
+      DAILY_REGISTRATION_MODE="${2:?--daily-registration-mode needs preserve or base_only}"
+      [[ "$DAILY_REGISTRATION_MODE" == preserve || "$DAILY_REGISTRATION_MODE" == base_only ]] ||
+        { echo "--daily-registration-mode must be preserve or base_only" >&2; exit 2; }
+      shift 2 ;;
     --empty-background) EMPTY_BACKGROUND="${2:?--empty-background needs capture_at_setup or none}"; shift 2 ;;
     --fish-free-test) FISH_FREE_TEST=1; shift ;;
     --scene-confirmation-timeout-seconds) SCENE_CONFIRMATION_TIMEOUT="${2:?}"; shift 2 ;;
@@ -163,6 +175,7 @@ else
 fi
 BACKGROUND_ARGS=(--run-dir "$OUT_DIR")
 [[ -n "$EMPTY_BACKGROUND" ]] && BACKGROUND_ARGS+=(--empty-background "$EMPTY_BACKGROUND")
+[[ -n "$DAILY_REGISTRATION_MODE" ]] && BACKGROUND_ARGS+=(--daily-registration-mode "$DAILY_REGISTRATION_MODE")
 (( FISH_FREE_TEST )) && BACKGROUND_ARGS+=(--fish-free-test)
 [[ -n "$SCENE_CONFIRMATION_TIMEOUT" ]] && BACKGROUND_ARGS+=(--scene-confirmation-timeout-seconds "$SCENE_CONFIRMATION_TIMEOUT")
 

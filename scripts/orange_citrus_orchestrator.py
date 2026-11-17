@@ -341,6 +341,22 @@ def citrus_subject_declaration_problems(status: dict[str, Any], expected: dict[s
     return problems
 
 
+def status_wait_detail(status: dict[str, Any]) -> str:
+    """What the last status said while a wait timed out: the peer's own
+    readiness reasons when it gives any (Citrus readiness.reasons /
+    start_blocked_reason), else that no status arrived at all."""
+    if not status:
+        return "no status received"
+    readiness = status.get("readiness") if isinstance(status.get("readiness"), dict) else {}
+    reasons = [str(r) for r in (readiness.get("reasons") or []) if r]
+    blocked = readiness.get("start_blocked_reason")
+    if blocked:
+        reasons.append(f"start_blocked_reason={blocked}")
+    if reasons:
+        return "last status says not ready: " + "; ".join(reasons)
+    return "last status received did not satisfy the condition"
+
+
 def build_citrus_daily_registration_mode_request(
     operation_id: str,
     request_id: str,
@@ -3181,6 +3197,7 @@ class Orchestrator:
             try:
                 _, status = self.status(label, schema_id, socket_path)
                 last_status = status
+                last_error = ""  # an earlier connection error is stale once a status arrives
                 if predicate(status):
                     step.finish(ok=True, status=status)
                     return status
@@ -3242,7 +3259,8 @@ class Orchestrator:
                 final_check = True
             time.sleep(interval)
         step.finish(ok=False, last_error=last_error, last_status=last_status)
-        raise OrchestratorError(f"timed out waiting for {label} {description}: {last_error}")
+        raise OrchestratorError(f"timed out waiting for {label} {description}: "
+                                f"{last_error or status_wait_detail(last_status)}")
 
     def check_orange_recording_coverage(
         self,
