@@ -2,7 +2,8 @@
 """Build and validate non-active calibration package candidates.
 
 The migration command is intentionally one-way and non-activating. It reads a
-version-1 Citrus commissioning release, copies checksum-bound source bytes into
+Citrus commissioning release (schema version 1, or 2 since Citrus 8817ff2,
+which only renames its digest fields), copies checksum-bound source bytes into
 an immutable candidate under a caller-selected output directory, and writes a
 separate inventory/diff report. It never reads or writes an active pointer.
 """
@@ -454,6 +455,23 @@ def add_scale_assets(
                 )
 
 
+# Citrus 8817ff2 (citrus PR #133) release v2 renames *_fingerprint to *_sha256
+# only; this tool reads none of those fields.
+COMMISSIONING_RELEASE_SCHEMA_VERSIONS = (1, 2)
+
+
+def require_accepted_commissioning_release(release: dict[str, Any]) -> None:
+    if (
+        release.get("schema_id")
+        != "citrus.calibration.rig_canvas_commissioning_release"
+        or release.get("schema_version") not in COMMISSIONING_RELEASE_SCHEMA_VERSIONS
+        or release.get("status") != "accepted"
+    ):
+        raise CalibrationPackageError(
+            "source is not an accepted v1 or v2 commissioning release"
+        )
+
+
 def build_commissioned_setup_candidate(
     release_path: Path,
     output_parent: Path,
@@ -464,13 +482,7 @@ def build_commissioned_setup_candidate(
 ) -> tuple[Path, dict[str, Any]]:
     release_path = release_path.expanduser().resolve()
     release = read_json(release_path)
-    if (
-        release.get("schema_id")
-        != "citrus.calibration.rig_canvas_commissioning_release"
-        or release.get("schema_version") != 1
-        or release.get("status") != "accepted"
-    ):
-        raise CalibrationPackageError("source is not an accepted v1 commissioning release")
+    require_accepted_commissioning_release(release)
     release_sha256, selection_pointer = resolve_release_selection(release_path)
     canvas_reference = json_value(
         release.get("canvas_configuration"), "release.canvas_configuration"

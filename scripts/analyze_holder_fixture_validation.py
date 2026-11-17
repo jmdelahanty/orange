@@ -104,7 +104,7 @@ def load_commissioning_reference_seed(
     )
     if (
         pointer.get("schema_id") != "citrus.calibration.active_homography"
-        or pointer.get("schema_version") != 1
+        or pointer.get("schema_version") not in (1, 2)  # v2: Citrus 8817ff2 digest renames
         or pointer.get("status") != "accepted"
         or pointer.get("homography_role") != "commissioning_reference"
         or pointer.get("target_plane") != "projected_surface"

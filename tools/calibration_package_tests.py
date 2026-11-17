@@ -27,6 +27,7 @@ from calibration_package_lib import (  # noqa: E402
 from calibration_package import (  # noqa: E402
     build_canvas_binding_candidate,
     build_capsule_candidate,
+    require_accepted_commissioning_release,
 )
 
 
@@ -392,6 +393,21 @@ def test_v2_schema_documents_are_valid_json() -> None:
         require(value.get("$id") is not None, f"{name} lacks schema ID")
 
 
+def test_commissioning_release_v1_or_v2() -> None:
+    base = {
+        "schema_id": "citrus.calibration.rig_canvas_commissioning_release",
+        "status": "accepted",
+    }
+    for version in (1, 2):  # v2: Citrus 8817ff2 digest renames
+        require_accepted_commissioning_release({**base, "schema_version": version})
+    for bad in ({**base, "schema_version": 3}, {**base, "schema_version": 2, "status": "draft"}):
+        try:
+            require_accepted_commissioning_release(bad)
+        except CalibrationPackageError:
+            continue
+        raise AssertionError(f"release accepted: {bad}")
+
+
 def main() -> int:
     tests = [
         test_canonical_order_and_vector,
@@ -403,6 +419,7 @@ def main() -> int:
         test_package_id_is_identity_only,
         test_binding_and_base_capsule_bind_complete_parent_bytes,
         test_v2_schema_documents_are_valid_json,
+        test_commissioning_release_v1_or_v2,
     ]
     for test in tests:
         try:
