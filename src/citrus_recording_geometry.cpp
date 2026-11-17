@@ -298,8 +298,10 @@ bool validate_active_homography(const JsonFile& file,
                                 std::string* error_out)
 {
     const nlohmann::json& value = file.value;
+    // v2 (Citrus 8817ff2) only renames digest fields Orange does not read here.
+    const int pointer_version = value.value("schema_version", 0);
     if (value.value("schema_id", "") != "citrus.calibration.active_homography" ||
-        value.value("schema_version", 0) != 1 ||
+        (pointer_version != 1 && pointer_version != 2) ||
         value.value("status", "") != "accepted" ||
         value.value("rig_id", "") != rig_id ||
         value.value("canvas_name", "") != canvas_name ||
@@ -1231,7 +1233,9 @@ CitrusGeometryResolveResult resolve_citrus_recording_geometry(
             } else if (
                 commissioning_release.value.value("schema_id", "") !=
                     "citrus.calibration.rig_canvas_commissioning_release" ||
-                commissioning_release.value.value("schema_version", 0) != 1 ||
+                // v2 (Citrus 8817ff2) renames *_fingerprint to *_sha256 only.
+                (commissioning_release.value.value("schema_version", 0) != 1 &&
+                 commissioning_release.value.value("schema_version", 0) != 2) ||
                 commissioning_release.value.value("status", "") != "accepted" ||
                 commissioning_release.value.value("rig_id", "") != rig_id ||
                 commissioning_release.value.value("canvas_name", "") !=

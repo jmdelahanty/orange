@@ -418,7 +418,9 @@ inline Result validate_active_artifact_canvas(
     if (manifest.is_discarded() || !manifest.is_object() ||
         manifest.value("schema_id", "") !=
             "citrus.calibration.rig_canvas_commissioning_release" ||
-        manifest.value("schema_version", 0) != 1 ||
+        // v2 (Citrus 8817ff2) renames *_fingerprint to *_sha256 only.
+        (manifest.value("schema_version", 0) != 1 &&
+         manifest.value("schema_version", 0) != 2) ||
         manifest.value("status", "") != "accepted" ||
         manifest.value("release_id", "") !=
             commissioning_pointer.value("release_id", "") ||

@@ -59,11 +59,12 @@ nlohmann::json passing_report()
 nlohmann::json reference_pointer(const std::string& arena,
                                  const std::string& camera,
                                  const std::filesystem::path& report,
-                                 const std::string& report_sha256)
+                                 const std::string& report_sha256,
+                                 int schema_version = 1)
 {
     return {
         {"schema_id", "citrus.calibration.active_homography"},
-        {"schema_version", 1},
+        {"schema_version", schema_version},
         {"status", "accepted"},
         {"rig_id", "rig0"},
         {"canvas_name", "shadow"},
@@ -118,11 +119,13 @@ int main()
     write_json(
         artifact_root /
             "homography_reference_arena_1_2010093_projected_surface.json",
-        reference_pointer("arena_1", "2010093", report, report_sha));
+        reference_pointer("arena_1", "2010093", report, report_sha_raw));
     write_json(
         artifact_root /
             "homography_reference_arena_2_2010094_projected_surface.json",
-        reference_pointer("arena_2", "2010094", report, report_sha));
+        // A v2 pointer (Citrus 8817ff2) beside a v1 one: v2 always carries
+        // sha256:, a v1 copy may be bare hex; both name the same report.
+        reference_pointer("arena_2", "2010094", report, report_sha, 2));
     std::vector<ProjectorIntensityCameraAuthorityRef> fallback = {
         {"2010093", "arena_1", "rig0", "shadow", config.string(), "", ""},
         {"2010094", "arena_2", "rig0", "shadow", config.string(), "", ""},

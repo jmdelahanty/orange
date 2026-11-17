@@ -142,7 +142,8 @@ void test_cache_only_and_geometry_changes()
     require(result.error == "canvas_projection_transform_changed", "wrong failure");
 }
 
-void test_release_anchored_relaxation()
+// release_version 2: Citrus 8817ff2 (digest renames only); 3 is unknown.
+void test_release_anchored_relaxation(int release_version = 1)
 {
     const fs::path root = fs::temp_directory_path() /
         ("orange_canvas_compatibility_" + std::to_string(::getpid()));
@@ -176,7 +177,7 @@ void test_release_anchored_relaxation()
         const std::string accepted_sha = compatibility::sha256(accepted_bytes);
         write_json(release_path, {
             {"schema_id", "citrus.calibration.rig_canvas_commissioning_release"},
-            {"schema_version", 1},
+            {"schema_version", release_version},
             {"status", "accepted"},
             {"release_id", "release1"},
             {"rig_id", "rig1"},
@@ -213,6 +214,13 @@ void test_release_anchored_relaxation()
             "rig1", "shadow", "arena_1", "2010093", "homography",
             current_canvas_path, accepted_sha, artifact_pointer_path,
             commissioning_pointer_path);
+        if (release_version == 3) {
+            require(!result.compatible, "unknown release version was accepted");
+            require(result.error == "active_commissioning_manifest_identity_invalid",
+                    "wrong unknown-release-version failure");
+            fs::remove_all(root);
+            return;
+        }
         require(result.compatible, "release-anchored cache change should pass");
         require(result.commissioning_release_id == "release1", "release not recorded");
         require(result.basis == "projection_geometry_identity_v2", "wrong basis");
@@ -240,6 +248,8 @@ int main()
     try {
         test_cache_only_and_geometry_changes();
         test_release_anchored_relaxation();
+        test_release_anchored_relaxation(2);
+        test_release_anchored_relaxation(3);
     } catch (const std::exception& error) {
         std::cerr << "[FAIL] " << error.what() << '\n';
         return 1;

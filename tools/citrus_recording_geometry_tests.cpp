@@ -9,6 +9,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <unistd.h>
 
 namespace {
@@ -48,7 +49,9 @@ struct Fixture {
     }
 };
 
-Fixture make_inherited_fixture()
+// homography_version / release_version: Citrus digest_form_v1 v2 documents
+// (Citrus 8817ff2) rename only digest fields; Orange reads v1 or v2.
+Fixture make_inherited_fixture(int homography_version = 1, int release_version = 1)
 {
     Fixture fixture;
     fixture.root = std::filesystem::temp_directory_path() /
@@ -118,10 +121,10 @@ Fixture make_inherited_fixture()
     const std::string homography_candidate_id = "homography_candidate_cam1";
     write_json(homography_candidate, {
         {"schema_id", "citrus.calibration.homography_candidate"},
-        {"schema_version", 1}, {"candidate_id", homography_candidate_id}});
+        {"schema_version", homography_version}, {"candidate_id", homography_candidate_id}});
     write_json(homography_pointer, {
         {"schema_id", "citrus.calibration.active_homography"},
-        {"schema_version", 1}, {"status", "accepted"},
+        {"schema_version", homography_version}, {"status", "accepted"},
         {"rig_id", "rig1"}, {"canvas_name", "authority"},
         {"arena_id", "arena_1"}, {"camera_id", "cam1"},
         {"candidate_id", homography_candidate_id},
@@ -148,7 +151,7 @@ Fixture make_inherited_fixture()
     const auto release_path = artifacts / "commissioning" / release_id / "commissioning.json";
     write_json(release_path, {
         {"schema_id", "citrus.calibration.rig_canvas_commissioning_release"},
-        {"schema_version", 1}, {"status", "accepted"},
+        {"schema_version", release_version}, {"status", "accepted"},
         {"release_id", release_id}, {"rig_id", "rig1"},
         {"canvas_name", "authority"}, {"rig_geometry_revision", 3},
         {"members", nlohmann::json::array({{
@@ -461,6 +464,32 @@ void test_active_member_checksum_failure_is_explicit()
             "invalid optional metadata must remain non-blocking");
 }
 
+void test_citrus_digest_v2_documents_resolve()
+{
+    // Citrus 8817ff2: active_homography and the commissioning release v2.
+    for (const auto& versions : {std::pair<int, int>{2, 2}, std::pair<int, int>{2, 1},
+                                 std::pair<int, int>{1, 2}}) {
+        Fixture fixture = make_inherited_fixture(versions.first, versions.second);
+        orange::recording_geometry::CitrusGeometryResolveRequest request;
+        request.selected_canvas_config_path = fixture.selected_canvas.string();
+        request.camera_serials = {"cam1"};
+        const auto result =
+            orange::recording_geometry::resolve_citrus_recording_geometry(request);
+        require(result.fully_resolved && result.contract.at("status") == "resolved",
+                "v1|v2 Citrus homography pointer and release must resolve");
+    }
+    for (const auto& versions : {std::pair<int, int>{3, 1}, std::pair<int, int>{1, 3}}) {
+        Fixture fixture = make_inherited_fixture(versions.first, versions.second);
+        orange::recording_geometry::CitrusGeometryResolveRequest request;
+        request.selected_canvas_config_path = fixture.selected_canvas.string();
+        request.camera_serials = {"cam1"};
+        const auto result =
+            orange::recording_geometry::resolve_citrus_recording_geometry(request);
+        require(!result.fully_resolved,
+                "an unknown Citrus homography pointer or release version must not resolve");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -475,7 +504,9 @@ int main()
         {"expired_daily_selection_is_explicit_and_nonblocking",
          &test_expired_daily_selection_is_explicit_and_nonblocking},
         {"active_member_checksum_failure_is_explicit",
-         &test_active_member_checksum_failure_is_explicit}};
+         &test_active_member_checksum_failure_is_explicit},
+        {"citrus_digest_v2_documents_resolve",
+         &test_citrus_digest_v2_documents_resolve}};
     for (const Test& test : tests) {
         try {
             test.fn();

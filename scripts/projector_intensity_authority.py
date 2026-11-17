@@ -63,7 +63,8 @@ def resolve_projector_intensity_commissioning(
         expected_canvas = citrus_config.parent.name
         valid = (
             pointer.get("schema_id") == "citrus.calibration.active_homography"
-            and pointer.get("schema_version") == 1
+            # v2 (Citrus 8817ff2): report_sha256 carries sha256: (normalized above).
+            and pointer.get("schema_version") in (1, 2)
             and pointer.get("status") == "accepted"
             and pointer.get("rig_id") == expected_rig
             and pointer.get("canvas_name") == expected_canvas

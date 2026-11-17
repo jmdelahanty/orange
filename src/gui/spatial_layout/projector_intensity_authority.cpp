@@ -93,7 +93,9 @@ bool load_reference_pointer_provenance(
     const bool identity_ok =
         pointer.value("schema_id", std::string()) ==
             "citrus.calibration.active_homography" &&
-        pointer.value("schema_version", 0) == 1 &&
+        // v2 (Citrus 8817ff2): report_sha256 always carries sha256:, normalized below.
+        (pointer.value("schema_version", 0) == 1 ||
+         pointer.value("schema_version", 0) == 2) &&
         pointer.value("status", std::string()) == "accepted" &&
         pointer.value("rig_id", std::string()) == ref.rig_id &&
         pointer.value("canvas_name", std::string()) == ref.canvas_id &&

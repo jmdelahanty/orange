@@ -77,7 +77,7 @@ def load_candidate_set(
         if (
             candidate != row
             or candidate.get("schema_id") != CANDIDATE_SCHEMA
-            or candidate.get("schema_version") != 1
+            or candidate.get("schema_version") not in (1, 2)  # v2: Citrus 8817ff2 renames
             or candidate.get("status") != "ready_for_review"
             or candidate.get("candidate_set_id") != expected_candidate_set_id
             or candidate.get("homography_role") != "operational_candidate"

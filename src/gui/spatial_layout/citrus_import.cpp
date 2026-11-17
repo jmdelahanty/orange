@@ -113,6 +113,21 @@ bool sha256_matches(const std::string& bytes, const std::string& expected)
     return expected == digest || expected == orange::outputs::kSha256TokenPrefix + digest;
 }
 
+// Citrus digest_form_v1 rename (Citrus 8817ff2): active_homography and
+// homography_candidate v2, and a candidate YAML with artifact_schema_version 2,
+// name the configuration digest configuration_sha256; v1 keeps
+// configuration_fingerprint. Each document is keyed on its own version (a v2
+// pointer may sit over a v1 candidate and YAML).
+bool citrus_homography_schema_version_supported(int version)
+{
+    return version == 1 || version == 2;
+}
+
+const char* citrus_configuration_digest_key(int schema_version)
+{
+    return schema_version == 2 ? "configuration_sha256" : "configuration_fingerprint";
+}
+
 std::string expected_homography_configuration_fingerprint(
     const CitrusSpatialTemplateState& template_state,
     const nlohmann::json& camera_calibration_json,
@@ -227,7 +242,8 @@ bool load_homography_matrix_from_citrus_sidecar(const std::filesystem::path& con
             canvas_compatibility_result.commissioning_release_id;
         if (pointer.value("schema_id", "") !=
                 "citrus.calibration.active_homography" ||
-            pointer.value("schema_version", 0) != 1 ||
+            !citrus_homography_schema_version_supported(
+                pointer.value("schema_version", 0)) ||
             pointer.value("status", "") != "accepted" ||
             pointer.value("rig_id", "") != template_state->source_rig_name ||
             pointer.value("canvas_name", "") != template_state->source_canvas_name ||
@@ -235,7 +251,8 @@ bool load_homography_matrix_from_citrus_sidecar(const std::filesystem::path& con
             pointer.value("camera_id", "") != camera_id ||
             target_plane != "projected_surface" ||
             direction != "camera_native_px_to_final_display_canvas_px" ||
-            pointer.value("configuration_fingerprint", "") !=
+            pointer.value(citrus_configuration_digest_key(
+                              pointer.value("schema_version", 0)), "") !=
                 expected_fingerprint ||
             !canvas_compatibility_result.compatible ||
             pointer.value("verification", nlohmann::json::object()).value(
@@ -299,7 +316,8 @@ bool load_homography_matrix_from_citrus_sidecar(const std::filesystem::path& con
         const auto quality = candidate.value("quality", nlohmann::json::object());
         if (candidate.value("schema_id", "") !=
                 "citrus.calibration.homography_candidate" ||
-            candidate.value("schema_version", 0) != 1 ||
+            !citrus_homography_schema_version_supported(
+                candidate.value("schema_version", 0)) ||
             candidate.value("status", "") != "ready_for_review" ||
             candidate.value("mutation_allowed", true) ||
             candidate.value("candidate_id", "") !=
@@ -310,7 +328,8 @@ bool load_homography_matrix_from_citrus_sidecar(const std::filesystem::path& con
             candidate.value("camera_id", "") != camera_id ||
             candidate.value("target_plane", "") != target_plane ||
             candidate.value("homography_direction", "") != direction ||
-            candidate.value("configuration_fingerprint", "") !=
+            candidate.value(citrus_configuration_digest_key(
+                                candidate.value("schema_version", 0)), "") !=
                 expected_fingerprint ||
             quality.value("status", "") != "passed" ||
             !quality.value("full_fit", nlohmann::json::object()).value(
@@ -345,11 +364,19 @@ bool load_homography_matrix_from_citrus_sidecar(const std::filesystem::path& con
         std::string yaml_direction;
         std::string yaml_target_plane;
         std::string yaml_fingerprint;
+        int yaml_artifact_schema_version = 0;
+        fs["artifact_schema_version"] >> yaml_artifact_schema_version;
+        if (fs["artifact_schema_version"].empty()) {
+            yaml_artifact_schema_version = 1;  // pre-versioned YAML: v1 key names
+        }
         fs["candidate_id"] >> yaml_candidate_id;
         fs["candidate_set_id"] >> yaml_candidate_set_id;
         fs["homography_direction"] >> yaml_direction;
         fs["target_plane"] >> yaml_target_plane;
-        fs["configuration_fingerprint"] >> yaml_fingerprint;
+        if (citrus_homography_schema_version_supported(yaml_artifact_schema_version)) {
+            fs[citrus_configuration_digest_key(yaml_artifact_schema_version)] >>
+                yaml_fingerprint;
+        }
         fs["homography_matrix"] >> homography;
         fs.release();
         if (homography.empty() || homography.rows != 3 || homography.cols != 3 ||
