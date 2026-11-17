@@ -900,7 +900,16 @@ if [[ "${ORANGE_GUI_VALIDATE_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
-cd "${REPO_ROOT}"
+if [[ -n "${ORANGE_RELEASE_DIR}" ]]; then
+  # Never run from an installed release: Orange runs as root and writes
+  # imgui.ini (and anything else relative) to its current folder, which would
+  # change the read-only release. Use the invoking user's Orange data root.
+  RUN_CWD="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import orange_paths; print(orange_paths.orange_data_root())' "${REPO_ROOT}/scripts")"
+  mkdir -p "${RUN_CWD}"
+  cd "${RUN_CWD}"
+else
+  cd "${REPO_ROOT}"
+fi
 ENV_ARGS=(
   "DISPLAY=${DISPLAY_ENV}"
   "XAUTHORITY=${XAUTHORITY_ENV}"
