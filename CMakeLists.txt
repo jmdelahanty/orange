@@ -1721,6 +1721,11 @@ if(BUILD_TESTING)
     add_test(
         NAME release_install_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/release_install_tests.py")
+    # The installer refuses while any orange / orange_client / recorder
+    # process runs, and other tests start orange_client
+    # (--validate-experiment-spec) in parallel: run this one alone
+    # (2026-11-18: release .5's ctest saw headless_run_stamp_tests' client).
+    set_tests_properties(release_install_tests PROPERTIES RUN_SERIAL TRUE)
 
     add_executable(camera_frame_id_tests
         "tools/camera_frame_id_tests.cpp"
