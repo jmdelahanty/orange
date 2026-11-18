@@ -588,5 +588,7 @@ Orange/Citrus commissioning) are in git history of this file and in
   over two folders (`<root>_<stamp>` with the supervisor files and logs, and
   the stream folder with MP4s and summaries); those specs now use the
   stream folder as `artifact_root`.
-- pancakebatter matches `/opt/orange/` processes on branch
-  `orange-opt-match` (a8be3d9), waiting for Jeremy's OK.
+- pancakebatter matches `/opt/orange/` processes since a8be3d9 (main,
+  2026-11-18): `reset_camera_nics.py` and the rig health monitor see release
+  runs (`/opt/orange/releases/<tag>/bin/...`) as well as dev-tree runs, and
+  the NIC reset refuses during either.
