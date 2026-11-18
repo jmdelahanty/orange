@@ -142,8 +142,12 @@ if(BUILD_NATIVE_RECORDER)
     target_link_libraries(external_recorder_ipc_probe_native PRIVATE
         "${CUDA_DRIVER_LIBRARY}" "${CUDA_PROBE_RUNTIME}" "${NVIDIA_ENCODE_LIBRARY}"
         ${PROBE_FFMPEG_LIBRARIES} m pthread)
+    # A release build (scripts/build_orange_release.sh) ships libcudart next to
+    # the recorder and passes NATIVE_RECORDER_RUNPATH='$ORIGIN/../lib;...'.
+    set(NATIVE_RECORDER_RUNPATH "${CUDA_13_ROOT}/lib;${FFMPEG_ROOT}/lib" CACHE STRING
+        "Runtime library search path of external_recorder_ipc_probe_native")
     set_target_properties(external_recorder_ipc_probe_native PROPERTIES
-        BUILD_RPATH "${CUDA_13_ROOT}/lib;${FFMPEG_ROOT}/lib")
+        BUILD_RPATH "${NATIVE_RECORDER_RUNPATH}")
 endif()
 
 # Keep inference and IPC producer on the application's CUDA 12.2 runtime.

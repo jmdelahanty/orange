@@ -24,10 +24,14 @@
 #   bin/              orange orange_client evt_stream_smoke evt_camera_ready
 #                     evt_force_reboot physical_target_fit_cli
 #                     external_recorder_ipc_probe_native native_nv12_write.ptx
+#   lib/              libcudart.so.13 (the CUDA 13 runtime the recorder loads
+#                     first, runpath $ORIGIN/../lib; nothing under /home)
 #   share/orange/     fonts/ scripts/ docs/schemas/ contracts/ (exact committed
 #                     bytes, from git archive)
-#   INSTALLED.json    source, build settings, toolchain, ctest summary; the
-#                     installer adds installed_at/installed_by
+#   INSTALLED.json    source, build settings, toolchain, ctest summary,
+#                     runtime_libraries (every library resolved outside the
+#                     release, with its sha256); the installer adds
+#                     installed_at/installed_by
 #   SHA256SUMS        every staged file except INSTALLED.json and itself
 # Creates the local git tag <tag> at HEAD (pushing it needs Jeremy's word).
 # --allow-unpushed (tests only): skip the fork check; INSTALLED.json then says
@@ -47,7 +51,7 @@ while [[ $# -gt 0 ]]; do
     --skip-fetch) FETCH=0; shift ;;
     --keep-build) KEEP_BUILD=1; shift ;;
     --allow-unpushed) ALLOW_UNPUSHED=1; shift ;;
-    -h|--help) sed -n 2,35p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,39p "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -139,10 +143,16 @@ echo "[release] ctest: $CTEST_LINE"
 CUDA_13_ROOT="${CUDA_13_ROOT:-$HOME/.local/opt/cuda-13.1.1-nvenc}"
 NVENC_13_INTERFACE_DIR="${NVENC_13_INTERFACE_DIR:-$HOME/.local/opt/nvenc-interface-13.1.15/Video_Codec_Interface_13.1.15/Interface}"
 for d in "$CUDA_13_ROOT" "$NVENC_13_INTERFACE_DIR"; do [[ -d "$d" ]] || die "missing directory: $d"; done
+# The release ships the CUDA 13 runtime in lib/ and the recorder finds it there
+# first; the toolkit folder (under the developer's home) is a build input only.
+CUDART="$(readlink -f "$CUDA_13_ROOT/lib/libcudart.so.13")"
+[[ -f "$CUDART" ]] || die "missing CUDA 13 runtime: $CUDA_13_ROOT/lib/libcudart.so.13"
+NATIVE_RUNPATH='$ORIGIN/../lib;/opt/orange/lib/ffmpeg-nvidia/lib'
 cmake -S "$ROOT/tools/nvenc_native_probe" -B "$NATIVE_BUILD" \
   -DORANGE_SOURCE_ROOT="$ROOT" -DCUDA_13_ROOT="$CUDA_13_ROOT" \
   -DNVENC_13_INTERFACE_DIR="$NVENC_13_INTERFACE_DIR" \
-  -DBUILD_NATIVE_RECORDER=ON -DBUILD_NATIVE_KERNEL=ON > "$NATIVE_BUILD.configure.log" 2>&1 \
+  -DBUILD_NATIVE_RECORDER=ON -DBUILD_NATIVE_KERNEL=ON \
+  "-DNATIVE_RECORDER_RUNPATH=$NATIVE_RUNPATH" > "$NATIVE_BUILD.configure.log" 2>&1 \
   || { tail -20 "$NATIVE_BUILD.configure.log" >&2; die "native configure failed"; }
 nice -n 10 cmake --build "$NATIVE_BUILD" --target external_recorder_ipc_probe_native native_nv12_write_ptx -j "$JOBS" \
   > "$NATIVE_BUILD.build.log" 2>&1 \
@@ -150,25 +160,27 @@ nice -n 10 cmake --build "$NATIVE_BUILD" --target external_recorder_ipc_probe_na
 echo "[release] built native recorder"
 
 # --- stage ------------------------------------------------------------------------
-mkdir -p "$STAGE.partial/bin" "$STAGE.partial/share/orange"
+mkdir -p "$STAGE.partial/bin" "$STAGE.partial/lib" "$STAGE.partial/share/orange"
 trap 'rm -rf "$STAGE.partial"' EXIT
 for t in "${SHIPPED[@]}"; do
   install -m 0755 "$BUILD/$t" "$STAGE.partial/bin/$t"
 done
 install -m 0755 "$NATIVE_BUILD/external_recorder_ipc_probe_native" "$STAGE.partial/bin/"
 install -m 0644 "$NATIVE_BUILD/native_nv12_write.ptx" "$STAGE.partial/bin/"
+# Copied under its SONAME (a regular file, no symlink) so SHA256SUMS covers it.
+install -m 0755 "$CUDART" "$STAGE.partial/lib/libcudart.so.13"
 git archive --format=tar "$COMMIT" fonts scripts docs/schemas contracts | tar -x -C "$STAGE.partial/share/orange"
 
 # The build stamps whatever HEAD is at build time: a commit or checkout in this
 # tree during the build would make the binaries disagree with $COMMIT.
 [[ "$(git rev-parse HEAD)" == "$COMMIT" && -z "$(git status --porcelain --untracked-files=no)" ]] \
   || die "the checkout changed during the build (HEAD or tracked files); rebuild without touching this tree"
-for b in "$STAGE.partial"/bin/*; do
-  [[ "$b" == *.ptx ]] && continue
-  if ldd "$b" | grep -q "not found"; then
-    ldd "$b" | grep "not found" >&2; die "unresolved libraries in $(basename "$b")"
-  fi
-done
+# Refuses a missing library and any runpath or library under /home, /root or
+# /tmp; records every library resolved outside the release (with its sha256).
+python3 "$ROOT/scripts/check_release_libraries.py" "$STAGE.partial" --record "$BUILD.runtime_libraries.json" \
+  || die "library check failed"
+ldd "$STAGE.partial/bin/external_recorder_ipc_probe_native" | grep -q "libcudart.so.13 => $STAGE.partial/lib/libcudart.so.13" \
+  || die "the native recorder does not load the shipped libcudart.so.13"
 for b in orange orange_client; do
   # Not `strings | grep -q`: grep -q exits early and pipefail then fails the pipe.
   grep -qF "$COMMIT" <(strings "$STAGE.partial/bin/$b") || die "$b does not carry the build stamp $COMMIT"
@@ -177,7 +189,7 @@ done
 DRIVER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || true)"
 NVCC="$(/usr/local/cuda/bin/nvcc --version 2>/dev/null | grep -o 'release [0-9.]*' | head -1 || true)"
 NVCC13="$("$CUDA_13_ROOT/bin/nvcc" --version 2>/dev/null | grep -o 'release [0-9.]*' | head -1 || true)"
-python3 - "$STAGE.partial/INSTALLED.json" <<EOF
+python3 - "$STAGE.partial/INSTALLED.json" "$BUILD.runtime_libraries.json" <<EOF
 import json, sys
 doc = {
     "schema_id": "orange.installed_release",
@@ -200,6 +212,8 @@ doc = {
         "cmake_settings": "${CMAKE_SETTINGS[*]}".split(),
         "native_recorder_settings": {
             "CUDA_13_ROOT": "$CUDA_13_ROOT",
+            "NATIVE_RECORDER_RUNPATH": "$NATIVE_RUNPATH",
+            "shipped_cudart": "lib/libcudart.so.13 (from $CUDART)",
             "NVENC_13_INTERFACE_DIR": "$NVENC_13_INTERFACE_DIR",
         },
         "toolchain": {
@@ -212,6 +226,7 @@ doc = {
         },
         "ctest": "$CTEST_LINE",
     },
+    "runtime_libraries": json.load(open(sys.argv[2])),
     "installed_at": None,
     "installed_by": None,
 }

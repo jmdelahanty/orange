@@ -192,12 +192,51 @@ def test_launcher_bin_dir_helper() -> None:
         assert out == f"{REPO_ROOT}/targets/release|", out
 
 
+def test_release_library_check() -> None:
+    """check_release_libraries.py: refuses a /home runpath, records outside libs."""
+    checker = REPO_ROOT / "scripts" / "check_release_libraries.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        stage = Path(tmp) / "orange-v2026.11.17"
+        (stage / "bin").mkdir(parents=True)
+        (stage / "lib").mkdir()
+        good = stage / "bin" / "true_copy"
+        shutil.copy("/bin/true", good)
+        record = Path(tmp) / "libs.json"
+        run([sys.executable, str(checker), str(stage), "--record", str(record)])
+        doc = json.loads(record.read_text())
+        libc = [e for e in doc["binaries"]["bin/true_copy"] if e["soname"].startswith("libc.so")]
+        assert libc and libc[0]["sha256"].startswith("sha256:") and libc[0]["path"].startswith("/"), doc
+        if shutil.which("patchelf"):
+            bad = stage / "bin" / "home_runpath"
+            shutil.copy("/bin/true", bad)
+            run(["patchelf", "--set-rpath", "/home/someone/.local/lib", str(bad)])
+            result = run([sys.executable, str(checker), str(stage)], check=False)
+            assert result.returncode == 1 and "runpath names /home/someone" in result.stderr, result.stderr
+            bad.unlink()
+        # Missing library: a binary that needs a soname nothing provides.
+        if shutil.which("patchelf"):
+            missing = stage / "bin" / "needs_missing"
+            shutil.copy("/bin/true", missing)
+            run(["patchelf", "--add-needed", "liborange_does_not_exist.so.1", str(missing)])
+            result = run([sys.executable, str(checker), str(stage)], check=False)
+            assert result.returncode == 1 and "not found" in result.stderr, result.stderr
+
+
+def test_release_script_ships_cudart() -> None:
+    text = (REPO_ROOT / "scripts" / "build_orange_release.sh").read_text()
+    assert "NATIVE_RUNPATH='$ORIGIN/../lib;/opt/orange/lib/ffmpeg-nvidia/lib'" in text
+    assert '"$STAGE.partial/lib/libcudart.so.13"' in text
+    assert "check_release_libraries.py" in text
+
+
 def main() -> int:
     tests = [
         test_install_flip_rollback_and_refusals,
         test_unpushed_release_refused_outside_test_mode,
         test_wrappers_refuse_user_owned_release,
         test_launcher_bin_dir_helper,
+        test_release_library_check,
+        test_release_script_ships_cudart,
     ]
     for test in tests:
         try:

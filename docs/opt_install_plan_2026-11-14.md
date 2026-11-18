@@ -301,9 +301,17 @@ Notes found while building P2:
 - A release run's GUI starts in the user's Orange data root, not in the
   release: Orange runs as root and writes `imgui.ini` to its current folder,
   and root ignores the release's read-only bits.
-- The native recorder's RUNPATH names `~/.local/opt/cuda-13.1.1-nvenc/lib` (the
-  CUDA 13 runtime in jeremy's home). Fine for P2/P3; P4 (other operators) needs
-  that runtime under `/opt/orange/lib`.
+- The native recorder used to load the CUDA 13 runtime from
+  `~/.local/opt/cuda-13.1.1-nvenc/lib` (jeremy's home). A release now ships
+  that file as `lib/libcudart.so.13` (covered by SHA256SUMS, carried by a
+  rollback), and the release recorder's runpath is
+  `$ORIGIN/../lib:/opt/orange/lib/ffmpeg-nvidia/lib`. The build refuses any
+  runpath or resolved library under /home, /root or /tmp
+  (`scripts/check_release_libraries.py`), and INSTALLED.json
+  `runtime_libraries` records every library the release uses but does not
+  ship (ffmpeg, OpenCV, TensorRT, CUDA 12, EVT, system) with its sha256. The
+  dev recorder build (`scripts/build_orange_native_recorder.sh`) keeps the
+  home runpath.
 - Specs and camera configs are still read from the dev tree / data root; the
   release does not ship `experiment_specs/`.
 
