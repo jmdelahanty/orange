@@ -274,7 +274,14 @@ GuiAutorunRequests gui_autorun_update(
 
         case GuiAutorunStage::kStreamWarmup:
             if (!camera_control->subscribe) {
-                gui_autorun_fail(state, "stream stopped during warmup");
+                if (config.calibration_autorun_owns_stream) {
+                    std::cout << "[GUI][autorun] stream stopped by the calibration"
+                                 " autorun during warmup; done"
+                              << std::endl;
+                    gui_autorun_enter_stage(state, GuiAutorunStage::kDone);
+                } else {
+                    gui_autorun_fail(state, "stream stopped during warmup");
+                }
             } else if (gui_autorun_stage_elapsed_s(*state) >=
                        static_cast<double>(config.stream_warmup_seconds)) {
                 gui_autorun_enter_stage(
@@ -427,6 +434,7 @@ void force_gui_autorun_calibration_selection(GuiAutorunConfig* config)
     config->enable_crop = false;
     config->enable_pose = false;
     config->start_recording = false;
+    config->calibration_autorun_owns_stream = true;
 }
 
 }  // namespace orange::gui

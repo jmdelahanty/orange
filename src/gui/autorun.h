@@ -49,6 +49,13 @@ struct GuiAutorunConfig {
     // value requests the normal stream toggle after this many milliseconds in
     // kStartStreaming and treats the resulting stopped timing report as success.
     int cancel_stream_startup_after_ms = -1;
+    // Set by force_gui_autorun_calibration_selection: a calibration autorun
+    // (guided capture, arena centering, daily registration) owns the stream
+    // and stops it when its capture is done, which can be inside the warmup
+    // (2026-11-18: a one-frame black_reference finished in under 2 s). That
+    // stop ends this autorun in kDone, not kFailed; the calibration autorun's
+    // own result says whether the capture passed.
+    bool calibration_autorun_owns_stream = false;
     std::string config_dir;
 };
 

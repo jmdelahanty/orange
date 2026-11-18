@@ -673,6 +673,8 @@ void test_calibration_selection_forces_analytics_off()
                 !config.enable_record && !config.start_recording,
             "calibration selection clears every analytics and recording flag");
     require(config.enable_stream, "calibration selection keeps the stream on");
+    require(config.calibration_autorun_owns_stream,
+            "calibration selection hands the stream to the calibration autorun");
     CameraEachSelect forced[2] = {};
     apply_gui_autorun_camera_selection(config, forced, 2);
     for (const CameraEachSelect& camera : forced) {
@@ -682,6 +684,48 @@ void test_calibration_selection_forces_analytics_off()
                 "calibration capture runs no detection, crops, pose or record");
     }
     force_gui_autorun_calibration_selection(nullptr);
+}
+
+// A calibration autorun stops the stream when its capture is done; inside the
+// warmup that ends the GUI autorun in kDone (2026-11-18 guided capture from
+// release .3 exited nonzero with "stream stopped during warmup").
+void test_calibration_stream_stop_during_warmup_is_done()
+{
+    const std::string config_dir = "/tmp/orange_autorun_cfg";
+    GuiAutorunConfig config = make_enabled_config(config_dir);
+    force_gui_autorun_calibration_selection(&config);
+    config.stream_warmup_seconds = 60;  // keep warmup pending
+    GuiAutorunState state;
+    CameraControl camera_control;
+    GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
+    const std::vector<std::string> folders = {config_dir};
+    int select = -1;
+    const auto step = [&]() {
+        return gui_autorun_update(
+            &state, config, folders, &select, &camera_control,
+            &recording_run, false, &startup_status);
+    };
+    require(no_requests(step()), "kDisabled transition emits no request");
+    require(no_requests(step()), "config selection emits no request");
+    require(step().open_cameras, "camera open requested");
+    camera_control.open = true;
+    require(no_requests(step()), "camera open transition emits no request");
+    require(step().toggle_streaming, "stream start requested");
+    camera_control.subscribe = true;
+    startup_status.available = true;
+    startup_status.operation = "stream_start";
+    startup_status.status = "complete";
+    startup_status.expected_first_frame_camera_count = 4;
+    startup_status.observed_first_frame_camera_count = 4;
+    require(no_requests(step()), "stream start transition emits no request");
+    require(state.stage == GuiAutorunStage::kStreamWarmup, "enters kStreamWarmup");
+
+    camera_control.subscribe = false;  // the calibration autorun's stop
+    require(no_requests(step()), "calibration stop emits no request");
+    require(state.stage == GuiAutorunStage::kDone,
+            "calibration stream stop during warmup reaches kDone");
+    require(state.error_message.empty(), "no failure message");
 }
 
 int main()
@@ -697,6 +741,8 @@ int main()
         {"happy_path_progression", test_happy_path_progression},
         {"missing_config_dir_fails", test_missing_config_dir_fails},
         {"open_cameras_timeout_fails", test_open_cameras_timeout_fails},
+        {"calibration_stream_stop_during_warmup_is_done",
+         test_calibration_stream_stop_during_warmup_is_done},
         {"warmup_abort_and_calibration_busy_gate",
          test_warmup_abort_and_calibration_busy_gate},
         {"stream_startup_failure_fails_immediately",
