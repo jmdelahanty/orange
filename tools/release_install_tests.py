@@ -247,7 +247,7 @@ def test_gui_window_layout_is_kept_in_the_data_root_as_the_invoker() -> None:
     text = (REPO_ROOT / "src" / "gx_helper.h").read_text()
     assert "io.IniFilename = nullptr;" in text
     assert 'orange::data_root::resolve(&error)' in text and '/ "imgui.ini"' in text
-    assert "options.owner = std::make_pair(uid, gid);" in text
+    assert "const orange::ScopedFsuid as_invoker;" in text
     assert "gx_imgui_save_ini();" in text and "gx_imgui_save_ini(true);" in text
     for path in (REPO_ROOT / "src").rglob("*"):
         if path.suffix in (".cpp", ".h") and path.name != "gx_helper.h":

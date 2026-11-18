@@ -318,14 +318,10 @@ inline void gx_imgui_save_ini(bool force = false)
     size_t size = 0;
     const char* text = ImGui::SaveIniSettingsToMemory(&size);
     io.WantSaveIniSettings = false;
-    orange::outputs::AtomicWriteOptions options;
-    uid_t uid = 0;
-    gid_t gid = 0;
-    if (orange::sudo_invoker_ids(&uid, &gid)) {
-        options.owner = std::make_pair(uid, gid);
-    }
+    // Written as the sudo invoker (a no-op when not under sudo).
+    const orange::ScopedFsuid as_invoker;
     std::string error;
-    if (!orange::outputs::write_file_atomic(path, std::string(text ? text : "", size), options, &error)) {
+    if (!orange::outputs::write_file_atomic(path, std::string(text ? text : "", size), {}, &error)) {
         fprintf(stderr, "[GUI] window layout not saved to %s: %s\n", path.string().c_str(), error.c_str());
     }
 }
