@@ -95,6 +95,18 @@ def test_install_flip_rollback_and_refusals() -> None:
             assert not (dest.stat().st_mode & 0o222), "release folder is writable"
             run(["bash", str(INSTALLER), "--prefix", str(prefix), "--verify"])
 
+            # A file written into the release after the install (a root-run
+            # Python's __pycache__) fails --verify.
+            scripts_dir = dest / "share" / "orange" / "scripts"
+            scripts_dir.chmod(0o755)
+            (scripts_dir / "__pycache__").mkdir()
+            (scripts_dir / "__pycache__" / "x.cpython-310.pyc").write_bytes(b"pyc")
+            added = run(["bash", str(INSTALLER), "--prefix", str(prefix), "--verify"], check=False)
+            assert added.returncode != 0 and "not in SHA256SUMS: share/orange/scripts/__pycache__/x.cpython-310.pyc" in added.stderr, added.stderr
+            shutil.rmtree(scripts_dir / "__pycache__")
+            scripts_dir.chmod(0o555)
+            run(["bash", str(INSTALLER), "--prefix", str(prefix), "--verify"])
+
             # Same tag again: refused (releases are immutable).
             again = install(prefix, first, check=False)
             assert again.returncode != 0 and "already installed" in again.stderr, again.stderr
@@ -222,6 +234,12 @@ def test_release_library_check() -> None:
             assert result.returncode == 1 and "not found" in result.stderr, result.stderr
 
 
+def test_root_wrappers_never_write_python_bytecode() -> None:
+    for wrapper in WRAPPERS:
+        text = (REPO_ROOT / "scripts" / wrapper).read_text()
+        assert "\nexport PYTHONDONTWRITEBYTECODE=1\n" in text[:600], wrapper
+
+
 def test_release_script_ships_cudart() -> None:
     text = (REPO_ROOT / "scripts" / "build_orange_release.sh").read_text()
     assert "NATIVE_RUNPATH='$ORIGIN/../lib;/opt/orange/lib/ffmpeg-nvidia/lib'" in text
@@ -259,6 +277,7 @@ def main() -> int:
         test_wrappers_refuse_user_owned_release,
         test_launcher_bin_dir_helper,
         test_release_library_check,
+        test_root_wrappers_never_write_python_bytecode,
         test_release_script_ships_cudart,
         test_release_ships_every_helper_and_finds_support_files_from_the_binary,
     ]

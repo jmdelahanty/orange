@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Python started as root here (validators, the recorder verifier, the stall
+# monitor) must not write __pycache__ into a root-owned /opt release (seen on
+# the first release GUI run, 2026-11-18).
+export PYTHONDONTWRITEBYTECODE=1
 
 DEFAULT_ORANGE_ROOT="/home/jeremy/orange"
 EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange"

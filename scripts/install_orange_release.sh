@@ -115,7 +115,13 @@ case "$ACTION" in
     t="${VERIFY_TAG:-$(basename "$(link_target "$PREFIX/current")")}"
     [[ -n "$t" && -d "$RELEASES/$t" ]] || die "no release to verify: ${t:-<none>}"
     ( cd "$RELEASES/$t" && sha256sum --quiet -c SHA256SUMS ) || die "$t: SHA256SUMS mismatch"
-    echo "[install-release] $t: every file matches SHA256SUMS"
+    # Anything SHA256SUMS does not list (a __pycache__, an imgui.ini) was
+    # written into the release after the install.
+    extra="$(cd "$RELEASES/$t" && LC_ALL=C comm -23 \
+      <(find . -mindepth 1 \( -type f -o -type l \) -printf '%P\n' | grep -vxE 'INSTALLED.json|SHA256SUMS' | LC_ALL=C sort) \
+      <(sed -E 's/^[0-9a-f]{64}  //' SHA256SUMS | LC_ALL=C sort))"
+    [[ -z "$extra" ]] || { echo "$extra" | sed 's/^/  not in SHA256SUMS: /' >&2; die "$t: files were added after the install"; }
+    echo "[install-release] $t: every file matches SHA256SUMS and nothing was added"
     exit 0
     ;;
   rollback)
