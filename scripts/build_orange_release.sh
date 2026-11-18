@@ -179,8 +179,11 @@ git archive --format=tar "$COMMIT" fonts scripts docs/schemas contracts | tar -x
 # /tmp; records every library resolved outside the release (with its sha256).
 python3 "$ROOT/scripts/check_release_libraries.py" "$STAGE.partial" --record "$BUILD.runtime_libraries.json" \
   || die "library check failed"
-ldd "$STAGE.partial/bin/external_recorder_ipc_probe_native" | grep -q "libcudart.so.13 => $STAGE.partial/lib/libcudart.so.13" \
-  || die "the native recorder does not load the shipped libcudart.so.13"
+python3 - "$BUILD.runtime_libraries.json" <<'PY' || die "the native recorder does not load the shipped libcudart.so.13"
+import json, sys
+libs = json.load(open(sys.argv[1]))["binaries"]["bin/external_recorder_ipc_probe_native"]
+sys.exit(0 if {"soname": "libcudart.so.13", "release_path": "lib/libcudart.so.13"} in libs else 1)
+PY
 for b in orange orange_client; do
   # Not `strings | grep -q`: grep -q exits early and pipefail then fails the pipe.
   grep -qF "$COMMIT" <(strings "$STAGE.partial/bin/$b") || die "$b does not carry the build stamp $COMMIT"
