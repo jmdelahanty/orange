@@ -25,6 +25,15 @@ WRAPPERS = {
     "orange_gui_validation_wrapper.sh": ("--orange-bin", "orange"),
     "orange_local_benchmark_wrapper.sh": ("--orange-client", "orange_client"),
 }
+# Every sudo wrapper: source -> (installed name, binary option or None, binary).
+ALL_WRAPPERS = {
+    "orange_gui_validation_wrapper.sh": ("gui-validation", "--orange-bin", "orange"),
+    "orange_local_benchmark_wrapper.sh": ("local-benchmark", "--orange-client", "orange_client"),
+    "orange_evt_stream_smoke_wrapper.sh": ("evt-stream-smoke", "--evt-stream-smoke-bin", "evt_stream_smoke"),
+    "orange_gdb_headless_bt_wrapper.sh": ("gdb-headless-bt", None, "orange_client"),
+}
+MODE_BEGIN = "# --- wrapper mode (identical in every Orange sudo wrapper"
+MODE_END = "# --- end wrapper mode ---\n"
 
 
 def run(cmd, cwd=None, check=True):
@@ -198,10 +207,141 @@ def test_launcher_bin_dir_helper() -> None:
         (rel / "bin").mkdir()
         (rel / "INSTALLED.json").write_text("{}")
         shutil.copy(REPO_ROOT / "scripts" / "orange_bin_dir.sh", scripts / "orange_bin_dir.sh")
-        out = run(["bash", "-c", f'source "{scripts}/orange_bin_dir.sh"; echo "$ORANGE_BIN_DIR|$ORANGE_RELEASE_DIR"']).stdout.strip()
-        assert out == f"{rel}/bin|{rel}", out
-        out = run(["bash", "-c", f'source "{REPO_ROOT}/scripts/orange_bin_dir.sh"; echo "$ORANGE_BIN_DIR|$ORANGE_RELEASE_DIR"']).stdout.strip()
-        assert out == f"{REPO_ROOT}/targets/release|", out
+        show = 'echo "$ORANGE_BIN_DIR|$ORANGE_RELEASE_DIR|$ORANGE_WRAPPER_PREFIX"'
+        out = run(["bash", "-c", f'source "{scripts}/orange_bin_dir.sh"; {show}']).stdout.strip()
+        assert out == f"{rel}/bin|{rel}|/usr/local/bin/orange-", out
+        out = run(["bash", "-c", f'source "{REPO_ROOT}/scripts/orange_bin_dir.sh"; {show}']).stdout.strip()
+        assert out == f"{REPO_ROOT}/targets/release||/usr/local/bin/orange-dev-", out
+        # The Python twin (scripts/orange_paths.py orange_wrapper).
+        shutil.copy(REPO_ROOT / "scripts" / "orange_paths.py", scripts / "orange_paths.py")
+        probe = "import sys, orange_paths; print(orange_paths.orange_wrapper('local-benchmark'))"
+        out = run([sys.executable, "-c", probe], cwd=scripts).stdout.strip()
+        assert out == "/usr/local/bin/orange-local-benchmark", out
+        out = run([sys.executable, "-c", probe], cwd=REPO_ROOT / "scripts").stdout.strip()
+        assert out == "/usr/local/bin/orange-dev-local-benchmark", out
+
+
+def test_wrapper_mode_block_is_identical_in_every_wrapper() -> None:
+    blocks = {}
+    for wrapper in ALL_WRAPPERS:
+        text = (REPO_ROOT / "scripts" / wrapper).read_text()
+        assert text.count(MODE_BEGIN) == 1 and text.count(MODE_END) == 1, wrapper
+        start = text.index(MODE_BEGIN)
+        blocks[wrapper] = text[start:text.index(MODE_END, start) + len(MODE_END)]
+    assert len(set(blocks.values())) == 1, f"wrapper mode blocks differ: {sorted(blocks)}"
+
+
+def test_wrapper_modes_by_installed_name() -> None:
+    """orange-<name> runs installed releases only; orange-dev-<name> the dev tree only."""
+    tree_bin = Path("/home/jeremy/orange/targets/release")
+    with tempfile.TemporaryDirectory() as tmp:
+        spec = Path("/tmp") / f"orange_mode_test_{os.getpid()}.json"
+        spec.write_text(json.dumps({"experiment_id": "mode_test", "fixed": {"output_root": str(Path(tmp) / "nope")}}))
+        try:
+            for wrapper, (name, flag, binary) in ALL_WRAPPERS.items():
+                source = REPO_ROOT / "scripts" / wrapper
+                release_cmd = Path(tmp) / f"orange-{name}"
+                dev_cmd = Path(tmp) / f"orange-dev-{name}"
+                release_cmd.symlink_to(source)
+                dev_cmd.symlink_to(source)
+                tail = [str(spec)] if binary == "orange_client" else []
+                if flag is not None:
+                    # The release command refuses the dev tree's binary.
+                    result = run(["bash", str(release_cmd), "--dry-run", flag, str(tree_bin / binary), *tail], check=False)
+                    assert result.returncode != 0, f"{name}: release command accepted the tree binary"
+                    assert "orange-dev-" in result.stderr, result.stderr
+                    # The dev command refuses an /opt release path.
+                    opt = f"/opt/orange/releases/orange-v2099.01.01/bin/{binary}"
+                    result = run(["bash", str(dev_cmd), "--dry-run", flag, opt, *tail], check=False)
+                    assert result.returncode != 0, f"{name}: dev command accepted {opt}"
+                    assert "development wrapper runs only" in result.stderr, result.stderr
+                # The dev command's default is the tree's binary.
+                args = ["--dry-run", *tail] if name != "evt-stream-smoke" else ["--dry-run", "--all"]
+                result = run(["bash", str(dev_cmd), *args], check=False)
+                assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
+                assert str(tree_bin / binary) in result.stdout, result.stdout
+                # The release command's default is /opt/orange/current (when installed).
+                result = run(["bash", str(release_cmd), *args], check=False)
+                if Path("/opt/orange/current/bin").is_dir():
+                    assert result.returncode == 0, f"{name}: {result.stdout}{result.stderr}"
+                    assert "/opt/orange/releases/orange-v" in result.stdout, result.stdout
+                else:
+                    assert result.returncode != 0 and "No installed" in result.stderr, result.stderr
+        finally:
+            spec.unlink(missing_ok=True)
+
+
+def test_wrapper_installers_install_both_modes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        bin_dir = Path(tmp) / "bin"
+        sudoers = Path(tmp) / "sudoers"
+        bin_dir.mkdir()
+        sudoers.mkdir()
+        for wrapper, (name, _, _) in ALL_WRAPPERS.items():
+            installer = REPO_ROOT / "scripts" / f"install_{wrapper}"
+            run(["bash", str(installer), "--no-root", "--bin-dir", str(bin_dir),
+                 "--sudoers-dir", str(sudoers), "--install-sudoers"])
+            for command in (f"orange-{name}", f"orange-dev-{name}"):
+                installed = bin_dir / command
+                assert installed.read_bytes() == (REPO_ROOT / "scripts" / wrapper).read_bytes(), command
+                assert (sudoers / command).read_text() == f"jeremy ALL=(root) NOPASSWD: {installed}\n"
+
+
+def test_operator_entry_points_run_the_current_release() -> None:
+    """orange-headless runs the release's spec runner; a bare spec name falls back to the
+    development tree's experiment_specs, which a release does not ship."""
+    with tempfile.TemporaryDirectory() as tmp:
+        rel = Path(tmp) / "releases" / "orange-v2026.11.17"
+        scripts = rel / "share" / "orange" / "scripts"
+        scripts.mkdir(parents=True)
+        (rel / "bin").mkdir()
+        (rel / "INSTALLED.json").write_text("{}")
+        client = rel / "bin" / "orange_client"
+        client.write_text("#!/bin/sh\n")
+        client.chmod(0o755)
+        for name in ("run_detect_latency_spec.sh", "orange_bin_dir.sh"):
+            shutil.copy(REPO_ROOT / "scripts" / name, scripts / name)
+        current = Path(tmp) / "current"
+        current.symlink_to(rel)
+        specs = Path(tmp) / "specs"
+        specs.mkdir()
+        (specs / "entry_test.json").write_text(json.dumps(
+            {"experiment_id": "entry_test", "fixed": {"output_root": str(Path(tmp) / "out")}}))
+        env = dict(os.environ, ORANGE_CURRENT_RELEASE=str(current), ORANGE_EXPERIMENT_SPECS_DIR=str(specs))
+        result = subprocess.run(["bash", str(REPO_ROOT / "scripts" / "orange_headless_entry.sh"),
+                                 "--dry-run", "entry_test"], capture_output=True, text=True, env=env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"spec={specs}/entry_test.json" in result.stdout, result.stdout
+        assert f"sudo -n /usr/local/bin/orange-local-benchmark --orange-client {client}" in result.stdout, result.stdout
+        env["ORANGE_CURRENT_RELEASE"] = str(Path(tmp) / "missing")
+        result = subprocess.run(["bash", str(REPO_ROOT / "scripts" / "orange_headless_entry.sh"), "x"],
+                                capture_output=True, text=True, env=env)
+        assert result.returncode != 0 and "No installed Orange release" in result.stderr, result.stderr
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir()
+        run(["bash", str(REPO_ROOT / "scripts" / "install_orange_entry_points.sh"), "--no-root", "--bin-dir", str(bin_dir)])
+        for kind in ("gui", "headless"):
+            assert (bin_dir / f"orange-{kind}").read_bytes() == (REPO_ROOT / "scripts" / f"orange_{kind}_entry.sh").read_bytes()
+        gui_entry = (REPO_ROOT / "scripts" / "orange_gui_entry.sh").read_text()
+        assert "share/orange/scripts/run_gui_fourcam_external_ipc_validation.sh" in gui_entry
+
+
+def test_launchers_name_wrappers_by_prefix() -> None:
+    """Launchers pick orange-<name> or orange-dev-<name> by their own tree, never a fixed one."""
+    import re
+    pattern = re.compile(r"/usr/local/bin/orange-(dev-)?(gui-validation|local-benchmark|evt-stream-smoke|gdb-headless-bt)")
+    allowed = set(ALL_WRAPPERS) | {f"install_{w}" for w in ALL_WRAPPERS} | {
+        "orange_wrapper_install_lib.sh", "orange_bin_dir.sh", "orange_paths.py"}
+    offenders = []
+    for path in sorted((REPO_ROOT / "scripts").iterdir()):
+        if path.suffix not in (".sh", ".py") or path.name in allowed:
+            continue
+        for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if pattern.search(line):
+                offenders.append(f"{path.name}:{number}")
+    assert not offenders, f"hard-coded wrapper paths (use ORANGE_WRAPPER_PREFIX / orange_wrapper()): {offenders}"
 
 
 def test_release_library_check() -> None:
@@ -290,6 +430,11 @@ def main() -> int:
         test_unpushed_release_refused_outside_test_mode,
         test_wrappers_refuse_user_owned_release,
         test_launcher_bin_dir_helper,
+        test_wrapper_mode_block_is_identical_in_every_wrapper,
+        test_wrapper_modes_by_installed_name,
+        test_wrapper_installers_install_both_modes,
+        test_launchers_name_wrappers_by_prefix,
+        test_operator_entry_points_run_the_current_release,
         test_release_library_check,
         test_root_wrappers_never_write_python_bytecode,
         test_release_script_ships_cudart,

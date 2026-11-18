@@ -109,8 +109,10 @@ fi
 iface="$(ip route get "$CAMERA_IP" | awk '/ dev / { for (i = 1; i <= NF; ++i) if ($i == "dev") { print $(i + 1); exit } }')"
 [[ -n "$iface" ]] || { echo "Could not resolve interface for $CAMERA_IP." >&2; exit 1; }
 
+# shellcheck source=orange_bin_dir.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orange_bin_dir.sh"
 SMOKE_CMD=(
-  /usr/local/bin/orange-evt-stream-smoke
+  "${ORANGE_WRAPPER_PREFIX}evt-stream-smoke"
   --config-dir "$CONFIG_DIR"
   --serial "$SERIAL"
   --measure-seconds "$MEASURE_SECONDS"

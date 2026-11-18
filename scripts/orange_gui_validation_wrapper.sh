@@ -9,12 +9,13 @@ DEFAULT_ORANGE_ROOT="/home/jeremy/orange"
 EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange"
 DEFAULT_ORANGE_BIN="$DEFAULT_ORANGE_ROOT/targets/release/orange"
 EXPERIMENT_ORANGE_BIN="$EXPERIMENT_ORANGE_ROOT/targets/release/orange"
-ORANGE_BIN="$EXPERIMENT_ORANGE_BIN"
+ORANGE_BIN=""  # --orange-bin; empty: the mode's default (resolve_wrapper_binary)
 EVT_PROFILE="/etc/profile.d/evt.sh"
 DRY_RUN=0
 PTP_STACK_MODE="off"
 ENV_ITEMS=()
 
+# --- wrapper mode (identical in every Orange sudo wrapper; release_install_tests checks) ---
 # Installed releases (docs/opt_install_plan_2026-11-14.md, step e): a binary
 # under /opt/orange/releases/<tag>/bin is accepted only when every folder from
 # /opt down to it, and the binary itself, is root-owned and not writable by
@@ -41,6 +42,55 @@ installed_release_dir_for_bin() {
   printf '%s\n' "$rel"
 }
 
+# Wrapper mode (P3): the installed name decides, so each sudoers rule names
+# exactly one mode.
+#   orange-dev-<name>  development-tree binaries only (jeremy's sudoers rule);
+#   any other name     installed releases only, by default
+#                      /opt/orange/current/bin/<binary> (resolved once, so a
+#                      run stays on its release if current flips).
+ORANGE_CURRENT_BIN_DIR="/opt/orange/current/bin"
+case "$(basename -- "$0")" in
+  orange-dev-*) ORANGE_WRAPPER_MODE="dev" ;;
+  *) ORANGE_WRAPPER_MODE="release" ;;
+esac
+WRAPPER_BINARY=""
+
+# resolve_wrapper_binary <binary name> <requested path, or empty> <dev path>...
+# Called once, after argument parsing. Sets WRAPPER_BINARY (physical path) and
+# ORANGE_RELEASE_DIR, or says why this mode refuses the binary and returns 1.
+resolve_wrapper_binary() {
+  local name="$1" requested="$2" candidate dev_path
+  shift 2
+  if [[ "$ORANGE_WRAPPER_MODE" == "release" ]]; then
+    candidate="${requested:-$ORANGE_CURRENT_BIN_DIR/$name}"
+    if ! candidate="$(realpath -e -- "$candidate" 2>/dev/null)"; then
+      echo "No installed $name at ${requested:-$ORANGE_CURRENT_BIN_DIR/$name}" >&2
+      return 1
+    fi
+    if ! ORANGE_RELEASE_DIR="$(installed_release_dir_for_bin "$candidate" "$name")"; then
+      ORANGE_RELEASE_DIR=""
+      echo "Refusing $name: this wrapper runs only root-owned, read-only installed releases under $ORANGE_RELEASES_ROOT (development builds: the orange-dev-* wrapper): $candidate" >&2
+      return 1
+    fi
+    WRAPPER_BINARY="$candidate"
+    return 0
+  fi
+  candidate="${requested:-$1}"
+  # A dev path that is not built yet stays as given (a dry run still works;
+  # the run itself refuses a missing binary).
+  candidate="$(realpath -e -- "$candidate" 2>/dev/null || printf '%s' "$candidate")"
+  for dev_path in "$@"; do
+    if [[ "$candidate" == "$dev_path" ]]; then
+      ORANGE_RELEASE_DIR=""
+      WRAPPER_BINARY="$candidate"
+      return 0
+    fi
+  done
+  echo "Refusing $name: this development wrapper runs only $(printf '%s\n' "$@" | sort -u | paste -sd ' ') (installed releases: the orange-* wrapper without dev-): $candidate" >&2
+  return 1
+}
+# --- end wrapper mode ---
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -49,14 +99,19 @@ Usage:
 Runs the Orange GUI as root for local display/camera validation.
 
 Options:
-  --orange-bin <path>       Use an allowed Orange GUI binary.
+  --orange-bin <path>       Use an allowed Orange GUI binary (default: the
+                            mode's default below).
   --env KEY=VALUE           Export one whitelisted runtime environment value.
   --ptp-stack-mode <mode>   Host PTP preflight: off, require, or auto.
   --dry-run                 Validate arguments and print the command/env only.
   --help
 
-Allowed Orange binaries:
-  /home/jeremy/orange/targets/release/orange
+Modes (by installed name):
+  orange-gui-validation      installed releases only: a root-owned, read-only
+                             /opt/orange/releases/<tag>/bin/orange; default
+                             /opt/orange/current/bin/orange
+  orange-dev-gui-validation  the development tree only:
+                             /home/jeremy/orange/targets/release/orange
 
 Allowed env values are intentionally limited to the GUI validation launcher
 contract: display/session variables, GUI autorun controls such as
@@ -607,22 +662,7 @@ while [[ $# -gt 0 ]]; do
     --orange-bin)
       shift
       [[ $# -gt 0 ]] || { echo "--orange-bin requires a value." >&2; exit 2; }
-      ORANGE_BIN="$(realpath -e "$1")"
-      ORANGE_RELEASE_DIR=""
-      case "$ORANGE_BIN" in
-        "$DEFAULT_ORANGE_BIN"|"$EXPERIMENT_ORANGE_BIN")
-          ;;
-        "$ORANGE_RELEASES_ROOT"/*)
-          ORANGE_RELEASE_DIR="$(installed_release_dir_for_bin "$ORANGE_BIN" orange)" || {
-            echo "Refusing Orange GUI binary: not in a root-owned, read-only installed release: $ORANGE_BIN" >&2
-            exit 2
-          }
-          ;;
-        *)
-          echo "Refusing to use Orange GUI binary outside allowed paths: $ORANGE_BIN" >&2
-          exit 2
-          ;;
-      esac
+      ORANGE_BIN="$1"
       shift
       ;;
     --env)
@@ -656,6 +696,9 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+resolve_wrapper_binary orange "$ORANGE_BIN" "$DEFAULT_ORANGE_BIN" "$EXPERIMENT_ORANGE_BIN" || exit 2
+ORANGE_BIN="$WRAPPER_BINARY"
 
 if [[ ! -x "$ORANGE_BIN" ]]; then
   echo "Orange GUI binary not found or not executable at $ORANGE_BIN" >&2

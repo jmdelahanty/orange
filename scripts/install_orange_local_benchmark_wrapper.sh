@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=orange_wrapper_install_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orange_wrapper_install_lib.sh"
 
 usage() {
   cat <<'EOF'
 Usage:
-  install_orange_local_benchmark_wrapper.sh
-  install_orange_local_benchmark_wrapper.sh --target /usr/local/bin/orange-local-benchmark
+  install_orange_local_benchmark_wrapper.sh [options]
 
 Installs this repo's narrow sudo benchmark wrapper and verifies the installed
-command exposes the expected headless YOLO perf and spatial-mask flags.
+commands expose the expected headless YOLO perf and spatial-mask flags.
+Installs two commands from scripts/orange_local_benchmark_wrapper.sh; the installed name sets the mode:
+  /usr/local/bin/orange-local-benchmark      installed releases only (default /opt/orange/current)
+  /usr/local/bin/orange-dev-local-benchmark  the development tree only (/home/jeremy/orange)
+
+Options:
+EOF
+  orange_wrapper_install_options_help
+  cat <<'EOF'
+  --help
 EOF
 }
-
-TARGET="/usr/local/bin/orange-local-benchmark"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,42 +28,27 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    --target)
-      shift
-      [[ $# -gt 0 ]] || { echo "--target requires a value." >&2; exit 2; }
-      TARGET="$1"
-      shift
-      ;;
-    *)
-      echo "Unsupported argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
   esac
+  orange_wrapper_install_option "$@" || exit 2
+  if (( ORANGE_WRAPPER_ARGS_CONSUMED > 0 )); then
+    shift "$ORANGE_WRAPPER_ARGS_CONSUMED"
+    continue
+  fi
+  echo "Unsupported argument: $1" >&2
+  usage >&2
+  exit 2
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOURCE="$REPO_ROOT/scripts/orange_local_benchmark_wrapper.sh"
+RELEASE_TARGET="$ORANGE_WRAPPER_BIN_DIR/orange-local-benchmark"
+DEV_TARGET="$ORANGE_WRAPPER_BIN_DIR/orange-dev-local-benchmark"
 
-if [[ ! -f "$SOURCE" ]]; then
-  echo "Wrapper source not found: $SOURCE" >&2
-  exit 1
-fi
+orange_wrapper_install install-wrapper "$SOURCE" local-benchmark
 
-bash -n "$SOURCE"
-
-echo "[install-wrapper] source=$SOURCE"
-echo "[install-wrapper] target=$TARGET"
-
-if [[ "${EUID}" -eq 0 ]]; then
-  install -o root -g root -m 0755 "$SOURCE" "$TARGET"
-else
-  sudo install -o root -g root -m 0755 "$SOURCE" "$TARGET"
-fi
-
-HELP_TEXT="$("$TARGET" --help)"
-for required in \
+for target in "$RELEASE_TARGET" "$DEV_TARGET"; do
+  orange_wrapper_require_help "$target" \
   "--dry-run" \
   "/home/jeremy/orange/targets/release/orange_client" \
   "--run-stamp" \
@@ -69,13 +62,10 @@ for required in \
   "--yolo-spatial-mask-input-context-outset-px" \
   "--yolo-spatial-mask-apply-timeout-ms" \
   "--citrus-recording-canvas-config-path" \
-  "/home/jeremy/orange/experiment_specs"; do
-  if [[ "$HELP_TEXT" != *"$required"* ]]; then
-    echo "Installed wrapper help is missing expected text: $required" >&2
-    exit 1
-  fi
+  "/home/jeremy/orange/experiment_specs"
 done
 
 echo "[install-wrapper] installed and verified"
 echo "[install-wrapper] try:"
-echo "  sudo -n $TARGET --help"
+echo "  sudo -n $RELEASE_TARGET --help"
+echo "  sudo -n $DEV_TARGET --help"

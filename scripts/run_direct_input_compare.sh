@@ -36,6 +36,8 @@ fi
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+# shellcheck source=orange_bin_dir.sh
+source "$SCRIPT_DIR/orange_bin_dir.sh"
 ORANGE_CLIENT="$REPO_ROOT/build/orange_client"
 
 if [[ ! -x "$ORANGE_CLIENT" ]]; then
@@ -88,11 +90,11 @@ echo "[direct-input-compare] orange_client:     $ORANGE_CLIENT"
 
 echo
 echo "[direct-input-compare] running copy path..."
-sudo -n /usr/local/bin/orange-local-benchmark "$COPY_SPEC"
+sudo -n "${ORANGE_WRAPPER_PREFIX}local-benchmark" "$COPY_SPEC"
 
 echo
 echo "[direct-input-compare] running direct-input path..."
-sudo -n /usr/local/bin/orange-local-benchmark "$DIRECT_SPEC"
+sudo -n "${ORANGE_WRAPPER_PREFIX}local-benchmark" "$DIRECT_SPEC"
 
 echo
 echo "[direct-input-compare] done"

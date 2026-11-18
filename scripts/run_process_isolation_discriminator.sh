@@ -44,6 +44,8 @@ EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=orange_bin_dir.sh
+source "$SCRIPT_DIR/orange_bin_dir.sh"
 
 SPEC="$REPO_ROOT/experiment_specs/2010096_headless_real_yolo_preprocessonly_a16_gpu5.json"
 ORANGE_CLIENT="$REPO_ROOT/targets/release/orange_client"
@@ -337,7 +339,7 @@ if ! kill -0 "$STRESS_PID" >/dev/null 2>&1; then
 fi
 
 echo "[process-isolation] starting headless real-yolo analytics"
-sudo -n /usr/local/bin/orange-local-benchmark \
+sudo -n "${ORANGE_WRAPPER_PREFIX}local-benchmark" \
   --orange-client "$ORANGE_CLIENT" \
   --yolo-perf-log \
   --yolo-perf-sample 1 \

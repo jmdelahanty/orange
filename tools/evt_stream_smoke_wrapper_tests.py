@@ -37,6 +37,13 @@ def run(
     )
 
 
+def dev_wrapper(folder: Path) -> Path:
+    """The source wrapper under its development name (mode by installed name, P3)."""
+    link = folder / "orange-dev-evt-stream-smoke"
+    link.symlink_to(SMOKE_WRAPPER)
+    return link
+
+
 def test_shell_scripts_parse() -> None:
     for script in (SMOKE_WRAPPER, LINK_HEALTH, INSTALLER):
         result = run(["bash", "-n", str(script)])
@@ -56,7 +63,7 @@ def test_wrapper_dry_run_builds_expected_command() -> None:
         config_dir = Path(tmp)
         result = run(
             [
-                str(SMOKE_WRAPPER),
+                str(dev_wrapper(config_dir)),
                 "--dry-run",
                 "--config-dir",
                 str(config_dir),
@@ -93,7 +100,7 @@ def test_wrapper_dry_run_inherits_env_defaults() -> None:
             }
         )
         result = run(
-            [str(SMOKE_WRAPPER), "--dry-run", "--measure-seconds", "0"],
+            [str(dev_wrapper(Path(tmp))), "--dry-run", "--measure-seconds", "0"],
             env=env,
         )
 
@@ -154,7 +161,7 @@ def test_link_health_dry_run_builds_smoke_command() -> None:
 
     require(result.returncode == 0, f"link-health dry-run failed: {result.stderr}")
     require("interface=" in result.stdout, "link-health dry-run should resolve interface")
-    require("/usr/local/bin/orange-evt-stream-smoke" in result.stdout, "dry-run should call installed wrapper")
+    require("/usr/local/bin/orange-dev-evt-stream-smoke" in result.stdout, "dry-run from a source tree should call the dev wrapper")
     require("--frame-rate 250" in result.stdout, "dry-run should include frame-rate override")
     require("--gpu-direct 0" in result.stdout, "dry-run should include GPUDirect override")
 

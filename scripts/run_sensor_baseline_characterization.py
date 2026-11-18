@@ -20,6 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # also when loaded by file path
+from orange_paths import orange_wrapper  # noqa: E402
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_ID = "orange.sensor_baseline_characterization.run_manifest"
@@ -27,7 +30,7 @@ DEFAULT_CONFIG_FOLDER = (
     REPO_ROOT / "config" / "validated_split_gop_hevc_100fps_gop25_fourcam_a16"
 )
 DEFAULT_CAMERAS = ("2010093", "2010094", "2010095", "2010096")
-DEFAULT_BENCHMARK = Path("/usr/local/bin/orange-local-benchmark")
+DEFAULT_BENCHMARK = orange_wrapper("local-benchmark")
 DEFAULT_ORANGE_CLIENT = REPO_ROOT / "targets" / "release" / "orange_client"
 DEFAULT_OUTPUT_PARENT = Path(
     "/home/jeremy/orange_data/calibrations/rig_characterization"
@@ -226,6 +229,8 @@ def active_rig_processes() -> list[str]:
         "/targets/release/orange",
         "/targets/release/orange_client",
         "orange-gui-validation",
+        "orange-dev-gui-validation",
+        "/opt/orange/releases/",
         "/citrus/targets/citrus",
     )
     proc = Path("/proc")

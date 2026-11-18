@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # Stamp, run, and analyse one detect-latency experiment spec.
 #
-#   scripts/run_detect_latency_spec.sh [--orange-client <binary>] <spec-name-or-path> [baseline.json]
+#   scripts/run_detect_latency_spec.sh [--orange-client <binary>] [--dry-run] <spec-name-or-path> [baseline.json]
 #
-# --orange-client selects the client binary (default: this worktree's
-# targets/release/orange_client). The sudo wrapper accepts only its allowed
-# paths; a new worktree's binary must be added there first.
+# A spec NAME is looked up in this tree's experiment_specs/. An installed
+# release ships none, so from a release (or any tree without the folder) a
+# name is looked up in the development tree's experiment_specs
+# (ORANGE_EXPERIMENT_SPECS_DIR, default /home/jeremy/orange/experiment_specs,
+# the folder the benchmark wrapper accepts specs from).
+# --dry-run prints the spec, client and wrapper command and runs nothing.
+#
+# --orange-client selects the client binary (default: the binaries that
+# belong with this script, scripts/orange_bin_dir.sh: an installed release's
+# bin/, or this tree's targets/release). The run goes through the matching
+# sudo wrapper: /usr/local/bin/orange-local-benchmark (installed releases
+# only) or orange-dev-local-benchmark (the dev tree only).
 #
 # - runs the spec file itself with --run-stamp: orange_client gives the run a
 #   unique experiment_id, recorder session_id and (absolute)
@@ -18,7 +27,8 @@
 #   into the run folder, which orange_client has sealed), and prints the
 #   summary (with deltas against the optional baseline JSON).
 #
-# Pre-flight the cameras first (a stale control session refuses to open):
+# Pre-flight the cameras first (a stale control session refuses to open;
+# orange-evt-stream-smoke runs the installed release, orange-dev-* the tree):
 #   sudo -n /usr/local/bin/orange-evt-stream-smoke \
 #     --config-dir /home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam --all --frames 5
 # and if a camera answers "GVCP ACK error", reboot it over GVCP:
@@ -26,6 +36,7 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_OVERRIDE=""
+DRY_RUN=0
 while [[ $# -gt 0 && "$1" == --* ]]; do
   case "$1" in
     --orange-client)
@@ -33,12 +44,19 @@ while [[ $# -gt 0 && "$1" == --* ]]; do
       CLIENT_OVERRIDE="$(realpath -e "$2" 2>/dev/null || true)"
       [[ -x "$CLIENT_OVERRIDE" ]] || { echo "orange_client not executable: $2" >&2; exit 2; }
       shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 SPEC_ARG="${1:?spec name or path required}"
 BASELINE_JSON="${2:-}"
-if [[ -f "$SPEC_ARG" ]]; then SPEC_SRC="$(realpath "$SPEC_ARG")"; else SPEC_SRC="$REPO_ROOT/experiment_specs/${SPEC_ARG%.json}.json"; fi
+if [[ -f "$SPEC_ARG" ]]; then
+  SPEC_SRC="$(realpath "$SPEC_ARG")"
+else
+  SPEC_DIR="$REPO_ROOT/experiment_specs"
+  [[ -d "$SPEC_DIR" ]] || SPEC_DIR="${ORANGE_EXPERIMENT_SPECS_DIR:-/home/jeremy/orange/experiment_specs}"
+  SPEC_SRC="$SPEC_DIR/${SPEC_ARG%.json}.json"
+fi
 [[ -f "$SPEC_SRC" ]] || { echo "spec not found: $SPEC_SRC" >&2; exit 2; }
 # shellcheck source=orange_bin_dir.sh
 source "$REPO_ROOT/scripts/orange_bin_dir.sh"
@@ -70,8 +88,13 @@ echo "experiment_id=$EXPERIMENT_ID"
 echo "artifact_root=$ARTIFACT_ROOT"
 LOG="/tmp/${EXPERIMENT_ID}.log"
 echo "[run] spec=$SPEC_SRC run_stamp=$STAMP log=$LOG"
+WRAPPER="${ORANGE_WRAPPER_PREFIX}local-benchmark"
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "[run] dry run: sudo -n $WRAPPER --orange-client $CLIENT --yolo-perf-log --yolo-perf-sample 1 --run-stamp $STAMP $SPEC_SRC"
+  exit 0
+fi
 set +e
-sudo -n /usr/local/bin/orange-local-benchmark --orange-client "$CLIENT" --yolo-perf-log --yolo-perf-sample 1 --run-stamp "$STAMP" "$SPEC_SRC" > "$LOG" 2>&1
+sudo -n "$WRAPPER" --orange-client "$CLIENT" --yolo-perf-log --yolo-perf-sample 1 --run-stamp "$STAMP" "$SPEC_SRC" > "$LOG" 2>&1
 RC=$?
 set -e
 echo "[run] exit=$RC"

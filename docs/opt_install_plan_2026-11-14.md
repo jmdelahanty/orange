@@ -262,6 +262,51 @@ sudo.
    - Tell Citrus, pancake-batter and Palette the new binary path. Process
      matches on `targets/release/orange` in pancakebatter
      (`reset_camera_nics.py`, rig health) need `/opt/orange/` added.
+   - Done in code (2026-11-18, dish branch; needs promotion and the sudo
+     installs below):
+     - **Wrapper modes by installed name.** Each sudo wrapper
+       (`orange_{gui_validation,local_benchmark,evt_stream_smoke,gdb_headless_bt}_wrapper.sh`)
+       carries one identical mode block (`release_install_tests` checks it is
+       byte-identical). Installed as `/usr/local/bin/orange-<name>` it runs
+       installed releases only, by default the physical target of
+       `/opt/orange/current/bin/<binary>`, and refuses a dev-tree binary.
+       Installed as `/usr/local/bin/orange-dev-<name>` it runs the dev tree
+       (`/home/jeremy/orange/targets/release`) only, and refuses an /opt
+       release. The binary is resolved once, after parsing.
+     - **Installers** (`install_orange_*_wrapper.sh`, new
+       `install_orange_gdb_headless_bt_wrapper.sh`, shared
+       `orange_wrapper_install_lib.sh`) install both names from one source,
+       and with `--install-sudoers` one jeremy-only sudoers entry per name.
+       `--target` is replaced by `--bin-dir`/`--sudoers-dir`.
+     - **Launchers** take the wrapper from `scripts/orange_bin_dir.sh`
+       (`ORANGE_WRAPPER_PREFIX`: `orange-` from a release, `orange-dev-` from
+       a tree) or `orange_paths.orange_wrapper()`; no launcher names a fixed
+       wrapper (`release_install_tests` ratchet). A tree's launchers
+       therefore keep running the tree, and a release's the release.
+     - **Operator commands** (4f): `/usr/local/bin/orange-gui` and
+       `orange-headless` (`scripts/orange_{gui,headless}_entry.sh`, installed
+       by `install_orange_entry_points.sh`, no sudoers entry) run the GUI
+       launcher and `run_detect_latency_spec.sh` of `/opt/orange/current`.
+       A bare spec name falls back to `/home/jeremy/orange/experiment_specs`
+       when the launcher's tree has no `experiment_specs/` (a release ships
+       none); `run_detect_latency_spec.sh --dry-run` prints the plan.
+     - Install, once production holds the change (Jeremy, sudo):
+       ```
+       sudo /home/jeremy/orange/scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
+       sudo /home/jeremy/orange/scripts/install_orange_local_benchmark_wrapper.sh --install-sudoers
+       sudo /home/jeremy/orange/scripts/install_orange_evt_stream_smoke_wrapper.sh --install-sudoers
+       sudo /home/jeremy/orange/scripts/install_orange_gdb_headless_bt_wrapper.sh --install-sudoers
+       sudo /home/jeremy/orange/scripts/install_orange_entry_points.sh
+       ```
+       The existing `orange-*` sudoers entries are rewritten unchanged; the
+       `orange-dev-*` ones are new. The scripts inside an installed release
+       only reach the new `orange-*` behaviour once a release built from
+       this change is installed.
+     - Still open for P3: the `r-orange` alias (Jeremy's
+       `~/.bash_aliases`; e.g. `orange-gui --manual-citrus-completion-control
+       --hidden-crop-preview --citrus-display-safe` with the display env),
+       AGENTS.md, and telling Citrus, pancake-batter (process matches) and
+       Palette.
 5. **P4: multi-user** (section 6). Only after P3 has run for a while.
 
 Every install follows the recording rules: HOLD to the other agents, no

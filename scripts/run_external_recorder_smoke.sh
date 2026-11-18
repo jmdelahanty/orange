@@ -48,6 +48,8 @@ EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=orange_bin_dir.sh
+source "$SCRIPT_DIR/orange_bin_dir.sh"
 
 SPEC="$REPO_ROOT/experiment_specs/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke.json"
 ORANGE_CLIENT="$REPO_ROOT/targets/release/orange_client"
@@ -526,7 +528,7 @@ echo "[external-recorder] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
 echo "[external-recorder] ptp_register_read_decimate=$PTP_REGISTER_READ_DECIMATE"
 echo "[external-recorder] analytics_early_owned_frame=$ANALYTICS_EARLY_OWNED_FRAME yolo_ready_event_fastpath=$YOLO_READY_EVENT_FASTPATH yolo_detach_input=$YOLO_DETACH_INPUT"
 echo "[external-recorder] starting supervised headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID shard_gpu_ids=${SHARD_GPU_IDS:-none} encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS record_for_seconds=$DURATION clip_seconds=$CLIP_SECONDS"
-sudo -n /usr/local/bin/orange-local-benchmark \
+sudo -n "${ORANGE_WRAPPER_PREFIX}local-benchmark" \
   --orange-client "$ORANGE_CLIENT" \
   --yolo-perf-log \
   --yolo-perf-sample 1 \

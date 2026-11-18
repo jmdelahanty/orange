@@ -56,8 +56,11 @@ def main() -> int:
         require(bad.returncode != 0, "a malformed stamp is refused")
 
         if WRAPPER_CLIENT.exists():
+            # The development command name: the source tree's client (P3 modes).
+            dev_wrapper = Path(tmp) / "orange-dev-local-benchmark"
+            dev_wrapper.symlink_to(WRAPPER)
             dry = subprocess.run(
-                ["bash", str(WRAPPER), "--dry-run", "--orange-client", str(WRAPPER_CLIENT),
+                ["bash", str(dev_wrapper), "--dry-run", "--orange-client", str(WRAPPER_CLIENT),
                  "--run-stamp", STAMP, str(spec)],
                 capture_output=True, text=True, timeout=20, check=False)
             require(dry.returncode == 0, dry.stdout + dry.stderr)
@@ -65,7 +68,7 @@ def main() -> int:
             require(f"experiment_id={experiment_id}_{STAMP}" in dry.stdout,
                     "the wrapper hands back the stamped experiment folder")
             refused = subprocess.run(
-                ["bash", str(WRAPPER), "--dry-run", "--orange-client", str(WRAPPER_CLIENT),
+                ["bash", str(dev_wrapper), "--dry-run", "--orange-client", str(WRAPPER_CLIENT),
                  "--run-stamp", "now", str(spec)],
                 capture_output=True, text=True, timeout=20, check=False)
             require(refused.returncode != 0, "the wrapper refuses a malformed stamp")

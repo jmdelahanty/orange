@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=orange_wrapper_install_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orange_wrapper_install_lib.sh"
 
 usage() {
   cat <<'EOF'
@@ -7,21 +9,22 @@ Usage:
   install_orange_gui_validation_wrapper.sh [options]
 
 Installs this repo's narrow sudo GUI validation wrapper.
+Installs two commands from scripts/orange_gui_validation_wrapper.sh; the installed name sets the mode:
+  /usr/local/bin/orange-gui-validation      installed releases only (default /opt/orange/current)
+  /usr/local/bin/orange-dev-gui-validation  the development tree only (/home/jeremy/orange)
 
 Options:
-  --target <path>          Install target. Default /usr/local/bin/orange-gui-validation
-  --install-sudoers        Install a narrow NOPASSWD sudoers entry for jeremy.
-  --sudoers-target <path>  Sudoers target. Default /etc/sudoers.d/orange-gui-validation
+EOF
+  orange_wrapper_install_options_help
+  cat <<'EOF'
   --help
 
-After installation, the GUI launcher can use:
-  sudo -n /usr/local/bin/orange-gui-validation ...
+After installation, the GUI launcher (scripts/orange_bin_dir.sh picks the
+command that matches the launcher's own tree) uses:
+  sudo -n /usr/local/bin/orange-gui-validation ...      (from an installed release)
+  sudo -n /usr/local/bin/orange-dev-gui-validation ...  (from the dev tree)
 EOF
 }
-
-TARGET="/usr/local/bin/orange-gui-validation"
-INSTALL_SUDOERS=0
-SUDOERS_TARGET="/etc/sudoers.d/orange-gui-validation"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,64 +32,36 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    --target)
-      shift
-      [[ $# -gt 0 ]] || { echo "--target requires a value." >&2; exit 2; }
-      TARGET="$1"
-      shift
-      ;;
-    --install-sudoers)
-      INSTALL_SUDOERS=1
-      shift
-      ;;
-    --sudoers-target)
-      shift
-      [[ $# -gt 0 ]] || { echo "--sudoers-target requires a value." >&2; exit 2; }
-      SUDOERS_TARGET="$1"
-      shift
-      ;;
-    *)
-      echo "Unsupported argument: $1" >&2
-      usage >&2
-      exit 2
-      ;;
   esac
+  orange_wrapper_install_option "$@" || exit 2
+  if (( ORANGE_WRAPPER_ARGS_CONSUMED > 0 )); then
+    shift "$ORANGE_WRAPPER_ARGS_CONSUMED"
+    continue
+  fi
+  echo "Unsupported argument: $1" >&2
+  usage >&2
+  exit 2
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SOURCE="$REPO_ROOT/scripts/orange_gui_validation_wrapper.sh"
+RELEASE_TARGET="$ORANGE_WRAPPER_BIN_DIR/orange-gui-validation"
+DEV_TARGET="$ORANGE_WRAPPER_BIN_DIR/orange-dev-gui-validation"
 
-if [[ ! -f "$SOURCE" ]]; then
-  echo "Wrapper source not found: $SOURCE" >&2
-  exit 1
-fi
+orange_wrapper_install install-gui-wrapper "$SOURCE" gui-validation
 
-bash -n "$SOURCE"
-
-echo "[install-gui-wrapper] source=$SOURCE"
-echo "[install-gui-wrapper] target=$TARGET"
-
-if [[ "${EUID}" -eq 0 ]]; then
-  install -o root -g root -m 0755 "$SOURCE" "$TARGET"
-else
-  sudo install -o root -g root -m 0755 "$SOURCE" "$TARGET"
-fi
-
-HELP_TEXT="$("$TARGET" --help)"
-for required in \
-  "--orange-bin" \
-  "--env KEY=VALUE" \
-  "--ptp-stack-mode" \
-  "ORANGE_GUI_AUTORUN" \
-  "/home/jeremy/orange/targets/release/orange"; do
-  if [[ "$HELP_TEXT" != *"$required"* ]]; then
-    echo "Installed wrapper help is missing expected text: $required" >&2
-    exit 1
-  fi
+for target in "$RELEASE_TARGET" "$DEV_TARGET"; do
+  orange_wrapper_require_help "$target" \
+    "--orange-bin" \
+    "--env KEY=VALUE" \
+    "--ptp-stack-mode" \
+    "ORANGE_GUI_AUTORUN" \
+    "/home/jeremy/orange/targets/release/orange"
 done
 
-"$TARGET" --dry-run \
+verify_dry_run() {
+  "$1" --dry-run \
   --env ORANGE_GUI_GUIDED_CAPTURE_RECIPE_SEQUENCE=black_reference,uniform_gray,arena_outline,homography_rings,verification_dots \
   --env ORANGE_GUI_FIXTURE_APERTURE_SHAPE=circle \
   --env ORANGE_GUI_GUIDED_CAPTURE_SWEEP_FOREGROUND_GRAYS_U8=80,96,112 \
@@ -111,21 +86,15 @@ done
   --env ORANGE_GUI_HOMOGRAPHY_MINIMUM_DOT_BACKGROUND_CONTRAST_U8=20 \
   --env ORANGE_GUI_ARENA_CENTERING_RESULT_JSON=/tmp/orange_centering_install_check.json \
   >/dev/null
-
-if [[ "$INSTALL_SUDOERS" == "1" ]]; then
-  SUDOERS_LINE="jeremy ALL=(root) NOPASSWD: $TARGET"
-  echo "[install-gui-wrapper] sudoers=$SUDOERS_TARGET"
-  if [[ "${EUID}" -eq 0 ]]; then
-    printf '%s\n' "$SUDOERS_LINE" > "$SUDOERS_TARGET"
-    chmod 0440 "$SUDOERS_TARGET"
-    visudo -cf "$SUDOERS_TARGET"
-  else
-    printf '%s\n' "$SUDOERS_LINE" | sudo tee "$SUDOERS_TARGET" >/dev/null
-    sudo chmod 0440 "$SUDOERS_TARGET"
-    sudo visudo -cf "$SUDOERS_TARGET"
-  fi
+}
+verify_dry_run "$DEV_TARGET"
+if orange_wrapper_release_installed; then
+  verify_dry_run "$RELEASE_TARGET"
+else
+  echo "[install-gui-wrapper] no /opt/orange/current yet: release command dry run skipped"
 fi
 
 echo "[install-gui-wrapper] installed and verified"
 echo "[install-gui-wrapper] try:"
-echo "  sudo -n $TARGET --help"
+echo "  sudo -n $RELEASE_TARGET --help"
+echo "  sudo -n $DEV_TARGET --help"

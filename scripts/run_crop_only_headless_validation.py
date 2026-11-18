@@ -12,7 +12,11 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
 import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # also when loaded by file path
+from orange_paths import orange_wrapper  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,7 +42,7 @@ def main():
     parser.add_argument("--writer-cpu", type=int, action="append", required=True)
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--orange-client", type=Path, default=Path("/tmp/orange-timing-build-20260906/orange_client"))
-    parser.add_argument("--wrapper", type=Path, default=Path("/usr/local/bin/orange-local-benchmark"))
+    parser.add_argument("--wrapper", type=Path, default=orange_wrapper("local-benchmark"))
     parser.add_argument("--write-spec", type=Path, help="Publish a new spec file; never overwrite an existing file")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm-scene", action="store_true", help="Confirm the supplied scene/registration declarations for this run")

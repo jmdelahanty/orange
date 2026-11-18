@@ -17,14 +17,23 @@ It only allows:
 
 It only accepts spec files under:
 
-- `/home/jeremy/orange-jeremy/experiment_specs`
-- `/home/jeremy/orange-gop-split-a16/experiment_specs`
+- `/home/jeremy/orange/experiment_specs`
 - `/tmp`
 
-It only accepts `orange_client` binaries at:
+It is installed twice (since P3 of `docs/opt_install_plan_2026-11-14.md`,
+2026-11-18), and the installed name decides which `orange_client` it runs:
 
-- `/home/jeremy/orange-jeremy/build/orange_client`
-- `/home/jeremy/orange-gop-split-a16/targets/release/orange_client`
+- `/usr/local/bin/orange-local-benchmark`: installed releases only, a
+  root-owned, read-only `/opt/orange/releases/<tag>/bin/orange_client`;
+  default `/opt/orange/current/bin/orange_client`.
+- `/usr/local/bin/orange-dev-local-benchmark`: the development tree only,
+  `/home/jeremy/orange/targets/release/orange_client`.
+
+Launchers pick the command that matches their own tree
+(`scripts/orange_bin_dir.sh` `ORANGE_WRAPPER_PREFIX`; Python:
+`orange_paths.orange_wrapper()`): a release's scripts use `orange-*`, a
+source tree's `orange-dev-*`. The GUI validation, EVT stream-smoke and gdb
+backtrace wrappers follow the same rule.
 
 The wrapper also exposes a narrow allowlist of experiment env passthroughs:
 

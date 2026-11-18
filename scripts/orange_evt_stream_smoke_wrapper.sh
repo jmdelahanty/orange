@@ -2,10 +2,12 @@
 set -euo pipefail
 
 EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange"
-EVT_STREAM_SMOKE_BIN="$EXPERIMENT_ORANGE_ROOT/targets/release/evt_stream_smoke"
+DEV_EVT_STREAM_SMOKE_BIN="$EXPERIMENT_ORANGE_ROOT/targets/release/evt_stream_smoke"
+EVT_STREAM_SMOKE_BIN=""  # --evt-stream-smoke-bin; empty: the mode's default (resolve_wrapper_binary)
 EVT_PROFILE="/etc/profile.d/evt.sh"
 DRY_RUN=0
 
+# --- wrapper mode (identical in every Orange sudo wrapper; release_install_tests checks) ---
 # Installed releases (docs/opt_install_plan_2026-11-14.md, step e): a binary
 # under /opt/orange/releases/<tag>/bin is accepted only when every folder from
 # /opt down to it, and the binary itself, is root-owned and not writable by
@@ -32,6 +34,55 @@ installed_release_dir_for_bin() {
   printf '%s\n' "$rel"
 }
 
+# Wrapper mode (P3): the installed name decides, so each sudoers rule names
+# exactly one mode.
+#   orange-dev-<name>  development-tree binaries only (jeremy's sudoers rule);
+#   any other name     installed releases only, by default
+#                      /opt/orange/current/bin/<binary> (resolved once, so a
+#                      run stays on its release if current flips).
+ORANGE_CURRENT_BIN_DIR="/opt/orange/current/bin"
+case "$(basename -- "$0")" in
+  orange-dev-*) ORANGE_WRAPPER_MODE="dev" ;;
+  *) ORANGE_WRAPPER_MODE="release" ;;
+esac
+WRAPPER_BINARY=""
+
+# resolve_wrapper_binary <binary name> <requested path, or empty> <dev path>...
+# Called once, after argument parsing. Sets WRAPPER_BINARY (physical path) and
+# ORANGE_RELEASE_DIR, or says why this mode refuses the binary and returns 1.
+resolve_wrapper_binary() {
+  local name="$1" requested="$2" candidate dev_path
+  shift 2
+  if [[ "$ORANGE_WRAPPER_MODE" == "release" ]]; then
+    candidate="${requested:-$ORANGE_CURRENT_BIN_DIR/$name}"
+    if ! candidate="$(realpath -e -- "$candidate" 2>/dev/null)"; then
+      echo "No installed $name at ${requested:-$ORANGE_CURRENT_BIN_DIR/$name}" >&2
+      return 1
+    fi
+    if ! ORANGE_RELEASE_DIR="$(installed_release_dir_for_bin "$candidate" "$name")"; then
+      ORANGE_RELEASE_DIR=""
+      echo "Refusing $name: this wrapper runs only root-owned, read-only installed releases under $ORANGE_RELEASES_ROOT (development builds: the orange-dev-* wrapper): $candidate" >&2
+      return 1
+    fi
+    WRAPPER_BINARY="$candidate"
+    return 0
+  fi
+  candidate="${requested:-$1}"
+  # A dev path that is not built yet stays as given (a dry run still works;
+  # the run itself refuses a missing binary).
+  candidate="$(realpath -e -- "$candidate" 2>/dev/null || printf '%s' "$candidate")"
+  for dev_path in "$@"; do
+    if [[ "$candidate" == "$dev_path" ]]; then
+      ORANGE_RELEASE_DIR=""
+      WRAPPER_BINARY="$candidate"
+      return 0
+    fi
+  done
+  echo "Refusing $name: this development wrapper runs only $(printf '%s\n' "$@" | sort -u | paste -sd ' ') (installed releases: the orange-* wrapper without dev-): $candidate" >&2
+  return 1
+}
+# --- end wrapper mode ---
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -41,13 +92,15 @@ Runs the Orange EVT stream-smoke diagnostic with the narrow root privileges
 needed by the Emergent/NIC stack. When installed with the sudoers rule, this
 command can be invoked as a normal user; it re-execs itself through sudo -n.
 
-Allowed diagnostic binary:
-  /home/jeremy/orange/targets/release/evt_stream_smoke
+Modes (by installed name):
+  orange-evt-stream-smoke      installed releases only: a root-owned, read-only
+                               /opt/orange/releases/<tag>/bin/evt_stream_smoke;
+                               default /opt/orange/current/bin/evt_stream_smoke
+  orange-dev-evt-stream-smoke  the development tree only:
+                               /home/jeremy/orange/targets/release/evt_stream_smoke
 
 Options:
-  --evt-stream-smoke-bin <path>  evt_stream_smoke from an installed release
-                           (/opt/orange/releases/<tag>/bin, root-owned, read-only)
-                           instead of the development tree's.
+  --evt-stream-smoke-bin <path>  evt_stream_smoke to run (default: the mode's).
   --config-dir <dir>       Camera config directory. Defaults to ORANGE_GUI_CONFIG_DIR before sudo.
   --serial <serial>        Probe one camera serial. May be repeated.
   --serials <csv>          Probe comma-separated serials. Defaults to ORANGE_GUI_EXPECT_CAMERAS before sudo.
@@ -174,15 +227,7 @@ while [[ $# -gt 0 ]]; do
     --evt-stream-smoke-bin)
       shift
       [[ $# -gt 0 ]] || { echo "--evt-stream-smoke-bin requires a value." >&2; exit 2; }
-      candidate_bin="$(realpath -e "$1")" || { echo "Not found: $1" >&2; exit 2; }
-      if [[ "$candidate_bin" != "$EXPERIMENT_ORANGE_ROOT/targets/release/evt_stream_smoke" ]]; then
-        ORANGE_RELEASE_DIR="$(installed_release_dir_for_bin "$candidate_bin" evt_stream_smoke)" || {
-          echo "Refusing evt_stream_smoke: not in a root-owned, read-only installed release: $candidate_bin" >&2
-          exit 2
-        }
-      fi
-      EVT_STREAM_SMOKE_BIN="$candidate_bin"
-      CMD[0]="$EVT_STREAM_SMOKE_BIN"
+      EVT_STREAM_SMOKE_BIN="$1"
       shift
       ;;
     --config-dir)
@@ -275,6 +320,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+resolve_wrapper_binary evt_stream_smoke "$EVT_STREAM_SMOKE_BIN" "$DEV_EVT_STREAM_SMOKE_BIN" || exit 2
+EVT_STREAM_SMOKE_BIN="$WRAPPER_BINARY"
+CMD[0]="$EVT_STREAM_SMOKE_BIN"
+
 if [[ "$DRY_RUN" == "1" ]]; then
   printf '[evt-stream-smoke-wrapper] command:'
   printf ' %q' "${CMD[@]}"
@@ -284,7 +333,7 @@ fi
 
 if [[ ! -x "$EVT_STREAM_SMOKE_BIN" ]]; then
   echo "evt_stream_smoke binary not found or not executable: $EVT_STREAM_SMOKE_BIN" >&2
-  echo "Build it with: cmake --build $EXPERIMENT_ORANGE_ROOT/targets/release --target evt_stream_smoke -j 8" >&2
+  [[ -n "$ORANGE_RELEASE_DIR" ]] || echo "Build it with: cmake --build $EXPERIMENT_ORANGE_ROOT/targets/release --target evt_stream_smoke -j 8" >&2
   exit 1
 fi
 

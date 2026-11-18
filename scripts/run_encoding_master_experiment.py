@@ -14,12 +14,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # also when loaded by file path
+from orange_paths import orange_wrapper  # noqa: E402
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = (
     REPO_ROOT / "experiment_specs" / "encoding_master_singlecam_60fps_stage0_manifest.json"
 )
-DEFAULT_BENCHMARK = "/usr/local/bin/orange-local-benchmark"
+DEFAULT_BENCHMARK = str(orange_wrapper("local-benchmark"))
 DEFAULT_ORANGE_CLIENT = str(REPO_ROOT / "targets" / "release" / "orange_client")
 
 

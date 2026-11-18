@@ -340,8 +340,8 @@ def test_forwards_recording_observation_binding_environment() -> None:
             "launcher output should show privilege-wrapper auto mode by default",
         )
         require(
-            "ORANGE_GUI_PRIVILEGE_WRAPPER=/usr/local/bin/orange-gui-validation" in result.stdout,
-            "launcher output should show the default GUI privilege wrapper path",
+            "ORANGE_GUI_PRIVILEGE_WRAPPER=/usr/local/bin/orange-dev-gui-validation" in result.stdout,
+            "launcher output should show the default GUI privilege wrapper path (a source tree: the dev wrapper)",
         )
         require(
             "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<not set>" in result.stdout,

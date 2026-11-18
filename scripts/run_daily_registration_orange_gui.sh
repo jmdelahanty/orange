@@ -7,7 +7,7 @@ ORANGE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=orange_bin_dir.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/orange_bin_dir.sh"
 ORANGE_BIN="${ORANGE_BIN:-${ORANGE_BIN_DIR}/orange}"
-ORANGE_GUI_WRAPPER="${ORANGE_GUI_WRAPPER:-/usr/local/bin/orange-gui-validation}"
+ORANGE_GUI_WRAPPER="${ORANGE_GUI_WRAPPER:-${ORANGE_WRAPPER_PREFIX}gui-validation}"
 ORANGE_CONFIG_DIR="${ORANGE_CONFIG_DIR:-/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam}"
 CITRUS_CONTROL_SOCKET="/tmp/citrus_local_control.sock"
 

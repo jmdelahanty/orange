@@ -46,6 +46,8 @@ EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=orange_bin_dir.sh
+source "$SCRIPT_DIR/orange_bin_dir.sh"
 
 SPEC="$REPO_ROOT/experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp.json"
 ORANGE_CLIENT="$REPO_ROOT/targets/release/orange_client"
@@ -529,7 +531,7 @@ for i in "${!SOCKETS[@]}"; do
 done
 
 echo "[external-recorder-ptp] starting headless external_ipc PTP benchmark"
-sudo -n /usr/local/bin/orange-local-benchmark \
+sudo -n "${ORANGE_WRAPPER_PREFIX}local-benchmark" \
   --orange-client "$ORANGE_CLIENT" \
   --yolo-perf-log \
   --yolo-perf-sample 1 \

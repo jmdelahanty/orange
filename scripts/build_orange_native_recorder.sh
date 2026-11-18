@@ -39,7 +39,7 @@ while [ "$pid" -gt 1 ]; do
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
     [ -n "$pid" ] || break
 done
-for match in $(pgrep -f "targets/release/orange_client|targets/release/orange( |$)|external_recorder_ipc_probe" 2>/dev/null); do
+for match in $(pgrep -f "bin/orange_client|bin/orange( |$)|targets/release/orange_client|targets/release/orange( |$)|external_recorder_ipc_probe" 2>/dev/null); do
     case " $ancestors " in *" $match "*) continue ;; esac
     echo "an Orange recording process is running (pid $match); build later (builds on the rig cost camera frames)" >&2
     exit 3

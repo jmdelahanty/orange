@@ -37,3 +37,18 @@ def orange_data_root() -> Path:
         return Path(pwd.getpwuid(os.getuid()).pw_dir) / "orange_data"
     except KeyError as error:
         raise DataRootError(f"cannot resolve the home of uid {os.getuid()}") from error
+
+
+def orange_wrapper(name: str) -> Path:
+    """The sudo wrapper that runs the binaries belonging with these scripts.
+
+    Same rule as scripts/orange_bin_dir.sh (docs/opt_install_plan_2026-11-14.md,
+    P3): scripts inside an installed release (<release>/share/orange/scripts,
+    the release holding INSTALLED.json and bin/) use /usr/local/bin/orange-<name>,
+    which runs installed releases only; a source tree's scripts use
+    /usr/local/bin/orange-dev-<name>, which runs the development tree only.
+    """
+    release = Path(__file__).resolve().parent.parents[2]
+    if (release / "INSTALLED.json").is_file() and (release / "bin").is_dir():
+        return Path(f"/usr/local/bin/orange-{name}")
+    return Path(f"/usr/local/bin/orange-dev-{name}")
