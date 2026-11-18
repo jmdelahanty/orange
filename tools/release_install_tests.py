@@ -229,6 +229,29 @@ def test_release_script_ships_cudart() -> None:
     assert "check_release_libraries.py" in text
 
 
+def test_release_ships_every_helper_and_finds_support_files_from_the_binary() -> None:
+    """A release run found no scripts/ptp_stack.sh (two lookups bypassed
+    src/runtime_paths.h) and had no nic_thermal_monitor (a helper orange starts
+    from its own folder). Every add_dependencies(orange|orange_client <helper>)
+    must ship, and no source builds a support path from the current folder."""
+    import re
+    cmake = (REPO_ROOT / "CMakeLists.txt").read_text()
+    helpers = set()
+    for m in re.finditer(r"add_dependencies\((orange|orange_client)\s+([^)]+)\)", cmake):
+        helpers.update(m.group(2).split())
+    script = (REPO_ROOT / "scripts" / "build_orange_release.sh").read_text()
+    shipped = re.search(r"^SHIPPED=\(([^)]*)\)", script, re.M).group(1).split()
+    assert helpers and helpers <= set(shipped), f"helpers not shipped: {sorted(helpers - set(shipped))}"
+    offenders = []
+    for path in sorted((REPO_ROOT / "src").rglob("*")):
+        if path.suffix not in (".cpp", ".h") or path.name == "runtime_paths.h":
+            continue
+        text = path.read_text(errors="replace")
+        if re.search(r'current_path\(\)\s*/\s*"(scripts|fonts|contracts|docs)"', text):
+            offenders.append(path.relative_to(REPO_ROOT).as_posix())
+    assert not offenders, f"support paths from the current folder (use runtime_paths): {offenders}"
+
+
 def main() -> int:
     tests = [
         test_install_flip_rollback_and_refusals,
@@ -237,6 +260,7 @@ def main() -> int:
         test_launcher_bin_dir_helper,
         test_release_library_check,
         test_release_script_ships_cudart,
+        test_release_ships_every_helper_and_finds_support_files_from_the_binary,
     ]
     for test in tests:
         try:

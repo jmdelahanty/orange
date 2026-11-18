@@ -21,7 +21,7 @@
 #   - runs ctest; any failure refuses the release;
 #   - builds the CUDA 13 native recorder (tools/nvenc_native_probe).
 # Stages targets/releases/<tag>/:
-#   bin/              orange orange_client evt_stream_smoke evt_camera_ready
+#   bin/              orange orange_client nic_thermal_monitor evt_stream_smoke evt_camera_ready
 #                     evt_force_reboot physical_target_fit_cli
 #                     external_recorder_ipc_probe_native native_nv12_write.ptx
 #   lib/              libcudart.so.13 (the CUDA 13 runtime the recorder loads
@@ -125,7 +125,8 @@ CMAKE_SETTINGS=(
   -DORANGE_ENABLE_TSAN=OFF
   -DORANGE_ENABLE_YOLO_PROFILE=OFF
 )
-SHIPPED=(orange orange_client evt_stream_smoke evt_camera_ready evt_force_reboot physical_target_fit_cli)
+# nic_thermal_monitor: orange and orange_client start it from their own folder.
+SHIPPED=(orange orange_client nic_thermal_monitor evt_stream_smoke evt_camera_ready evt_force_reboot physical_target_fit_cli)
 cmake -S "$ROOT" -B "$BUILD" "${CMAKE_SETTINGS[@]}" > "$BUILD.configure.log" 2>&1 \
   || { tail -20 "$BUILD.configure.log" >&2; die "configure failed ($BUILD.configure.log)"; }
 nice -n 10 cmake --build "$BUILD" -j "$JOBS" > "$BUILD.build_all.log" 2>&1 \

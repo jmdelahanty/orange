@@ -521,26 +521,9 @@ std::string shell_quote_single(const std::string& input)
 
 std::filesystem::path resolve_ptp_stack_script_path()
 {
-    std::vector<std::filesystem::path> candidates;
-    candidates.emplace_back(std::filesystem::current_path() / "scripts" / "ptp_stack.sh");
-
-    std::array<char, 4096> exe_path_buffer{};
-    const ssize_t exe_path_len =
-        readlink("/proc/self/exe", exe_path_buffer.data(), exe_path_buffer.size() - 1);
-    if (exe_path_len > 0) {
-        const std::filesystem::path exe_path(
-            std::string(exe_path_buffer.data(), static_cast<size_t>(exe_path_len)));
-        candidates.emplace_back(
-            exe_path.parent_path().parent_path().parent_path() / "scripts" / "ptp_stack.sh");
-    }
-
-    for (const auto& candidate : candidates) {
-        std::error_code ec;
-        if (std::filesystem::exists(candidate, ec) && !ec) {
-            return std::filesystem::absolute(candidate, ec);
-        }
-    }
-    return {};
+    // The tree or /opt release this binary belongs to, else the current folder
+    // (src/runtime_paths.h); an installed release keeps it in share/orange.
+    return orange::runtime_paths::find_support_file("scripts/ptp_stack.sh");
 }
 
 HeadlessHostPtpCommandResult run_ptp_stack_command(const std::string& script_path,
