@@ -19,6 +19,9 @@
 #include "imgui_glfw_size_cache.h"
 #include "types.h"
 #include "runtime_paths.h"
+#include "fsuid_guard.h"
+#include "orange_data_root.h"
+#include "outputs/common/atomic_file.h"
 
 
 static void gx_glfw_error_callback(int error, const char *description)
@@ -278,6 +281,55 @@ GLFWwindow *gx_glfw_init_render_target(u32 /*marjor_version*/, u32 /*minor_versi
     return window;
 }
 
+// Window layout (imgui.ini). ImGui would write it itself, to the current
+// folder and as root under sudo; Orange keeps it in the person's data root
+// (<data root>/imgui.ini) and writes it as theirs.
+inline std::filesystem::path& gx_imgui_ini_path()
+{
+    static std::filesystem::path path;
+    return path;
+}
+
+inline void gx_imgui_load_ini()
+{
+    ImGuiIO &io = ImGui::GetIO();
+    io.IniFilename = nullptr;  // never ImGui's own cwd-relative save
+    std::string error;
+    const std::filesystem::path root = orange::data_root::resolve(&error);
+    if (root.empty()) {
+        fprintf(stderr, "[GUI] window layout not kept: %s\n", error.c_str());
+        return;
+    }
+    gx_imgui_ini_path() = root / "imgui.ini";
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(gx_imgui_ini_path(), ec)) {
+        ImGui::LoadIniSettingsFromDisk(gx_imgui_ini_path().string().c_str());
+    }
+}
+
+// Saves when ImGui asks (it batches changes, about every 5 s) or when forced.
+inline void gx_imgui_save_ini(bool force = false)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    const std::filesystem::path& path = gx_imgui_ini_path();
+    if (path.empty() || (!force && !io.WantSaveIniSettings)) {
+        return;
+    }
+    size_t size = 0;
+    const char* text = ImGui::SaveIniSettingsToMemory(&size);
+    io.WantSaveIniSettings = false;
+    orange::outputs::AtomicWriteOptions options;
+    uid_t uid = 0;
+    gid_t gid = 0;
+    if (orange::sudo_invoker_ids(&uid, &gid)) {
+        options.owner = std::make_pair(uid, gid);
+    }
+    std::string error;
+    if (!orange::outputs::write_file_atomic(path, std::string(text ? text : "", size), options, &error)) {
+        fprintf(stderr, "[GUI] window layout not saved to %s: %s\n", path.string().c_str(), error.c_str());
+    }
+}
+
 void gx_imgui_init(gx_context *context)
 {
     // ************* Dear Imgui ********************//
@@ -286,7 +338,7 @@ void gx_imgui_init(gx_context *context)
     ImPlot::CreateContext();
 
     ImGuiIO &io = ImGui::GetIO();
-    (void)io;
+    gx_imgui_load_ini();
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;       // Enable Keyboard Controls
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
@@ -348,6 +400,7 @@ void render_a_frame(gx_context *window)
     glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    gx_imgui_save_ini();
 
     // Update and Render additional Platform Windows
     // (Platform functions may change the current OpenGL context, so we save/restore it to make it easier to paste this code elsewhere.
@@ -365,6 +418,7 @@ void render_a_frame(gx_context *window)
 
 void gx_cleanup(gx_context *window)
 {
+    gx_imgui_save_ini(true);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

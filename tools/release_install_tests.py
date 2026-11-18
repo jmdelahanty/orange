@@ -240,6 +240,20 @@ def test_root_wrappers_never_write_python_bytecode() -> None:
         assert "\nexport PYTHONDONTWRITEBYTECODE=1\n" in text[:600], wrapper
 
 
+def test_gui_window_layout_is_kept_in_the_data_root_as_the_invoker() -> None:
+    """ImGui wrote imgui.ini to the current folder as root (a release run left a
+    root-owned ~/orange_data/imgui.ini). Orange turns ImGui's own save off,
+    loads and saves <data root>/imgui.ini, and writes it as the sudo invoker."""
+    text = (REPO_ROOT / "src" / "gx_helper.h").read_text()
+    assert "io.IniFilename = nullptr;" in text
+    assert 'orange::data_root::resolve(&error)' in text and '/ "imgui.ini"' in text
+    assert "options.owner = std::make_pair(uid, gid);" in text
+    assert "gx_imgui_save_ini();" in text and "gx_imgui_save_ini(true);" in text
+    for path in (REPO_ROOT / "src").rglob("*"):
+        if path.suffix in (".cpp", ".h") and path.name != "gx_helper.h":
+            assert "IniFilename" not in path.read_text(errors="replace"), path
+
+
 def test_release_script_ships_cudart() -> None:
     text = (REPO_ROOT / "scripts" / "build_orange_release.sh").read_text()
     assert "NATIVE_RUNPATH='$ORIGIN/../lib;/opt/orange/lib/ffmpeg-nvidia/lib'" in text
@@ -279,6 +293,7 @@ def main() -> int:
         test_release_library_check,
         test_root_wrappers_never_write_python_bytecode,
         test_release_script_ships_cudart,
+        test_gui_window_layout_is_kept_in_the_data_root_as_the_invoker,
         test_release_ships_every_helper_and_finds_support_files_from_the_binary,
     ]
     for test in tests:
