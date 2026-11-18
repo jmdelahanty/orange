@@ -72,6 +72,26 @@ void test_completed_camera_open_report(const std::filesystem::path& output_dir)
     require(persisted == snapshot, "persisted camera-open report must equal snapshot");
 }
 
+void test_stream_report_uses_latest_first_frame_when_reported_out_of_order(
+    const std::filesystem::path& output_dir)
+{
+    orange::gui::GuiStartupTimingRecorder recorder;
+    const uint64_t base = orange::gui::GuiStartupTimingRecorder::NowNs();
+    recorder.Begin("stream_start", output_dir, cameras(), {{"ptp_stream_sync", true}}, base);
+    recorder.MarkHandlerComplete(base + 20'000'000);
+    // The later frame is reported first; the earlier one completes the set.
+    recorder.MarkFirstFrame("2010094", 1, 201, 1'000'000'025ULL, base + 102'000'000);
+    recorder.MarkFirstFrame("2010093", 1, 101, 1'000'000'000ULL, base + 100'000'000);
+    const nlohmann::json snapshot = recorder.Snapshot();
+    require(snapshot.value("status", std::string()) == "complete",
+            "out-of-order report must complete");
+    require_near(snapshot.value("time_to_all_first_frames_ms", 0.0), 102.0, 0.001,
+                 "time to all first frames (out of order)");
+    require_near(snapshot.value("completed_offset_ms", 0.0), 102.0, 0.001,
+                 "completion offset (out of order)");
+    recorder.FlushPending();
+}
+
 void test_stream_report_completes_on_all_first_frames(
     const std::filesystem::path& output_dir)
 {
@@ -179,6 +199,7 @@ int main()
     try {
         test_completed_camera_open_report(output_dir);
         test_stream_report_completes_on_all_first_frames(output_dir);
+        test_stream_report_uses_latest_first_frame_when_reported_out_of_order(output_dir);
         test_failed_attempt_is_preserved(output_dir);
         test_first_frames_can_precede_handler_return(output_dir);
         std::filesystem::remove_all(output_dir, ec);

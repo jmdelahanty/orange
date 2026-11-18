@@ -429,9 +429,20 @@ void GuiStartupTimingRecorder::MarkFirstFrame(
         const std::size_t expected =
             report_.value("expected_first_frame_camera_count", std::size_t{0});
         if (expected > 0 && observed >= expected) {
+            // Cameras report from their own threads, so the call that completes
+            // the set need not carry the latest first frame: use the latest.
+            uint64_t last_first_frame_ns = receive_host_ns;
+            for (const auto& [serial, other] : report_["cameras"].items()) {
+                (void)serial;
+                if (other.value("first_frame_received", false) && other.contains("first_frame")) {
+                    last_first_frame_ns = std::max(
+                        last_first_frame_ns,
+                        other["first_frame"].value("receive_host_ns", uint64_t{0}));
+                }
+            }
             report_["status"] = "complete";
-            report_["completed_offset_ms"] = OffsetMsLocked(receive_host_ns);
-            report_["time_to_all_first_frames_ms"] = OffsetMsLocked(receive_host_ns);
+            report_["completed_offset_ms"] = OffsetMsLocked(last_first_frame_ns);
+            report_["time_to_all_first_frames_ms"] = OffsetMsLocked(last_first_frame_ns);
             active_ = false;
         }
         RefreshDerivedLocked(receive_host_ns);
