@@ -7,9 +7,17 @@
   `/home/jeremy/orange-gop-split-a16` is gone), branch
   `agent/acquisition/shaman-v2-authoritative-20260824`. `origin` is the fork
   (jmdelahanty/orange); `upstream` (JohnsonLabJanelia/orange) has push
-  disabled and is never pushed. `targets/release/{orange,orange_client}` are
-  the binaries all four sudo wrappers run (GUI validation, local benchmark,
-  evt stream smoke, gdb headless backtrace).
+  disabled and is never pushed.
+- Rig runs use an installed release (since 2026-11-18, P3 of
+  `docs/opt_install_plan_2026-11-14.md`): `/opt/orange/current` ->
+  `/opt/orange/releases/<tag>` (root-owned, read-only, `INSTALLED.json` +
+  `SHA256SUMS`). Each of the four sudo wrappers (GUI validation, local
+  benchmark, evt stream smoke, gdb headless backtrace) is installed twice:
+  `/usr/local/bin/orange-<name>` runs installed releases only (default
+  `current`), `/usr/local/bin/orange-dev-<name>` runs
+  `/home/jeremy/orange/targets/release` only. Launchers pick the matching one
+  (`scripts/orange_bin_dir.sh` `ORANGE_WRAPPER_PREFIX`); `orange-gui` and
+  `orange-headless` run the current release's launchers.
 - Work lands on the dish branch `agent/gui/per-camera-dish-20261011`
   (worktree `/home/jeremy/orange-per-camera-dish-20261011`) and is promoted by
   fast-forwarding production in `/home/jeremy/orange`.
@@ -49,10 +57,11 @@
   kernel flushes ~3 GB of recorder pages every 31 s at 6 GB/s on bridge 20
   and costs camera frames).
 - Passwordless sudo exists only for the wrappers
-  `/usr/local/bin/orange-local-benchmark`, `orange-gui-validation`,
-  `orange-evt-stream-smoke`; they allow specific binaries and spec
-  directories (reinstall with `scripts/install_*_wrapper.sh`). Any other sudo
-  command is run by the user.
+  `/usr/local/bin/orange-{gui-validation,local-benchmark,evt-stream-smoke,gdb-headless-bt}`
+  and their `orange-dev-*` twins; they allow specific binaries and spec
+  directories (reinstall with `sudo scripts/install_*_wrapper.sh
+  --install-sudoers`, which installs both names). Any other sudo command is
+  run by the user.
 
 ## Production shape (validated 2026-09-21)
 
@@ -99,6 +108,9 @@ crop-only specs use `cp -r $SRC /tmp/orange_crop_only_config_a16` with
 "registered_context_and_moving_crops"}` added to its four JSONs.
 
 ```bash
+# installed release (the default for rig runs):
+orange-headless /home/jeremy/orange/experiment_specs/<spec>.json
+# development tree (orange-dev-local-benchmark):
 make -C <tree>/targets/release orange_client   # EXCLUDE_FROM_ALL: plain make skips it
 scripts/run_detect_latency_spec.sh --orange-client <tree>/targets/release/orange_client <spec name>
 ```
@@ -175,8 +187,15 @@ interface at `~/.local/opt/nvenc-interface-13.1.15`, driver 610.57.04:
 
 ```bash
 scripts/build_orange_native_recorder.sh            # -> targets/native (untracked)
-scripts/build_orange_native_recorder.sh --install  # -> /opt/orange/bin (sudo)
+scripts/build_orange_native_recorder.sh --install  # -> /opt/orange/bin (sudo; pre-release path)
 ```
+
+Since 2026-11-18 a release carries its own recorder
+(`scripts/build_orange_release.sh` builds both CMake projects; the release
+ships `lib/libcudart.so.13`, runpath `$ORIGIN/../lib:/opt/orange/lib/ffmpeg-nvidia/lib`,
+nothing under /home). `install_orange_release.sh --link-recorder` points
+`/opt/orange/bin/external_recorder_ipc_probe_native` at
+`../current/bin/...`, so every path below follows `current`.
 
 `/opt/orange/bin/external_recorder_ipc_probe_native` is the only recorder
 binary since 2026-10-08: the app config, the specs, the supervisor default
@@ -540,3 +559,34 @@ Orange/Citrus commissioning) are in git history of this file and in
   2026-11-13 fish-plane fit). Fish 10 mm above the film appear 1.30 % of
   their distance from the principal point further out (0.59 mm at 45 mm);
   no correction is applied anywhere until Jeremy decides.
+
+## Releases under /opt, 2026-11-18 (P2 and P3)
+
+- Build and install: `scripts/build_orange_release.sh --tag orange-vYYYY.MM.DD[.N]`
+  (clean tree on the fork; ctest must pass; stages
+  `targets/releases/<tag>`), then Jeremy runs
+  `sudo scripts/install_orange_release.sh --release-dir <stage> --link-recorder`.
+  `--rollback` swaps `current` and `previous`; `--verify` checks
+  `SHA256SUMS` and refuses added files. HOLD first, as for any install.
+- Installed: orange-v2026.11.18, .2, .3, .4; `current` = .4 (a7982956),
+  `previous` = .3. Recordings name the release in `source_version.install`.
+- P2 rig checks, all from the release: stream smoke; 60 s headless gate
+  (`..._od8ff_s16_20261118_011850`: 0 gaps, NIC unchanged, 5900/5900 per
+  recorder, detect p95 1.81-1.85 ms); bound GUI run `2026_11_18_01_23_11`
+  (4/4 H5 COMPLETE, receipts 2.1 s, 0 drops); guided capture smoke (.4,
+  validator PASS); rollback and roll-forward practised.
+- Fixed on the way: release recorder runpath (no CUDA 13 from $HOME;
+  `scripts/check_release_libraries.py`), `ptp_stack.sh` lookup and
+  `nic_thermal_monitor` shipped, no `__pycache__` written into a release by
+  root-run Python (`PYTHONDONTWRITEBYTECODE=1` in the wrappers), the GUI
+  layout lives in the invoker's data root (`<home>/orange_data/imgui.ini`,
+  invoker-owned), a calibration autorun's stream stop inside the GUI autorun
+  warmup is done, not a failure (a7982956).
+- Headless recorder contract (1a7a7cfa): absolute stream paths must lie under
+  `artifact_root`. Twelve specs, the gate among them, had their streams in
+  `<root>_od8ff_s16/` etc., so every earlier run split its recorder output
+  over two folders (`<root>_<stamp>` with the supervisor files and logs, and
+  the stream folder with MP4s and summaries); those specs now use the
+  stream folder as `artifact_root`.
+- pancakebatter matches `/opt/orange/` processes on branch
+  `orange-opt-match` (a8be3d9), waiting for Jeremy's OK.
