@@ -152,7 +152,7 @@ cmake -S "$ROOT/tools/nvenc_native_probe" -B "$NATIVE_BUILD" \
   -DORANGE_SOURCE_ROOT="$ROOT" -DCUDA_13_ROOT="$CUDA_13_ROOT" \
   -DNVENC_13_INTERFACE_DIR="$NVENC_13_INTERFACE_DIR" \
   -DBUILD_NATIVE_RECORDER=ON -DBUILD_NATIVE_KERNEL=ON \
-  "-DNATIVE_RECORDER_RUNPATH=$NATIVE_RUNPATH" > "$NATIVE_BUILD.configure.log" 2>&1 \
+  "-DNATIVE_RECORDER_RELEASE_RUNPATH=$NATIVE_RUNPATH" > "$NATIVE_BUILD.configure.log" 2>&1 \
   || { tail -20 "$NATIVE_BUILD.configure.log" >&2; die "native configure failed"; }
 nice -n 10 cmake --build "$NATIVE_BUILD" --target external_recorder_ipc_probe_native native_nv12_write_ptx -j "$JOBS" \
   > "$NATIVE_BUILD.build.log" 2>&1 \
