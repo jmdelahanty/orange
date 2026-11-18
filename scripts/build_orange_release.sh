@@ -215,7 +215,7 @@ doc = {
         "cmake_settings": "${CMAKE_SETTINGS[*]}".split(),
         "native_recorder_settings": {
             "CUDA_13_ROOT": "$CUDA_13_ROOT",
-            "NATIVE_RECORDER_RUNPATH": "$NATIVE_RUNPATH",
+            "NATIVE_RECORDER_RELEASE_RUNPATH": "$NATIVE_RUNPATH",
             "shipped_cudart": "lib/libcudart.so.13 (from $CUDART)",
             "NVENC_13_INTERFACE_DIR": "$NVENC_13_INTERFACE_DIR",
         },
