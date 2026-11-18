@@ -52,6 +52,22 @@ def main() -> int:
         plain = validate(client, spec)
         require(plain.returncode == 0 and f"experiment_id={experiment_id} " in plain.stdout, plain.stdout)
 
+        # The stamped streams follow the stamped root (one recorder folder).
+        stream = next(iter(source["fixed"]["external_recorder_contract"]["streams"].values()))
+        require(stream["summary_json"].startswith(artifact_root + "/"),
+                "the gate spec's streams lie under its artifact_root")
+
+        # A stream outside artifact_root (a sibling folder named <root>_suffix)
+        # is refused: it split every run's recorder output across two folders.
+        split = json.loads(json.dumps(source))
+        split_stream = next(iter(split["fixed"]["external_recorder_contract"]["streams"].values()))
+        split_stream["summary_json"] = artifact_root + "_suffix/Cam_external_summary.json"
+        split_spec = Path(tmp) / "split_spec.json"
+        split_spec.write_text(json.dumps(split))
+        refused_split = validate(client, split_spec)
+        require(refused_split.returncode != 0 and "outside artifact_root" in (refused_split.stdout + refused_split.stderr),
+                refused_split.stdout + refused_split.stderr)
+
         bad = validate(client, spec, "--run-stamp", "2026-11-14")
         require(bad.returncode != 0, "a malformed stamp is refused")
 
@@ -73,6 +89,25 @@ def main() -> int:
                 capture_output=True, text=True, timeout=20, check=False)
             require(refused.returncode != 0, "the wrapper refuses a malformed stamp")
         require(not (Path(tmp) / "must_not_exist").exists(), "validation entered recording startup")
+    # Every spec in experiment_specs/ keeps its absolute stream paths under
+    # its artifact_root (whole path components).
+    for spec_path in sorted((ROOT / "experiment_specs").glob("*.json")):
+        try:
+            data = json.loads(spec_path.read_text())
+        except json.JSONDecodeError:
+            continue
+        contract = (data.get("fixed") or {}).get("external_recorder_contract")
+        if not isinstance(contract, dict):
+            continue
+        root = str(contract.get("artifact_root", "")).rstrip("/")
+        for stream in (contract.get("streams") or {}).values():
+            if not isinstance(stream, dict):
+                continue
+            for key in ("summary_json", "video_sanity_json", "mp4", "gop_routing_csv"):
+                value = stream.get(key)
+                if isinstance(value, str) and value.startswith("/"):
+                    require(root.startswith("/") and value.startswith(root + "/"),
+                            f"{spec_path.name}: {key} {value} is outside artifact_root {root}")
     print("headless_run_stamp_tests passed")
     return 0
 

@@ -32,7 +32,7 @@
       "schema_version": 1,
       "mode": "diagnostic_ipc_v1",
       "supervise_processes": true,
-      "artifact_root": "/dev/shm/orange_soak/external_recorder/fourcam_fused_recorder_realfish_int8_192_native_ownerpush_ring",
+      "artifact_root": "/dev/shm/orange_soak/external_recorder/fourcam_fused_recorder_realfish_int8_192_native_ownerpush_ring_od8ff_s16_soak3_nodiag_tmpfs",
       "session_id": "fourcam_fused_recorder_realfish_int8_192_native_ownerpush_ring_od8ff_s16_soak3_nodiag_tmpfs",
       "require_summary": true,
       "require_video_sanity": false,

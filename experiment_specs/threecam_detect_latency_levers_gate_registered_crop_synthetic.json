@@ -30,7 +30,7 @@
       "schema_version": 1,
       "mode": "diagnostic_ipc_v1",
       "supervise_processes": true,
-      "artifact_root": "/home/jeremy/orange_data/external_recorder/threecam_detect_latency_levers_gate_registered_crop_synthetic",
+      "artifact_root": "/home/jeremy/orange_data/external_recorder/threecam_detect_latency_threecam_detect_latency_levers_gate_registered_crop_synthetic",
       "session_id": "threecam_detect_latency_levers_gate_registered_crop_synthetic",
       "require_summary": true,
       "require_video_sanity": false,

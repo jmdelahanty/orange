@@ -250,6 +250,22 @@ struct HeadlessExternalRecorderContractConfig {
     }
 };
 
+// True when `path` is `root` or lies inside it, by whole path components
+// ("/a/ring_od8ff_s16/x" is not inside "/a/ring"). Both are compared
+// lexically normalised; nothing is read from disk.
+inline bool headless_path_is_within(const std::string& path, const std::string& root)
+{
+    const std::filesystem::path p = std::filesystem::path(path).lexically_normal();
+    const std::filesystem::path r = std::filesystem::path(root).lexically_normal();
+    auto pi = p.begin();
+    for (auto ri = r.begin(); ri != r.end(); ++ri) {
+        if (ri->empty()) continue;  // trailing separator of the root
+        if (pi == p.end() || *pi != *ri) return false;
+        ++pi;
+    }
+    return true;
+}
+
 // A relative external_recorder_contract.artifact_root (e.g. "external_recorder")
 // is resolved under the run's recording folder, and relative stream artifact
 // paths under that root, so the recorder media sit inside the recording folder
@@ -2700,6 +2716,22 @@ bool validate_headless_external_recorder_contract_config(
                 *error_out = prefix + "external_recorder_contract mp4 is required";
             }
             return false;
+        }
+        // Every absolute stream path lies under the artifact root, so one
+        // run writes one recorder folder (2026-11-18: twelve specs named
+        // their streams under <root>_od8ff_s16/ etc., splitting each run's
+        // recorder output across two folders).
+        for (const char* key : {"summary_json", "video_sanity_json", "mp4", "gop_routing_csv"}) {
+            const std::string value = stream.value(key, std::string());
+            if (value.empty() || value.front() != '/') continue;
+            if (config.artifact_root.front() != '/' ||
+                !headless_path_is_within(value, config.artifact_root)) {
+                if (error_out) {
+                    *error_out = prefix + "external_recorder_contract stream " + stream_id + " " + key +
+                                 " is outside artifact_root " + config.artifact_root + ": " + value;
+                }
+                return false;
+            }
         }
         if (config.require_gop_routing && stream.value("gop_routing_csv", "").empty()) {
             if (error_out) {
@@ -8552,7 +8584,12 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                         for (const char* key : {"summary_json", "video_sanity_json", "mp4", "gop_routing_csv"}) {
                             if (stream.contains(key) && stream[key].is_string()) {
                                 std::string value = stream[key].get<std::string>();
-                                if (value.rfind(old_root, 0) == 0) value = new_root + value.substr(old_root.size());
+                                // Whole components only: a stream folder named
+                                // <root>_suffix is not under <root> (and is refused
+                                // by the contract check).
+                                if (headless_path_is_within(value, old_root)) {
+                                    value = new_root + value.substr(old_root.size());
+                                }
                                 stream[key] = value;
                             }
                         }
