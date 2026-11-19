@@ -20,6 +20,19 @@ REQUIRED_PROBES = {
 }
 
 
+def same_sha256(left: object, right: object) -> bool:
+    """Compare two SHA-256 digests in bare-hex or "sha256:<hex>" form.
+
+    Citrus writes "sha256:<hex>" since its digest_form_v1 rename (8817ff2,
+    2026-11-17); the launcher config carries bare hex.
+    """
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    a = left.removeprefix("sha256:").lower()
+    b = right.removeprefix("sha256:").lower()
+    return len(a) == 64 and a == b
+
+
 def fail(message: str) -> None:
     raise ValueError(message)
 
@@ -330,7 +343,7 @@ def main() -> int:
             provenance = photometry.get("commissioning_provenance", {})
             if (
                 provenance.get("report_path") != str(report_path)
-                or provenance.get("report_sha256") != expected_report_sha256
+                or not same_sha256(provenance.get("report_sha256"), expected_report_sha256)
                 or int(provenance.get("recommended_foreground_gray_u8", -1))
                 != selected_gray
             ):

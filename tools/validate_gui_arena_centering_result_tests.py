@@ -131,6 +131,15 @@ def main() -> int:
         fit_claim = copy.deepcopy(baseline)
         fit_claim["homography"]["fit_requested"] = True
         assert validate(root, fit_claim).returncode != 0
+    sys.path.insert(0, str(VALIDATOR.parent))
+    from validate_gui_arena_centering_result import same_sha256
+    hex_digest = "75fbcf4b823ce19ce5da9d5a361eb6ef777be3caf92dee45439ceae0b1d4fcff"
+    assert same_sha256(hex_digest, hex_digest)
+    assert same_sha256("sha256:" + hex_digest, hex_digest)  # Citrus digest_form_v1
+    assert same_sha256(hex_digest, "sha256:" + hex_digest.upper())
+    assert not same_sha256("sha256:" + "0" * 64, hex_digest)
+    assert not same_sha256("", "")
+    assert not same_sha256(None, hex_digest)
     print("validate_gui_arena_centering_result_tests passed")
     return 0
 
