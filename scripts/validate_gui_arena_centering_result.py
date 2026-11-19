@@ -33,6 +33,38 @@ def same_sha256(left: object, right: object) -> bool:
     return len(a) == 64 and a == b
 
 
+def _existing_file(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and Path(value).is_file()
+
+
+def accepted_receipt_problem(receipt: dict) -> str | None:
+    """Check the per-arena pointers of a committed homography receipt.
+
+    An operational accept activates the fit: every row needs its active
+    pointer and compatibility sidecar. A commissioning_reference accept while
+    an operational fit is active writes only the reference pointer, and
+    Citrus leaves active_pointer_path and compatibility_sidecar_path null by
+    design (homography_candidate_controller.cpp activate_runtime); such a row
+    needs its reference pointer instead.
+    """
+    reference = receipt.get("homography_role") == "commissioning_reference"
+    for row in receipt.get("accepted", []):
+        arena = row.get("arena_id")
+        active = row.get("active_pointer_path")
+        sidecar = row.get("compatibility_sidecar_path")
+        if reference and row.get("authority_role", "commissioning_reference") == "commissioning_reference":
+            for key in ("authority_pointer_path", "commissioning_reference_pointer_path"):
+                if not _existing_file(row.get(key)):
+                    return f"accepted reference homography {key} is missing for {arena}"
+            if active is None and sidecar is None:
+                continue
+        if not _existing_file(active):
+            return f"accepted homography active pointer is missing for {arena}"
+        if not _existing_file(sidecar):
+            return f"accepted homography compatibility sidecar is missing for {arena}"
+    return None
+
+
 def fail(message: str) -> None:
     raise ValueError(message)
 
@@ -449,11 +481,9 @@ def main() -> int:
         accepted = homography_receipt.get("accepted", [])
         if len(accepted) != len(expected):
             fail("homography acceptance receipt target count mismatch")
-        for row in accepted:
-            if not Path(row.get("active_pointer_path", "")).is_file():
-                fail("accepted homography active pointer is missing")
-            if not Path(row.get("compatibility_sidecar_path", "")).is_file():
-                fail("accepted homography compatibility sidecar is missing")
+        problem = accepted_receipt_problem(homography_receipt)
+        if problem:
+            fail(problem)
 
     print(
         f"arena-centering validation passed: cameras={len(expected)} "

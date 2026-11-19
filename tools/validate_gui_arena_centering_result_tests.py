@@ -140,6 +140,44 @@ def main() -> int:
     assert not same_sha256("sha256:" + "0" * 64, hex_digest)
     assert not same_sha256("", "")
     assert not same_sha256(None, hex_digest)
+    from validate_gui_arena_centering_result import accepted_receipt_problem
+    with tempfile.TemporaryDirectory(prefix="orange-receipt-pointers-") as temp:
+        f = Path(temp) / "pointer.json"
+        f.write_text("{}", encoding="utf-8")
+        missing = str(Path(temp) / "absent.json")
+        reference_row = {
+            "arena_id": "arena_1", "authority_role": "commissioning_reference",
+            "authority_pointer_path": str(f),
+            "commissioning_reference_pointer_path": str(f),
+            "active_pointer_path": None, "compatibility_sidecar_path": None,
+        }
+        operational_row = {
+            "arena_id": "arena_1", "authority_role": "operational_candidate",
+            "active_pointer_path": str(f), "compatibility_sidecar_path": str(f),
+        }
+        reference = {"homography_role": "commissioning_reference", "accepted": [reference_row]}
+        operational = {"homography_role": "operational_candidate", "accepted": [operational_row]}
+        # Citrus's reference accept while an operational fit is active (2026-11-19)
+        assert accepted_receipt_problem(reference) is None
+        # reference accept that also activated the runtime: both files required
+        activated = copy.deepcopy(reference)
+        activated["accepted"][0].update(active_pointer_path=str(f), compatibility_sidecar_path=str(f))
+        assert accepted_receipt_problem(activated) is None
+        activated["accepted"][0]["compatibility_sidecar_path"] = missing
+        assert "sidecar" in accepted_receipt_problem(activated)
+        no_reference = copy.deepcopy(reference)
+        no_reference["accepted"][0]["commissioning_reference_pointer_path"] = missing
+        assert "commissioning_reference_pointer_path" in accepted_receipt_problem(no_reference)
+        assert accepted_receipt_problem(operational) is None
+        # an operational accept never skips the active pointer, null or missing
+        for value in (None, "", missing):
+            broken = copy.deepcopy(operational)
+            broken["accepted"][0]["active_pointer_path"] = value
+            assert "active pointer" in accepted_receipt_problem(broken)
+        # the null-active shape is only allowed under the reference role
+        mislabeled = copy.deepcopy(reference)
+        mislabeled["homography_role"] = "operational_candidate"
+        assert "active pointer" in accepted_receipt_problem(mislabeled)
     print("validate_gui_arena_centering_result_tests passed")
     return 0
 
