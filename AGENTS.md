@@ -568,11 +568,21 @@ Orange/Citrus commissioning) are in git history of this file and in
   `sudo scripts/install_orange_release.sh --release-dir <stage> --link-recorder`.
   `--rollback` swaps `current` and `previous`; `--verify` checks
   `SHA256SUMS` and refuses added files. HOLD first, as for any install.
-- Installed: orange-v2026.11.18, .2, .3, .4, .5; `current` = .5 (5efb53ee,
-  installed 2026-11-18 21:39Z: recorder-contract check, P3 scripts),
-  `previous` = .4 (a7982956). Recordings name the release in
-  `source_version.install`. A new release moves orchard plans'
-  `requires.orange_commit` pin: tell experiment-spec.
+- Installed: orange-v2026.11.18, .2 to .7; `current` = .7 (6b818a67,
+  installed 2026-11-19 03:06Z), `previous` = .6 (7762b491). .6 and .7 are
+  arena-centering validator fixes found during the 2026-11-18/19 omnifin0
+  recommission (Citrus's `sha256:`-prefixed report digest; a
+  commissioning-reference accept with null active pointer and sidecar).
+  Recordings name the release in `source_version.install`. A new release
+  moves orchard plans' `requires.orange_commit` pin: tell experiment-spec.
+- omnifin0 recommission 2026-11-18/19: Citrus release
+  `commissioning_rig_canvas_commissioning_2026-11-19_full_recommission_after_refocus`
+  (canvas da80471d), records
+  `~/orange_data/calibrations/commissioning/omnifin0_20261118T232135Z_full_recommission`
+  (dry) and `omnifin0_20261119T042705Z_wet_commissioning_…` (wet, fish-plane
+  scale 53.34-53.42 px/mm). Holder fit accepted with an exception (gel rim
+  bow); arena 1 wet illumination less even than on 11-13 (check before fish).
+  Follow-ups: the journal's 2026-11-19 after-session list.
 - P2 rig checks, all from the release: stream smoke; 60 s headless gate
   (`..._od8ff_s16_20261118_011850`: 0 gaps, NIC unchanged, 5900/5900 per
   recorder, detect p95 1.81-1.85 ms); bound GUI run `2026_11_18_01_23_11`
