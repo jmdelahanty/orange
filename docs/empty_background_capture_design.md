@@ -9,8 +9,9 @@ local_control selection, a schema_version on the block). Orange writes
 version 2 since fb0c3ae. Built on 2026-11-15 (branch
 `agent/gui/empty-background-20261102`): the core library, the 17-frame burst
 on the landing die, the GUI panel, the local-control capture and start
-selection, the record-start binding and the headless key. Not yet run on the
-rig (see the checklist).
+selection, the record-start binding and the headless key. Run on the rig
+through local control (2026-11-15) and the GUI panel (2026-11-19); see the
+checklist.
 
 Additions on 2026-11-15 (Jeremy):
 
@@ -365,5 +366,23 @@ they are.
         4725/4725 frames, 0 drops, NIC unchanged. Validator PASS on both.
       - GPU memory while recording (landing / paired die): 5.0 / 0.77 GB at
         full frame, 3.3 / 0.39 GB at 1792 rows, of 15.3 GB.
-- [ ] Rig: press the GUI panel once (capture, attach with the confirmation,
-      record; attach without it is refused). Needs a person at the rig.
+- [x] Rig: GUI panel pressed (orange with Jeremy, 2026-11-19 fish sessions,
+      production fe475987): captures `2026_11_19_12_27_06` (attached to
+      `2026_11_19_12_46_10` and `2026_11_19_13_43_10`) and
+      `2026_11_19_14_31_52` (attached to `2026_11_19_14_40_47` and
+      `2026_11_19_16_16_48`), dishes unmoved between each pair. Requester
+      `gui_panel`, display declared off; 4/4 cameras captured, PNG statistics
+      re-derived exactly; every block v2, `gui_operator`, all cameras
+      `attached`, descriptor and images byte-identical to the store. The
+      unconfirmed attach was refused too: at 21:16:23Z, before S4, a Start
+      without "Scene unchanged" ticked was aborted before recording
+      (startup audit `recording_start_aborted`: "Named empty background not
+      attached: empty background: confirm that the scene is unchanged since
+      capture 2026_11_19_14_31_52 apart from the fish, or choose No
+      background"); ticked, S4 started 25 s later. The refused folder
+      (`2026_11_19_16_16_23`, start-time files only) was deleted on Jeremy's
+      word; that audit text, as reported by orange, is the record.
+- [x] Unattended runner capture at setup (orange, 2026-11-15 and
+      2026-11-19): `2026_11_15_23_17_59` -> `2026_11_15_23_18_03` and
+      `2026_11_19_00_19_25` -> `2026_11_19_00_19_29`, local-control
+      requester, Citrus idle-clear black as display evidence.
