@@ -37,13 +37,18 @@
   per 25G Mellanox port, GPUDirect into one A16 die per camera. Only camera
   2010096 drives the IR illuminators, so a lit capture must be PTP-gated.
 - Two NVIDIA A16 cards (dies 1-4 = card A, 5-8 = card B), RTX A6000 on GPU 0.
-  Host bridges: 00 A6000; 20 card A plus all three NVMe drives and both
-  Intel X550T 10 GbE ports (`ethernet_1` = the only route to the lab /
-  prfs, `ethernet_2` = PDU net; the X550T and the Data2 NVMe share one x8
-  chipset link); 40 card B plus the mlnx2 NIC (cameras 95/96); 60 the
-  mlnx1 NIC (cameras 93/94), whose frames land on card A. Any bulk egress
-  during a recording therefore crosses bridge 20 and needs its own
-  no-impact proof. Authoritative topology (per-bridge device list,
+  Host bridges: 00 A6000; 20 card A (root port 20:03.1, x16), the NVMe
+  drives and both Intel X550T 10 GbE ports (`ethernet_1` = the only route
+  to the lab / prfs, `ethernet_2` = PDU net); 40 card B plus the mlnx2 NIC
+  (cameras 95/96); 60 the mlnx1 NIC (cameras 93/94), whose frames land on
+  card A. Since 2026-11-12 (Data1 out for RMA, pancakebatter 79b80f4) each
+  has its own root-port link on bridge 20: Data2 (serial 48816072200219,
+  UUID bb4ea7ac-…) on 20:01.3 x4, the OS drive on 20:01.2 x4, the X550T on
+  20:01.1 x8; Data2 no longer shares the X550T's chipset link. Bulk
+  egress during a recording still crosses bridge 20 beside card A's
+  landing traffic and needs its own no-impact proof (one ~50 s /groups
+  copy overlapped fish session S3 on 2026-11-19 with no drops, largely
+  from page cache: not a proof). Authoritative topology (per-bridge device list,
   verified live): pancakebatter `hosts/pancake0/config.yml` `pcie_topology`
   and `docs/pcie_topology.md`. Identify drives by controller serial or
   filesystem UUID, never by `nvmeN` (the numbering changed at the
