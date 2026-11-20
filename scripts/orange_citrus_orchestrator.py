@@ -3688,9 +3688,9 @@ class Orchestrator:
                     f"subjects_declared_{when}",
                 )
             except OrchestratorError:
-                status, _ = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
+                _, status = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
         else:
-            status, _ = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
+            _, status = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
         problems = citrus_subject_declaration_problems(status, expected)
         self.bound_record.setdefault("citrus_subject_declaration_checks", []).append(
             {"when": when, "problems": problems})

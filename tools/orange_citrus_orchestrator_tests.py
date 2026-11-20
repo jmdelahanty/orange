@@ -4292,7 +4292,8 @@ def test_citrus_declare_subjects_and_executor_rule() -> None:
 
         current = {"status": declared}
         orchestrator.wait_for_status = fake_wait
-        orchestrator.status = lambda label, schema_id, socket_path: (current["status"], {})
+        # status() returns (response, status), as the real one does.
+        orchestrator.status = lambda label, schema_id, socket_path: ({"ok": True, "status": current["status"]}, current["status"])
         orchestrator.declare_citrus_subjects()
         require(len(sent) == 1 and sent[0]["method"] == "declare_subjects" and sent[0]["params"] == request
                 and sent[0]["operation_id"] == args.operation_id, f"one declare_subjects: {sent}")
@@ -4315,7 +4316,8 @@ def test_citrus_declare_subjects_and_executor_rule() -> None:
         statuses = [status_with(arena_1=None, arena_2=None)]
         current["status"] = statuses[0]
         orchestrator.wait_for_status = fake_wait
-        orchestrator.status = lambda label, schema_id, socket_path: (current["status"], {})
+        # status() returns (response, status), as the real one does.
+        orchestrator.status = lambda label, schema_id, socket_path: ({"ok": True, "status": current["status"]}, current["status"])
         message = ""
         try:
             orchestrator.declare_citrus_subjects()
