@@ -60,9 +60,38 @@ def test_yolo_present_but_declared_absent_fails() -> None:
     require(any("declares detections absent" in f for f in reporter.failures), reporter.failures)
 
 
+def write_binding(folder: Path, intent: str, requests: int, receipts: int, status: str | None) -> None:
+    contexts = {str(2010093 + i): {"recording_intent": intent} for i in range(4)}
+    (folder / "recording_snapshot_start.json").write_text(json.dumps({"session": {"recording_contexts": contexts}}))
+    bindings = folder / "recording_observation_bindings"
+    for sub, count in (("requests", requests), ("receipts", receipts)):
+        (bindings / sub).mkdir(parents=True, exist_ok=True)
+        for i in range(count):
+            (bindings / sub / f"obsctx_{i}.json").write_text("{}")
+    if status is not None:
+        (bindings / "finalized_collection.json").write_text(json.dumps({"binding_status": status}))
+
+
+def test_stimulus_recording_needs_a_finalized_binding() -> None:
+    cases = [("stimulus_experiment", 4, 4, "bound", True), ("stimulus_experiment", 4, 0, None, False),
+             ("stimulus_experiment", 4, 3, "bound", False), ("stimulus_experiment", 4, 4, "not_bound", False)]
+    for intent, requests, receipts, status, ok in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            write_binding(Path(tmp), intent, requests, receipts, status)
+            reporter = validator.Reporter(verbose=False)
+            validator.check_stimulus_binding_finalized(reporter, Path(tmp))
+            require((not reporter.failures) == ok, f"{intent} {requests}/{receipts} {status}: {reporter.failures}")
+    with tempfile.TemporaryDirectory() as tmp:
+        write_binding(Path(tmp), "recording_only", 0, 0, None)
+        reporter = validator.Reporter(verbose=False)
+        validator.check_stimulus_binding_finalized(reporter, Path(tmp))
+        require(not reporter.failures and not reporter.passes, "recording_only needs no binding")
+
+
 def main() -> int:
     for test in (test_declared_absent_cameras, test_absent_detections_skip_yolo_checks,
-                 test_undeclared_missing_yolo_still_fails, test_yolo_present_but_declared_absent_fails):
+                 test_undeclared_missing_yolo_still_fails, test_yolo_present_but_declared_absent_fails,
+                 test_stimulus_recording_needs_a_finalized_binding):
         test()
         print(f"[PASS] {test.__name__}")
     print("validate_gui_yolo_declared_tests passed")

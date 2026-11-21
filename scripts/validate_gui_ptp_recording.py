@@ -1857,6 +1857,29 @@ def check_recording_contexts(
         )
 
 
+def check_stimulus_binding_finalized(reporter: Reporter, recording_folder: Path) -> None:
+    """A stimulus_experiment recording is only complete with its Citrus binding
+    finalized: recording_observation_bindings/finalized_collection.json with
+    binding_status "bound" and one receipt per request. 2026-11-20 pilot S1
+    (aborted by the runner, no receipts) otherwise validated as a pass."""
+    snapshot = read_json(recording_folder / "recording_snapshot_start.json")
+    contexts = nested_dict(snapshot, "session", "recording_contexts")
+    intents = {c.get("recording_intent") for c in contexts.values() if isinstance(c, dict)} if contexts else set()
+    if "stimulus_experiment" not in intents:
+        return
+    bindings = recording_folder / "recording_observation_bindings"
+    finalized = read_json(bindings / "finalized_collection.json")
+    status = finalized.get("binding_status") if isinstance(finalized, dict) else None
+    requests = sorted(p.name for p in (bindings / "requests").glob("*.json")) if (bindings / "requests").is_dir() else []
+    receipts = sorted(p.name for p in (bindings / "receipts").glob("*.json")) if (bindings / "receipts").is_dir() else []
+    reporter.check(
+        status == "bound" and len(receipts) == len(requests) and receipts,
+        f"Citrus binding finalized: bound, {len(receipts)} receipts for {len(requests)} requests",
+        f"stimulus_experiment recording without a finalized Citrus binding "
+        f"(binding_status={status!r}, {len(receipts)} receipts for {len(requests)} requests)",
+    )
+
+
 def check_recording_session_manifest(
     reporter: Reporter,
     recording_folder: Path,
@@ -1888,6 +1911,7 @@ def check_recording_session_manifest(
     check_effective_configuration(reporter, snapshot)
     check_recording_folder_ownership(reporter, recording_folder)
     check_realtime_products_digests(reporter, recording_folder, manifest)
+    check_stimulus_binding_finalized(reporter, recording_folder)
     producer = str(manifest.get("producer", ""))
     backend = manifest.get("recording_backend")
     backend = backend if isinstance(backend, dict) else {}
