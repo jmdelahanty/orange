@@ -106,6 +106,11 @@ struct LocalControlStatusSnapshot {
     // local_control.daily_registration_autorun: null unless the daily-registration
     // autorun runs (gui/daily_registration_autorun.h).
     nlohmann::json daily_registration_autorun = nullptr;
+    // configuration: the camera preset the cameras were opened from and the app
+    // config as loaded at launch (launch_configuration.h LaunchConfigurationStatusJson):
+    // {"camera_preset": null | {name, path, hash_rule, sha256, loaded_at_utc, error},
+    //  "app_config": null | {path, status, loaded_sha256, loaded_at_utc, error}}.
+    nlohmann::json configuration = nullptr;
 };
 
 struct LocalControlServerOptions {

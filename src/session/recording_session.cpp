@@ -12,6 +12,7 @@
 #include "session/model_artifacts.h"
 #include "recording_context.h"
 #include "effective_configuration.h"
+#include "launch_configuration.h"
 #include "recording_startup_audit.h"
 #include "recording_master_crop_coverage.h"
 #include "recording_crop_only_manifest.h"
@@ -3473,6 +3474,26 @@ PreparedRecordingRunStart prepare_recording_run(
             }
         } catch (const std::exception& ex) {
             std::cerr << "[recording_session] effective configuration not captured: " << ex.what() << std::endl;
+        }
+    }
+    {
+        // Launch configuration (src/launch_configuration.h): the camera preset and the
+        // app config as this process loaded them, against the files on disk now. A
+        // difference is recorded (configuration_changed_since_launch), never refused.
+        try {
+            const auto block = orange::recording::BuildLaunchConfigurationBlock(get_current_utc_timestamp());
+            orange::recording::ValidateEmittedLaunchConfiguration(block);
+            if (block.at("configuration_changed_since_launch").get<bool>()) {
+                std::cerr << "[recording_session] WARNING configuration changed since launch: "
+                          << block.at("changed_since_launch").dump()
+                          << " (the process runs on the launch-time files; see session.launch_configuration)"
+                          << std::endl;
+            }
+            if (!update_recording_snapshot_session_artifacts(recording_folder, {{"launch_configuration", block}})) {
+                throw std::runtime_error("failed to persist launch configuration");
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[recording_session] launch configuration not captured: " << ex.what() << std::endl;
         }
     }
 

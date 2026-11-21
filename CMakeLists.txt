@@ -475,6 +475,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
+    "${SRC_DIR}/launch_configuration.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
@@ -524,6 +525,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
+    "${SRC_DIR}/launch_configuration.cpp"
     "${SRC_DIR}/recording_encoding_budget.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -671,6 +673,7 @@ add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
+    "${SRC_DIR}/launch_configuration.cpp"
     "${SRC_DIR}/recording_media_decode.cpp"
     "${SRC_DIR}/recording_master_journal.cpp"
     "${SRC_DIR}/recording_master_acquisition.cpp"
@@ -955,6 +958,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
+    "${SRC_DIR}/launch_configuration.cpp"
         "${SRC_DIR}/session/recording_observation_finalization.cpp"
         "${SRC_DIR}/session/recording_observation_identity.cpp"
         "${SRC_DIR}/session/recording_observation_prearm.cpp"
@@ -976,6 +980,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
+    "${SRC_DIR}/launch_configuration.cpp"
         "${SRC_DIR}/session/recording_observation_finalization.cpp"
         "${SRC_DIR}/session/recording_observation_identity.cpp"
         "${SRC_DIR}/session/recording_observation_prearm.cpp"
@@ -1232,6 +1237,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
+    "${SRC_DIR}/launch_configuration.cpp"
     )
     target_include_directories(recording_context_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_context_tests PRIVATE cxx_std_17)
@@ -1288,6 +1294,7 @@ if(BUILD_TESTING)
         "tools/recording_subject_reference_tests.cpp"
         "${SRC_DIR}/recording_subject_reference.cpp"
     "${SRC_DIR}/effective_configuration.cpp"
+    "${SRC_DIR}/launch_configuration.cpp"
     )
     target_include_directories(recording_subject_reference_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_subject_reference_tests PRIVATE cxx_std_17)
@@ -1370,6 +1377,23 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/writer_samples_schema_tests.py"
                 --expect "orange.effective_configuration v2" --
                 $<TARGET_FILE:effective_configuration_tests>)
+
+    add_executable(launch_configuration_tests
+        "tools/launch_configuration_tests.cpp"
+        "${SRC_DIR}/launch_configuration.cpp"
+    )
+    target_include_directories(launch_configuration_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(launch_configuration_tests PRIVATE cxx_std_17)
+    add_test(NAME launch_configuration_tests COMMAND launch_configuration_tests)
+    add_test(
+        NAME launch_configuration_schema_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/writer_samples_schema_tests.py"
+                --expect "orange.recording.launch_configuration v1" --
+                $<TARGET_FILE:launch_configuration_tests>)
+    add_test(
+        NAME launch_configuration_digest_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/launch_configuration_digest_tests.py"
+                $<TARGET_FILE:launch_configuration_tests>)
 
     add_executable(lens_write_verify_tests
         "tools/lens_write_verify_tests.cpp"
@@ -2125,6 +2149,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/recording_context.cpp"
         "${SRC_DIR}/recording_subject_reference.cpp"
         "${SRC_DIR}/effective_configuration.cpp"
+        "${SRC_DIR}/launch_configuration.cpp"
         "${SRC_DIR}/session/recording_observation_finalization.cpp"
         "${SRC_DIR}/session/recording_observation_identity.cpp"
         "${SRC_DIR}/session/recording_observation_prearm.cpp"

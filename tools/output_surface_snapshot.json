@@ -4299,6 +4299,40 @@
    ]
   ]
  },
+ "src/launch_configuration.cpp": {
+  "csv_headers": [],
+  "json_keys": [
+   "app_config",
+   "at_launch",
+   "camera_preset",
+   "captured_at_utc",
+   "changed",
+   "changed_files",
+   "changed_since_launch",
+   "configuration_changed_since_launch",
+   "error",
+   "files",
+   "hash_rule",
+   "loaded_at_utc",
+   "loaded_sha256",
+   "loaded_status",
+   "name",
+   "on_disk_at_record_start",
+   "on_disk_sha256",
+   "on_disk_status",
+   "path",
+   "schema_id",
+   "schema_version",
+   "sha256",
+   "status"
+  ],
+  "schemas": [
+   [
+    "orange.recording.launch_configuration",
+    "1"
+   ]
+  ]
+ },
  "src/media_content_digest.cpp": {
   "csv_headers": [],
   "json_keys": [
@@ -4711,6 +4745,7 @@
    "ipc_push_failures",
    "keyframes",
    "label",
+   "launch_configuration",
    "local_control",
    "lookahead",
    "lookahead_depth",
@@ -5009,6 +5044,7 @@
    "cameras_open",
    "citrus_completion_stop",
    "code",
+   "configuration",
    "crop",
    "crop_external_recorders_ready",
    "crop_selected_serials",
@@ -7052,6 +7088,7 @@
    "latch_minus_frame_max",
    "latch_minus_frame_min",
    "latch_minus_frame_ns",
+   "launch_configuration",
    "materialized_assets",
    "max_bitrate_bps",
    "max_pending_bytes",

@@ -62,6 +62,7 @@
 #include "session/recording_observation_prearm.h"
 #include "gui/recording_snapshots.h"
 #include "effective_configuration.h"
+#include "launch_configuration.h"
 #include "rig_config_pin.h"
 #include "session/recording_observation_request_artifacts.h"
 #include "session/session_control_host.h"
@@ -4553,6 +4554,8 @@ bool open_cameras(CameraParams *cameras_params,
             return false;
         }
         update_camera_configs(camera_config_files, config_folder);
+        // The preset this run's cameras are opened from (sealed at record start).
+        orange::recording::RecordLaunchCameraPreset(config_folder, get_current_utc_timestamp());
     }
 
     std::vector<bool> should_open(static_cast<std::size_t>(num_cameras), true);
@@ -5353,6 +5356,20 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         throw std::runtime_error("failed to persist effective configuration");
                 } catch (const std::exception& ex) {
                     std::cerr << "[headless] effective configuration not captured: " << ex.what() << std::endl;
+                }
+                // Launch configuration: the camera preset folder as opened, against the
+                // folder on disk now (src/launch_configuration.h). Recorded, never refused.
+                try {
+                    const auto launch = orange::recording::BuildLaunchConfigurationBlock(get_current_utc_timestamp());
+                    orange::recording::ValidateEmittedLaunchConfiguration(launch);
+                    if (launch.at("configuration_changed_since_launch").get<bool>()) {
+                        std::cerr << "[headless] WARNING configuration changed since launch: "
+                                  << launch.at("changed_since_launch").dump() << std::endl;
+                    }
+                    if (!update_recording_snapshot_session_artifacts(record_folder, {{"launch_configuration", launch}}))
+                        throw std::runtime_error("failed to persist launch configuration");
+                } catch (const std::exception& ex) {
+                    std::cerr << "[headless] launch configuration not captured: " << ex.what() << std::endl;
                 }
             }
             if (master_config.enabled) {

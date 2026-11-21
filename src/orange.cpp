@@ -12,6 +12,7 @@
 #include "gui/pose_overlay.h"
 #include "recording_context.h"
 #include "effective_configuration.h"
+#include "launch_configuration.h"
 #include "rig_config_pin.h"
 #include <ImGuiFileDialog.h>
 #include "project.h"
@@ -1187,6 +1188,7 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     snapshot.recording_manifest = recording_run.recording_manifest;
     snapshot.empty_background_capture = orange::gui::GuiEmptyBackgroundCapture().StatusJson();
     snapshot.daily_registration_autorun = orange::gui::GuiDailyRegistrationAutorun().StatusJson();
+    snapshot.configuration = orange::recording::LaunchConfigurationStatusJson();
     snapshot.recording_sink_mode = recording_session.recording_sink_mode;
     snapshot.expected_camera_serials = gui_split_expected_camera_serials();
     snapshot.open_camera_serials =
@@ -5487,6 +5489,10 @@ int main(int /*argc*/, char ** /*args*/) {
     // Provenance: the start snapshot seals this file (path, sha256, contents)
     // and every ORANGE_* variable with its source (see effective_configuration.h).
     orange::recording::SetLoadedAppConfigPath(build_default_app_config_path(orange_root_dir_str));
+    // The app config bytes this process runs on, read right after the load above;
+    // every record start compares them with the file on disk (launch_configuration.h).
+    orange::recording::RecordLaunchAppConfig(build_default_app_config_path(orange_root_dir_str),
+                                             get_current_utc_timestamp());
     if (app_storage_config.gui_ptp_register_read_decimate > 1 &&
         std::getenv("ORANGE_PTP_REGISTER_READ_DECIMATE") == nullptr) {
         const std::string decimate_value =
@@ -8020,6 +8026,11 @@ int main(int /*argc*/, char ** /*args*/) {
                         update_camera_configs(
                             camera_config_files,
                             local_config_folders[local_config_select]);
+                        // The preset these cameras open from (status.configuration and
+                        // session.launch_configuration at every record start).
+                        orange::recording::RecordLaunchCameraPreset(
+                            local_config_folders[local_config_select],
+                            get_current_utc_timestamp());
                         if (!camera_config_files.empty()) {
                             select_cameras_have_configs(
                                 camera_config_files,

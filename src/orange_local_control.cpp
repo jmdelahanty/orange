@@ -708,6 +708,7 @@ nlohmann::json LocalControlStatusSnapshotToJson(
              {"empty_background_capture", snapshot.empty_background_capture},
              {"daily_registration_autorun", snapshot.daily_registration_autorun},
          }},
+        {"configuration", snapshot.configuration},
     };
 }
 

@@ -368,6 +368,31 @@ void test_status_recording_manifest_is_null_until_published()
             "a published recording_manifest must be reported verbatim");
 }
 
+void test_status_reports_launch_configuration()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    nlohmann::json json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(json.contains("configuration") && json["configuration"].is_null(),
+            "status.configuration is present and null until the owner sets it");
+    status.configuration = {
+        {"camera_preset",
+         {{"name", "100_cam4_ptp_fourcam"},
+          {"path", "/home/x/orange_data/config/local/100_cam4_ptp_fourcam"},
+          {"hash_rule", "orange_camera_config_dir_sha256_v1"},
+          {"sha256", "sha256:" + std::string(64, 'a')},
+          {"loaded_at_utc", "2026-11-21T08:00:00Z"},
+          {"error", nullptr}}},
+        {"app_config",
+         {{"path", "/home/x/orange_data/config/app/default.json"},
+          {"status", "loaded"},
+          {"loaded_sha256", "sha256:" + std::string(64, 'b')},
+          {"loaded_at_utc", "2026-11-21T07:59:00Z"},
+          {"error", nullptr}}},
+    };
+    json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(json["configuration"] == status.configuration, "status.configuration is reported verbatim");
+}
+
 void test_status_reports_separate_stop_and_citrus_completion_gates()
 {
     LocalControlStatusSnapshot status = healthy_status();
@@ -2099,6 +2124,7 @@ int main()
          test_status_reports_completed_recording_after_streaming_stop_path},
         {"status_recording_manifest_is_null_until_published",
          test_status_recording_manifest_is_null_until_published},
+        {"status_reports_launch_configuration", test_status_reports_launch_configuration},
         {"status_reports_separate_stop_and_citrus_completion_gates",
          test_status_reports_separate_stop_and_citrus_completion_gates},
         {"status_reports_local_control_drain_timeout_telemetry",

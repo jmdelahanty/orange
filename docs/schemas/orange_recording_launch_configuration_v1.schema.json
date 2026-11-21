@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.launch_configuration.v1",
+  "title": "Orange recording launch configuration (version 1)",
+  "description": "recording_snapshot_start.json session.launch_configuration: the configuration the process actually runs on, kept from the moment it was loaded, against the files on disk at this record start. camera_preset is the camera config folder the cameras were last opened from (digest rule orange_camera_config_dir_sha256_v1, the rule of scripts/camera_config_dir_digest.py: every *.json directly in the folder by raw bytes; a symlinked or non-regular *.json is an error); app_config is the app config file as read at launch (SHA-256 of its exact bytes). on_disk_* is recomputed at the record start. configuration_changed_since_launch is true when either differs (changed_since_launch lists which); the start is never refused for it. session.effective_configuration reads the app config file at record start, so when app_config.changed is true its contents are NOT what the process runs on. Written by BuildLaunchConfigurationBlock (src/launch_configuration.cpp) and checked by ValidateEmittedLaunchConfiguration. null camera_preset: no camera preset was recorded at camera open; null app_config: the process loads no app config (headless).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "captured_at_utc",
+    "camera_preset",
+    "app_config",
+    "configuration_changed_since_launch",
+    "changed_since_launch"
+  ],
+  "properties": {
+    "schema_id": {"const": "orange.recording.launch_configuration"},
+    "schema_version": {"const": 1},
+    "captured_at_utc": {"type": "string", "minLength": 1},
+    "camera_preset": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "path", "hash_rule", "loaded_at_utc", "at_launch", "on_disk_at_record_start", "changed", "changed_files"],
+          "properties": {
+            "name": {"type": "string", "description": "The folder's base name (e.g. 100_cam4_ptp_fourcam)."},
+            "path": {"type": "string", "description": "The folder as the cameras were opened from it."},
+            "hash_rule": {"const": "orange_camera_config_dir_sha256_v1"},
+            "loaded_at_utc": {"type": "string", "minLength": 1, "description": "When the cameras were opened from this folder."},
+            "at_launch": {"$ref": "#/$defs/preset_digest"},
+            "on_disk_at_record_start": {"$ref": "#/$defs/preset_digest"},
+            "changed": {"type": "boolean"},
+            "changed_files": {
+              "type": "array",
+              "items": {"type": "string"},
+              "uniqueItems": true,
+              "description": "Camera JSONs added, removed or changed since the cameras were opened; empty when either side has no file list."
+            }
+          }
+        }
+      ]
+    },
+    "app_config": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "loaded_at_utc", "loaded_status", "loaded_sha256", "on_disk_status", "on_disk_sha256", "changed"],
+          "properties": {
+            "path": {"type": ["string", "null"]},
+            "loaded_at_utc": {"type": "string", "minLength": 1},
+            "loaded_status": {"$ref": "#/$defs/file_status"},
+            "loaded_sha256": {"$ref": "#/$defs/token_or_null"},
+            "on_disk_status": {"$ref": "#/$defs/file_status"},
+            "on_disk_sha256": {"$ref": "#/$defs/token_or_null"},
+            "changed": {"type": "boolean"}
+          }
+        }
+      ]
+    },
+    "configuration_changed_since_launch": {"type": "boolean"},
+    "changed_since_launch": {
+      "type": "array",
+      "items": {"enum": ["camera_preset", "app_config"]},
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "token_or_null": {
+      "oneOf": [{"type": "null"}, {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}]
+    },
+    "file_status": {
+      "enum": ["loaded", "not_configured", "missing", "unreadable"],
+      "description": "loaded: read (sha256 set); not_configured: no path; missing: no file at the path; unreadable: open or read failed."
+    },
+    "preset_digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "files", "error"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/token_or_null"},
+        "files": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "sha256"],
+                "properties": {
+                  "name": {"type": "string", "minLength": 1},
+                  "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+                }
+              }
+            }
+          ],
+          "description": "Per camera JSON, sorted by name: the entries the digest covers."
+        },
+        "error": {"type": ["string", "null"], "description": "Why there is no digest (missing folder, no *.json, a symlinked *.json, ...)."}
+      }
+    }
+  }
+}
