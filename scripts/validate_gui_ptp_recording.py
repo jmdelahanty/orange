@@ -1769,6 +1769,38 @@ def check_effective_configuration(reporter: Reporter, snapshot: dict[str, Any]) 
         reporter.warn(f"effective_configuration app_config {status}: {app.get('path')} ({app.get('error')})")
 
 
+def check_launch_configuration(reporter: Reporter, snapshot: dict[str, Any]) -> None:
+    """session.launch_configuration (orange.recording.launch_configuration v1): the camera preset
+    and app config the process loaded, against the files on disk at record start. A change since
+    launch is a warning (Orange records it and never refuses the start): the sealed
+    effective_configuration then shows the edited app config, not the one the process runs on."""
+    block = nested_dict(snapshot, "session", "launch_configuration")
+    if not isinstance(block, dict) or not block:
+        reporter.warn("recording start snapshot has no session.launch_configuration (build predates the block)")
+        return
+    if block.get("schema_id") != "orange.recording.launch_configuration" or block.get("schema_version") != 1:
+        reporter.fail(f"launch_configuration has an unknown schema: {block.get('schema_id')} "
+                      f"v{block.get('schema_version')}")
+        return
+    preset = block.get("camera_preset") if isinstance(block.get("camera_preset"), dict) else None
+    app = block.get("app_config") if isinstance(block.get("app_config"), dict) else None
+    preset_text = "no camera preset recorded"
+    if preset:
+        launch = preset.get("at_launch") if isinstance(preset.get("at_launch"), dict) else {}
+        preset_text = f"camera preset {preset.get('name')} {str(launch.get('sha256') or launch.get('error'))[:19]}"
+    if not block.get("configuration_changed_since_launch"):
+        reporter.pass_(f"launch_configuration: {preset_text}; nothing changed on disk since launch")
+        return
+    changed = block.get("changed_since_launch") or []
+    if "camera_preset" in changed and preset:
+        reporter.warn(f"launch_configuration: camera preset {preset.get('name')} changed on disk since the cameras "
+                      f"were opened ({preset.get('loaded_at_utc')}): {preset.get('changed_files') or 'folder digest'}")
+    if "app_config" in changed and app:
+        reporter.warn(f"launch_configuration: app config {app.get('path')} changed on disk since launch "
+                      f"({app.get('loaded_at_utc')}); session.effective_configuration shows the edited file, "
+                      "not the one this process runs on")
+
+
 def check_subject_references(
     reporter: Reporter,
     manifest: dict[str, Any],
@@ -1909,6 +1941,7 @@ def check_recording_session_manifest(
     check_recording_contexts(reporter, manifest, snapshot, cameras)
     check_subject_references(reporter, manifest, snapshot, cameras)
     check_effective_configuration(reporter, snapshot)
+    check_launch_configuration(reporter, snapshot)
     check_recording_folder_ownership(reporter, recording_folder)
     check_realtime_products_digests(reporter, recording_folder, manifest)
     check_stimulus_binding_finalized(reporter, recording_folder)
@@ -4593,9 +4626,10 @@ def check_lens_feedback(
                 f"Cam{serial} lens watch: mount counters changed {watch.get('changes')} time(s) mid-stream "
                 f"(last at {watch.get('last_change_stream_ms')} ms)",
             )
-    # Image levels (orange.recording.image_levels_check v1 or v2): warn-only by
+    # Image levels (orange.recording.image_levels_check v1, v2 or v3): warn-only by
     # policy, so every outcome other than ok is a warning, never a failure. v2
     # judges checked_region: the dish interior or the whole frame (v1: whole frame).
+    # v3 says whether the sealed measurement was taken for this recording (freshness).
     check = nested_dict(snapshot, "session", "image_levels_check")
     if isinstance(check, dict) and check.get("enabled"):
         for serial in cameras:
@@ -4623,6 +4657,11 @@ def check_lens_feedback(
             if st.get("rehomed_iris"):
                 first = ((st.get("first_measurement") or {}).get("statistics") or {}).get("mean")
                 reporter.warn(f"Cam{serial} image levels re-homed the iris at stream start (first mean {first})")
+            if st.get("freshness") == "stale":
+                reporter.warn(
+                    f"Cam{serial} image levels measurement is stale ({st.get('measurement_age_s')} s old, "
+                    f"{st.get('measurement_trigger')}, {st.get('stale_reasons')}): not measured for this recording"
+                )
             if st.get("settings_changed_since_measurement"):
                 reporter.warn(
                     f"Cam{serial} image levels measured before {st['settings_changed_since_measurement']} changed"
