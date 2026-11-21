@@ -3,6 +3,7 @@
 #include "outputs/common/decimal_round.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -391,29 +392,90 @@ nlohmann::json BuildRecordingBlock(bool enabled, bool rehome_iris, const nlohman
             {"policy", kPolicy},
             {"enabled", enabled},
             {"rehome_iris", rehome_iris},
-            {"source", "one full-resolution native frame per camera after stream start, before recording"},
+            {"source", "one full-resolution native frame per camera after stream start and after every recording, never during one"},
+            {"fresh_max_age_s", kFreshMaxAgeSeconds},
             {"cameras", cameras_by_serial}};
+}
+
+const char* TriggerName(MeasurementTrigger trigger)
+{
+    switch (trigger) {
+    case MeasurementTrigger::kNone: return nullptr;
+    case MeasurementTrigger::kStreamStart: return "stream_start";
+    case MeasurementTrigger::kOperator: return "operator";
+    case MeasurementTrigger::kAfterRecording: return "after_recording";
+    }
+    return nullptr;
+}
+
+int64_t NowUnixMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+void ResultStore::SetCompleted(const std::string& serial, nlohmann::json result, MeasurementTrigger trigger,
+                               int64_t measured_at_unix_ms)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    Entry& e = by_serial_[serial];
+    e.result = std::move(result);
+    e.trigger = trigger;
+    e.measured_at_unix_ms = measured_at_unix_ms;
+    e.generation = generation_;
+    e.refresh_in_progress = false;
 }
 
 void ResultStore::Set(const std::string& serial, nlohmann::json result)
 {
+    SetCompleted(serial, std::move(result), MeasurementTrigger::kNone, 0);
+}
+
+void ResultStore::SetInProgress(const std::string& serial, nlohmann::json in_progress_result)
+{
     std::lock_guard<std::mutex> lock(mutex_);
-    by_serial_[serial] = std::move(result);
+    auto it = by_serial_.find(serial);
+    if (it != by_serial_.end() && it->second.result.is_object() && it->second.result.contains("measurement") &&
+        !it->second.result.at("measurement").is_null()) {
+        it->second.refresh_in_progress = true;
+        return;
+    }
+    Entry& e = by_serial_[serial];
+    e.result = std::move(in_progress_result);
+    e.trigger = MeasurementTrigger::kNone;
+    e.measured_at_unix_ms = 0;
+    e.generation = generation_;
+    e.refresh_in_progress = false;
+}
+
+void ResultStore::EndRefreshWithoutResult(const std::string& serial)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = by_serial_.find(serial);
+    if (it != by_serial_.end()) it->second.refresh_in_progress = false;
+}
+
+void ResultStore::NoteRecordingEnded()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++generation_;
 }
 
 void ResultStore::Clear()
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    by_serial_ = nlohmann::json::object();
+    by_serial_.clear();
 }
 
 std::optional<nlohmann::json> ResultStore::Get(const std::string& serial) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!by_serial_.contains(serial)) {
+    auto it = by_serial_.find(serial);
+    if (it == by_serial_.end()) {
         return std::nullopt;
     }
-    return by_serial_.at(serial);
+    return it->second.result;
 }
 
 void ResultStore::SetCheckSettings(bool enabled, bool rehome_iris)
@@ -426,12 +488,21 @@ void ResultStore::SetCheckSettings(bool enabled, bool rehome_iris)
 nlohmann::json ResultStore::BuildRecordingBlockAt(
     const std::vector<std::pair<std::string, LevelSettings>>& cameras) const
 {
+    return BuildRecordingBlockAt(cameras, NowUnixMs());
+}
+
+nlohmann::json ResultStore::BuildRecordingBlockAt(
+    const std::vector<std::pair<std::string, LevelSettings>>& cameras, int64_t now_unix_ms) const
+{
     std::lock_guard<std::mutex> lock(mutex_);
     nlohmann::json by_serial = nlohmann::json::object();
     for (const auto& [serial, live] : cameras) {
         nlohmann::json result;
-        if (by_serial_.contains(serial)) {
-            result = by_serial_.at(serial);
+        const Entry* entry = nullptr;
+        auto it = by_serial_.find(serial);
+        if (it != by_serial_.end()) {
+            entry = &it->second;
+            result = entry->result;
         } else {
             result = EvaluateCamera(CameraExpectation{}, live, std::nullopt, std::nullopt, false, "no_check_result");
         }
@@ -439,12 +510,35 @@ nlohmann::json ResultStore::BuildRecordingBlockAt(
         const auto& m = result.at("measurement");
         if (m.is_object() && m.value("ok", false)) {
             const nlohmann::json at_start = SettingsToJson(live);
-            for (auto it = at_start.begin(); it != at_start.end(); ++it) {
-                if (m.at("settings").at(it.key()) != it.value()) changed.push_back(it.key());
+            for (auto jt = at_start.begin(); jt != at_start.end(); ++jt) {
+                if (m.at("settings").at(jt.key()) != jt.value()) changed.push_back(jt.key());
             }
         }
         result["live_settings"] = SettingsToJson(live);
         result["settings_changed_since_measurement"] = changed;
+
+        // Freshness of the sealed measurement for this recording.
+        const MeasurementTrigger trigger = entry ? entry->trigger : MeasurementTrigger::kNone;
+        const char* trigger_name = TriggerName(trigger);
+        result["measurement_trigger"] = trigger_name ? nlohmann::json(trigger_name) : nlohmann::json(nullptr);
+        nlohmann::json age = nullptr;
+        nlohmann::json freshness = nullptr;
+        nlohmann::json stale = nlohmann::json::array();
+        if (m.is_object()) {
+            int64_t age_ms = -1;
+            if (entry && entry->measured_at_unix_ms > 0) {
+                age_ms = std::max<int64_t>(0, now_unix_ms - entry->measured_at_unix_ms);
+                // Milliseconds as seconds with 3 decimals, exact under fast math (decimal_round.h).
+                age = orange::outputs::round_decimals(static_cast<double>(age_ms) / 1000.0, 3);
+            }
+            if (entry && entry->generation < generation_) stale.push_back("measured_before_previous_recording");
+            if (age_ms > static_cast<int64_t>(kFreshMaxAgeSeconds * 1000.0)) stale.push_back("older_than_max_age");
+            if (entry && entry->refresh_in_progress) stale.push_back("refresh_in_progress");
+            freshness = stale.empty() ? "fresh" : "stale";
+        }
+        result["measurement_age_s"] = age;
+        result["freshness"] = freshness;
+        result["stale_reasons"] = stale;
         by_serial[serial] = result;
     }
     return BuildRecordingBlock(enabled_, rehome_iris_, by_serial);

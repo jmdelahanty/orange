@@ -4,6 +4,14 @@
 // the mean is out of band. Never measures while a recording is starting, running
 // or finalizing (the copy reads the landing die). Results go to
 // image_levels::GuiResultStore() for the recording start snapshot.
+//
+// After every recording (the busy period ends while the cameras stream) each
+// camera is measured again (trigger after_recording), so the next record start in
+// the same process seals a measurement taken for it rather than the stream-start
+// one. That re-measure never re-homes the iris (only the stream-start check and the
+// operator's Measure now do), waits while an empty-background capture is pending or
+// running, and, if a recording starts before its copy, gives way: the previous
+// measurement stays the result and is sealed stale.
 #pragma once
 
 #include "camera.h"
@@ -32,6 +40,9 @@ public:
         int housekeeping_cpu = -1;
         bool streaming = false;
         bool recording_busy = false;
+        // An empty-background capture is queued or running: an after-recording
+        // re-measure waits, so the capture is never refused because of it.
+        bool defer_refresh = false;
         // Blocking iris re-home for one camera (iris 0, then the configured
         // value); run on the checker's own thread.
         std::function<void(int camera_index)> rehome_iris_blocking;
@@ -63,6 +74,16 @@ public:
 
 private:
     enum class Phase { kIdle, kSettling, kRequested, kComputing, kRehoming, kDone };
+    // The finished result a re-measure replaces; restored when the re-measure is
+    // abandoned for a recording.
+    struct Held {
+        std::optional<image_levels::Measurement> measurement;
+        std::optional<image_levels::Measurement> first;
+        bool rehomed = false;
+        std::string not_measured_reason;
+        nlohmann::json result;
+        image_levels::MeasurementTrigger trigger = image_levels::MeasurementTrigger::kNone;
+    };
     struct Camera {
         Phase phase = Phase::kIdle;
         std::string serial;
@@ -82,14 +103,23 @@ private:
         std::shared_ptr<std::atomic<bool>> rehome_done;
         std::thread rehome_thread;
         nlohmann::json result;
+        image_levels::MeasurementTrigger trigger = image_levels::MeasurementTrigger::kNone;
+        bool allow_rehome = true;
+        bool pending_rearm = false;  // a recording ended: measure again when allowed
+        std::optional<Held> held;
     };
 
     void reset(Camera* camera, SpatialSnapshotWorker* worker);
+    // Starts a measurement now (no settle time), keeping the finished result in held.
+    // Clears pending_rearm (reset).
+    void begin_cycle(Camera* camera, SpatialSnapshotWorker* worker, image_levels::MeasurementTrigger trigger,
+                     bool allow_rehome);
     void publish(Camera* camera, const CameraParams& params);
     static const char* phase_name(Phase phase);
 
     std::vector<Camera> cameras_;
     std::vector<int> measure_now_;
+    bool was_busy_ = false;
 };
 
 ImageLevelsCheck& GuiImageLevelsCheck();

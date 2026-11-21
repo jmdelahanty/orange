@@ -114,6 +114,23 @@ void ImageLevelsCheck::reset(Camera* camera, SpatialSnapshotWorker* worker)
     camera->serial = serial;
 }
 
+void ImageLevelsCheck::begin_cycle(Camera* camera, SpatialSnapshotWorker* worker,
+                                   image_levels::MeasurementTrigger trigger, bool allow_rehome)
+{
+    std::optional<Held> held = camera->held;
+    if (camera->phase == Phase::kDone && camera->measurement) {
+        held = Held{camera->measurement, camera->first, camera->rehomed,
+                    camera->not_measured_reason, camera->result, camera->trigger};
+    }
+    reset(camera, worker);
+    camera->held = std::move(held);
+    camera->trigger = trigger;
+    camera->allow_rehome = allow_rehome;
+    camera->phase = Phase::kSettling;
+    camera->settle_from = std::chrono::steady_clock::now();
+    camera->settle_seconds = 0.0;
+}
+
 void ImageLevelsCheck::publish(Camera* camera, const CameraParams& params)
 {
     camera->result = image_levels::EvaluateCamera(
@@ -121,7 +138,12 @@ void ImageLevelsCheck::publish(Camera* camera, const CameraParams& params)
         camera->rehomed,
         camera->phase == Phase::kDone ? camera->not_measured_reason
                                       : std::string("measurement_in_progress_") + phase_name(camera->phase));
-    image_levels::GuiResultStore().Set(params.camera_serial, camera->result);
+    if (camera->phase == Phase::kDone) {
+        image_levels::GuiResultStore().SetCompleted(params.camera_serial, camera->result, camera->trigger,
+                                                    camera->measurement ? camera->measurement->measured_at_unix_ms : 0);
+    } else {
+        image_levels::GuiResultStore().SetInProgress(params.camera_serial, camera->result);
+    }
 }
 
 bool ImageLevelsCheck::TryConsume(SpatialSnapshotResult* result)
@@ -186,6 +208,13 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
     }
     std::vector<int> measure_now;
     measure_now.swap(measure_now_);
+    // A recording (or a start that failed) is over: what the store holds was
+    // measured before it, and every camera measures again.
+    if (was_busy_ && !in.recording_busy) {
+        image_levels::GuiResultStore().NoteRecordingEnded();
+        for (auto& camera : cameras_) camera.pending_rearm = true;
+    }
+    was_busy_ = in.recording_busy;
     for (int i = 0; i < num_cameras; ++i) {
         Camera& c = cameras_[static_cast<size_t>(i)];
         CameraParams& params = cameras[i];
@@ -203,13 +232,19 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
             continue;
         }
         const Phase before = c.phase;
+        bool restored = false;
         for (int requested : measure_now) {
             if (requested == i && !in.recording_busy &&
                 (c.phase == Phase::kDone || c.phase == Phase::kIdle || c.phase == Phase::kSettling)) {
-                reset(&c, worker);
-                c.phase = Phase::kSettling;
-                c.settle_from = std::chrono::steady_clock::now();
-                c.settle_seconds = 0.0;
+                begin_cycle(&c, worker, image_levels::MeasurementTrigger::kOperator, true);
+            }
+        }
+        if (c.pending_rearm && !in.recording_busy && !in.defer_refresh) {
+            if (c.phase == Phase::kDone) {
+                // The measurement for the next recording: never re-homes the iris.
+                begin_cycle(&c, worker, image_levels::MeasurementTrigger::kAfterRecording, false);
+            } else if (c.phase == Phase::kIdle) {
+                c.pending_rearm = false;  // the stream-start check measures anyway
             }
         }
         if (in.recording_busy && c.phase == Phase::kRequested && !c.consumed &&
@@ -218,12 +253,29 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
         }
         if (in.recording_busy && (c.phase == Phase::kIdle || c.phase == Phase::kSettling)) {
             // Never start a copy once a recording is on its way.
-            c.not_measured_reason = "recording_started_before_measurement";
+            if (c.held) {
+                // A re-measure gives way: the previous result stands (sealed stale)
+                // and the camera measures again after this recording.
+                c.measurement = c.held->measurement;
+                c.first = c.held->first;
+                c.rehomed = c.held->rehomed;
+                c.not_measured_reason = c.held->not_measured_reason;
+                c.result = c.held->result;
+                c.trigger = c.held->trigger;
+                c.held.reset();
+                c.pending_rearm = true;
+                image_levels::GuiResultStore().EndRefreshWithoutResult(params.camera_serial);
+                restored = true;
+            } else {
+                c.not_measured_reason = "recording_started_before_measurement";
+            }
             c.phase = Phase::kDone;
         }
         switch (c.phase) {
         case Phase::kIdle:
             if (worker->LatestObservedCameraTimestampNs() != 0) {
+                c.trigger = image_levels::MeasurementTrigger::kStreamStart;
+                c.allow_rehome = true;
                 c.phase = Phase::kSettling;
                 c.settle_from = std::chrono::steady_clock::now();
                 c.settle_seconds = kSettleSeconds;
@@ -238,6 +290,7 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
                                                          NativeSnapshotOptions{cpu, true})) {
                 image_levels::Measurement failed;
                 failed.measured_at_utc = get_current_utc_timestamp();
+                failed.measured_at_unix_ms = image_levels::NowUnixMs();
                 failed.error = cpu < 0 ? "no housekeeping CPU" : error;
                 c.measurement = failed;
                 c.phase = Phase::kDone;
@@ -259,6 +312,7 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
                     worker->CancelUnclaimedRequest(c.request_id);
                     image_levels::Measurement failed;
                     failed.measured_at_utc = get_current_utc_timestamp();
+                    failed.measured_at_unix_ms = image_levels::NowUnixMs();
                     failed.error = "no frame within 10 s";
                     c.measurement = failed;
                     c.phase = Phase::kDone;
@@ -269,10 +323,12 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
             c.consumed.reset();
             const image_levels::LevelSettings settings = image_levels::LevelSettingsFromCamera(params);
             const std::string at = get_current_utc_timestamp();
+            const int64_t at_ms = image_levels::NowUnixMs();
             const std::string serial = params.camera_serial;
-            c.computing = std::async(std::launch::async, [frame, settings, at, serial]() {
+            c.computing = std::async(std::launch::async, [frame, settings, at, at_ms, serial]() {
                 image_levels::Measurement m;
                 m.measured_at_utc = at;
+                m.measured_at_unix_ms = at_ms;
                 m.settings = settings;
                 if (!frame->ok || frame->capture_representation != "native_bytes" || frame->native_bytes.empty()) {
                     m.error = frame->error.empty() ? "native snapshot failed" : frame->error;
@@ -308,7 +364,7 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
             const image_levels::Statistics* checked =
                 m.ok ? image_levels::StatisticsFor(m, params.image_levels.region) : nullptr;
             const bool out_of_band = checked && !image_levels::MeanInBand(params.image_levels, checked->mean);
-            if (out_of_band && !c.second_pass && in.rehome_iris && params.lens_control_enabled &&
+            if (out_of_band && !c.second_pass && c.allow_rehome && in.rehome_iris && params.lens_control_enabled &&
                 in.rehome_iris_blocking && !in.recording_busy) {
                 std::cout << "[IMAGE_LEVELS] Cam" << params.camera_serial << " mean " << m.statistics.mean
                           << " out of band; re-homing iris (0 then " << params.iris << ")" << std::endl;
@@ -325,6 +381,7 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
                 break;
             }
             c.measurement = m;
+            c.held.reset();
             c.phase = Phase::kDone;
             break;
         }
@@ -339,7 +396,8 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
         case Phase::kDone:
             break;
         }
-        if (c.phase != before || c.result.is_null()) {
+        if (!restored && (c.phase != before || c.result.is_null())) {
+            if (c.phase == Phase::kDone) c.held.reset();
             publish(&c, params);
             if (c.phase == Phase::kDone && before != Phase::kDone) {
                 const auto& r = c.result;

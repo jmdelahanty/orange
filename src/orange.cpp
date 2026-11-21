@@ -4484,7 +4484,8 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         num_cameras);
     update_gui_citrus_runtime_geometry_snapshot(prepared.recording_folder);
     {
-        // Image levels measured after stream start (warn-only; never blocks a start).
+        // Image levels: the newest measurement (after stream start or after the
+        // previous recording) with its age and freshness; warn-only, never waits.
         try {
             std::vector<std::pair<std::string, orange::image_levels::LevelSettings>> level_cameras;
             for (int i = 0; i < num_cameras; ++i) {
@@ -4500,6 +4501,11 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
                 if (status != "ok") {
                     std::cerr << "[GUI][recording] WARNING image levels Cam" << it.key() << ": " << status << " "
                               << it.value().at("warnings").dump() << std::endl;
+                }
+                if (it.value().at("freshness") == "stale") {
+                    std::cerr << "[GUI][recording] WARNING image levels Cam" << it.key() << ": sealing a stale measurement ("
+                              << it.value().at("measurement_age_s").dump() << " s old, "
+                              << it.value().at("stale_reasons").dump() << ")" << std::endl;
                 }
             }
             if (!update_recording_snapshot_session_artifacts(prepared.recording_folder,
@@ -8804,7 +8810,9 @@ int main(int /*argc*/, char ** /*args*/) {
         // Image-levels check (src/gui/image_levels_check.h): one native frame per
         // camera after stream start against each camera config's image_levels
         // block; an out-of-band mean re-homes the iris once and measures again.
-        // Warn-only; the result is sealed into the recording start snapshot.
+        // After every recording each camera is measured again (no re-home), so
+        // the next record start seals a fresh measurement. Warn-only; the result
+        // is sealed into the recording start snapshot with its age and freshness.
         {
             orange::gui::ImageLevelsCheck::Inputs image_levels_inputs;
             image_levels_inputs.enabled = app_storage_config.image_levels_check_enabled;
@@ -8816,6 +8824,8 @@ int main(int /*argc*/, char ** /*args*/) {
             image_levels_inputs.recording_busy = camera_control->record_video || gui_async_recording_start.active ||
                                                  camera_control->recording_draining || gui_recording_run.active ||
                                                  gui_recording_run.finalizing;
+            image_levels_inputs.defer_refresh = orange::gui::GuiEmptyBackgroundCapture().Busy() ||
+                                                orange::gui::GuiEmptyBackgroundCapture().HasPendingRequest();
             // The re-home (iris 0, then configured) blocks ~0.5 s in SDK calls;
             // the checker runs it on its own thread so the GUI loop never stalls.
             image_levels_inputs.rehome_iris_blocking = [ecams_now = ecams, params_now = cameras_params](int camera_index) {

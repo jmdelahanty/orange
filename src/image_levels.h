@@ -4,8 +4,16 @@
 // in each camera's config (camera JSON `image_levels`,
 // orange.camera.image_levels v2; v1 blocks still load and check the whole
 // frame). The result goes into the recording start snapshot
-// (session.image_levels_check, orange.recording.image_levels_check v2).
+// (session.image_levels_check, orange.recording.image_levels_check v3).
 // Policy is warn-only: a failed check never refuses a stream or a recording.
+//
+// One GUI process can make several recordings on one stream. The check measures
+// after stream start and again after every recording (never during one: the copy
+// reads the landing die), so each record start seals the newest measurement with
+// its age and whether it is fresh: measured after the previous recording ended,
+// at most kFreshMaxAgeSeconds old, and not superseded by a measurement still in
+// progress. A stale one is still sealed, marked with its reasons; the start never
+// waits for a measurement.
 #pragma once
 
 #include "image_levels_expectation.h"
@@ -13,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -25,7 +34,9 @@ inline constexpr const char* kCameraImageLevelsSchemaId = "orange.camera.image_l
 inline constexpr int kCameraImageLevelsSchemaVersion = 2;
 inline constexpr int kCameraImageLevelsSchemaVersionWholeFrameOnly = 1;  // read, never written
 inline constexpr const char* kRecordingImageLevelsCheckSchemaId = "orange.recording.image_levels_check";
-inline constexpr int kRecordingImageLevelsCheckSchemaVersion = 2;
+inline constexpr int kRecordingImageLevelsCheckSchemaVersion = 3;
+// A sealed measurement older than this is stale (older_than_max_age).
+inline constexpr double kFreshMaxAgeSeconds = 600.0;
 inline constexpr const char* kDishInteriorLevelsSchemaId = "orange.image_levels_dish_interior";
 inline constexpr int kDishInteriorLevelsSchemaVersion = 1;
 inline constexpr const char* kPolicy = "warn_only";
@@ -89,6 +100,7 @@ struct Measurement {
     bool ok = false;
     std::string error;
     std::string measured_at_utc;
+    int64_t measured_at_unix_ms = 0;  // same instant, for the age at record start (0: unknown)
     std::string source;  // e.g. full_resolution_native_stream_snapshot
     std::string native_source_storage;
     uint64_t camera_frame_id = 0;
@@ -130,22 +142,53 @@ std::vector<std::string> BasisSettingsDiffer(const CameraExpectation& expectatio
 
 nlohmann::json BuildRecordingBlock(bool enabled, bool rehome_iris, const nlohmann::json& cameras_by_serial);
 
+// What started the measurement a camera's result holds (measurement_trigger).
+enum class MeasurementTrigger { kNone, kStreamStart, kOperator, kAfterRecording };
+const char* TriggerName(MeasurementTrigger trigger);  // nullptr for kNone
+int64_t NowUnixMs();
+
 // Per-serial results produced on the GUI thread and read by the recording
 // start (which may run on another thread).
 class ResultStore {
 public:
+    // A finished check (EvaluateCamera output) and what started it; measured_at_unix_ms
+    // is the measurement's instant (0: none or unknown). Clears any refresh in progress.
+    void SetCompleted(const std::string& serial, nlohmann::json result, MeasurementTrigger trigger,
+                      int64_t measured_at_unix_ms);
+    // Set(serial, result) = SetCompleted(serial, result, kNone, 0): not_streaming, disabled, tests.
     void Set(const std::string& serial, nlohmann::json result);
+    // A measurement is under way. With a completed measurement already held, that one
+    // stays the result and is sealed stale (refresh_in_progress); without one, this
+    // in-progress result (not_measured, measurement_in_progress_<phase>) is the result.
+    void SetInProgress(const std::string& serial, nlohmann::json in_progress_result);
+    // A refresh ended without a result (a recording started first): the held result
+    // stands, no longer marked refresh_in_progress.
+    void EndRefreshWithoutResult(const std::string& serial);
+    // A recording (or a start that failed) is over: every result held now was
+    // measured before it (measured_before_previous_recording at the next start).
+    void NoteRecordingEnded();
     void Clear();
     std::optional<nlohmann::json> Get(const std::string& serial) const;
     void SetCheckSettings(bool enabled, bool rehome_iris);
     // The recording block for these cameras; a camera with no result is
     // not_measured (no_check_result), and every measured camera lists the
-    // settings that changed between its measurement and the record start.
+    // settings that changed between its measurement and the record start, the
+    // measurement's age at now_unix_ms and its freshness.
     nlohmann::json BuildRecordingBlockAt(const std::vector<std::pair<std::string, LevelSettings>>& cameras) const;
+    nlohmann::json BuildRecordingBlockAt(const std::vector<std::pair<std::string, LevelSettings>>& cameras,
+                                         int64_t now_unix_ms) const;
 
 private:
+    struct Entry {
+        nlohmann::json result;
+        MeasurementTrigger trigger = MeasurementTrigger::kNone;
+        int64_t measured_at_unix_ms = 0;
+        uint64_t generation = 0;
+        bool refresh_in_progress = false;
+    };
     mutable std::mutex mutex_;
-    nlohmann::json by_serial_ = nlohmann::json::object();
+    std::map<std::string, Entry> by_serial_;
+    uint64_t generation_ = 0;
     bool enabled_ = false;
     bool rehome_iris_ = false;
 };

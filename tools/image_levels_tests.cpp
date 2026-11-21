@@ -252,9 +252,78 @@ void test_evaluate()
             "v1 expectation checks the whole frame");
 
     const json rec = BuildRecordingBlock(true, true, {{"2010095", r}});
-    require(rec.at("schema_id") == "orange.recording.image_levels_check" && rec.at("schema_version") == 2 &&
-                rec.at("policy") == "warn_only",
+    require(rec.at("schema_id") == "orange.recording.image_levels_check" && rec.at("schema_version") == 3 &&
+                rec.at("policy") == "warn_only" && rec.at("fresh_max_age_s") == kFreshMaxAgeSeconds,
             "recording block identity");
+}
+
+// One process, several recordings: each start seals the newest measurement with
+// its age and freshness (image_levels.h ResultStore).
+void test_freshness_across_recordings()
+{
+    const CameraExpectation e = ParseCameraExpectation(block({{"max_saturated_fraction", 0.001}}));
+    LevelSettings live;
+    const int64_t t0 = 1'763'700'000'000;  // ms
+    Measurement first = measured(200, 0.0);
+    first.measured_at_unix_ms = t0;
+    ResultStore store;
+    store.SetCheckSettings(true, true);
+
+    // Stream start: in progress first (no finished check yet), then done.
+    store.SetInProgress("1", EvaluateCamera(e, live, std::nullopt, std::nullopt, false,
+                                            "measurement_in_progress_settling"));
+    json r = store.BuildRecordingBlockAt({{"1", live}}, t0).at("cameras").at("1");
+    require(r.at("status") == "not_measured" && r.at("freshness").is_null() && r.at("measurement_age_s").is_null() &&
+                r.at("measurement_trigger").is_null() && r.at("stale_reasons").empty(),
+            "first check in progress: not measured, no freshness");
+    store.SetCompleted("1", EvaluateCamera(e, live, first, std::nullopt, false, ""), MeasurementTrigger::kStreamStart,
+                       t0);
+
+    // Recording 1 starts 30 s later: the stream-start measurement is fresh.
+    r = store.BuildRecordingBlockAt({{"1", live}}, t0 + 30'000).at("cameras").at("1");
+    require(r.at("freshness") == "fresh" && r.at("stale_reasons").empty() && r.at("measurement_age_s") == 30.0 &&
+                r.at("measurement_trigger") == "stream_start" &&
+                r.at("measurement").at("measured_at_utc") == first.measured_at_utc,
+            "recording 1 seals the stream-start measurement, fresh, 30 s old");
+
+    // Recording 1 ends; recording 2 starts before the re-measure finished.
+    store.NoteRecordingEnded();
+    store.SetInProgress("1", EvaluateCamera(e, live, std::nullopt, std::nullopt, false,
+                                            "measurement_in_progress_waiting_for_frame"));
+    r = store.BuildRecordingBlockAt({{"1", live}}, t0 + 700'123).at("cameras").at("1");
+    require(r.at("status") == "ok" && r.at("measurement").at("ok") == true,
+            "an in-progress re-measure never replaces the finished measurement");
+    require(r.at("freshness") == "stale" &&
+                r.at("stale_reasons") == json::array({"measured_before_previous_recording", "older_than_max_age",
+                                                      "refresh_in_progress"}) &&
+                r.at("measurement_age_s") == 700.123,
+            "previous measurement sealed stale with all three reasons and its age");
+
+    // The re-measure gave way to the start: the old one is still stale.
+    store.EndRefreshWithoutResult("1");
+    r = store.BuildRecordingBlockAt({{"1", live}}, t0 + 60'000).at("cameras").at("1");
+    require(r.at("stale_reasons") == json::array({"measured_before_previous_recording"}),
+            "abandoned re-measure: stale only for the earlier recording");
+
+    // The after-recording re-measure finished: recording 3 gets it fresh.
+    Measurement again = measured(190, 0.0);
+    again.measured_at_utc = "2026-11-21T10:00:00Z";
+    again.measured_at_unix_ms = t0 + 900'000;
+    store.SetCompleted("1", EvaluateCamera(e, live, again, std::nullopt, false, ""),
+                       MeasurementTrigger::kAfterRecording, again.measured_at_unix_ms);
+    r = store.BuildRecordingBlockAt({{"1", live}}, t0 + 905'000).at("cameras").at("1");
+    require(r.at("freshness") == "fresh" && r.at("measurement_trigger") == "after_recording" &&
+                r.at("measurement_age_s") == 5.0 && r.at("measurement").at("measured_at_utc") == "2026-11-21T10:00:00Z",
+            "recording 3 seals the after-recording measurement, fresh");
+    r = store.BuildRecordingBlockAt({{"1", live}}, t0 + 900'000 + 600'001).at("cameras").at("1");
+    require(r.at("stale_reasons") == json::array({"older_than_max_age"}), "just over the max age: stale");
+
+    // Not streaming: no measurement, no freshness.
+    store.Set("1", EvaluateCamera(e, live, std::nullopt, std::nullopt, false, "not_streaming"));
+    r = store.BuildRecordingBlockAt({{"1", live}}, t0).at("cameras").at("1");
+    require(r.at("freshness").is_null() && r.at("measurement_trigger").is_null(), "not streaming: no freshness");
+    require(store.BuildRecordingBlockAt({{"9", live}}, t0).at("cameras").at("9").at("freshness").is_null(),
+            "unknown camera: no freshness");
 }
 
 
@@ -321,8 +390,29 @@ void write_samples(const std::string& dir)
     const json rec2 = store.BuildRecordingBlockAt({{"7", changed}});
     require(rec2.at("cameras").at("7").at("settings_changed_since_measurement") == json::array({"iris"}),
             "iris changed after the measurement");
+    // Freshness: one fresh after-recording measurement, one stale (sealed after a
+    // later recording ended, refresh in progress, older than the max age).
+    Measurement timed = ok;
+    timed.measured_at_unix_ms = 1'763'700'000'000;
+    store.SetCompleted("10", EvaluateCamera(e, live, timed, std::nullopt, false, ""),
+                       MeasurementTrigger::kAfterRecording, timed.measured_at_unix_ms);
+    store.SetCompleted("11", EvaluateCamera(e, live, timed, low, true, ""), MeasurementTrigger::kStreamStart,
+                       timed.measured_at_unix_ms);
+    store.NoteRecordingEnded();
+    store.SetCompleted("10", EvaluateCamera(e, live, timed, std::nullopt, false, ""),
+                       MeasurementTrigger::kAfterRecording, timed.measured_at_unix_ms);
+    store.SetInProgress("11", json::object());
+    const json rec3 = store.BuildRecordingBlockAt({{"10", live}, {"11", live}}, timed.measured_at_unix_ms + 1'000'500);
+    require(rec3.at("cameras").at("10").at("freshness") == "stale" &&
+                rec3.at("cameras").at("10").at("stale_reasons") == json::array({"older_than_max_age"}),
+            "sample: old after-recording measurement");
+    require(rec3.at("cameras").at("11").at("stale_reasons").size() == 3, "sample: stale for every reason");
+    const json rec4 = store.BuildRecordingBlockAt({{"10", live}}, timed.measured_at_unix_ms + 2'500);
+    require(rec4.at("cameras").at("10").at("freshness") == "fresh", "sample: fresh");
     std::ofstream(dir + "/image_levels_check_sample.json") << rec.dump(2);
     std::ofstream(dir + "/image_levels_check_sample_changed.json") << rec2.dump(2);
+    std::ofstream(dir + "/image_levels_check_sample_stale.json") << rec3.dump(2);
+    std::ofstream(dir + "/image_levels_check_sample_fresh.json") << rec4.dump(2);
     std::ofstream(dir + "/camera_image_levels_sample.json") << BuildCameraExpectation(e).dump(2);
 }
 
@@ -348,6 +438,7 @@ int main(int argc, char** argv)
     test_save_refusal();
     test_camera_block();
     test_evaluate();
+    test_freshness_across_recordings();
     if (argc == 2) write_samples(argv[1]);
     if (failures != 0) {
         std::cerr << "image_levels_tests: " << failures << " failure(s)\n";

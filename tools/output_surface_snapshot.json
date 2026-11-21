@@ -4238,6 +4238,8 @@
    "exposure",
    "first_measurement",
    "focus",
+   "fresh_max_age_s",
+   "freshness",
    "gain",
    "geometry",
    "height",
@@ -4248,6 +4250,8 @@
    "mean_tolerance_fraction",
    "measured_at_utc",
    "measurement",
+   "measurement_age_s",
+   "measurement_trigger",
    "native_source_storage",
    "not_measured_reason",
    "offset_x",
@@ -4274,6 +4278,7 @@
    "settings",
    "settings_changed_since_measurement",
    "source",
+   "stale_reasons",
    "statistics",
    "status",
    "timestamp_sys_ns",
@@ -4295,7 +4300,7 @@
    ],
    [
     "orange.recording.image_levels_check",
-    "2"
+    "3"
    ]
   ]
  },

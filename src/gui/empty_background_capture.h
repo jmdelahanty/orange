@@ -66,6 +66,8 @@ public:
     // GUI thread, every frame.
     void Poll(const Inputs& in);
     bool Busy() const { return phase_ == Phase::kBursting || phase_ == Phase::kWriting; }
+    // A panel or local-control capture is queued for the next Poll.
+    bool HasPendingRequest() const { return queued_.has_value() || panel_request_.has_value(); }
     // null until streaming or a capture; then {state (idle until a capture),
     // the last capture's fields, staging: {serial: {reserved, bytes, error}}}.
     nlohmann::json StatusJson() const;
