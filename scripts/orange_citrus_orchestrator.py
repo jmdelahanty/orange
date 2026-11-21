@@ -2654,7 +2654,39 @@ def resolve_citrus_local_control_log_path(args: argparse.Namespace) -> str:
 
 # Rows that never wake a wait: Citrus logs every socket request, our own
 # status polls included, as local_control_request (Orange does not log status).
-EVENT_LOG_IGNORED_EVENTS = {"local_control_request"}
+# Rows that never wake a long wait: socket bookkeeping, and Citrus's liveness
+# rows (a heartbeat after 10 s of silence, a log rotation), which would
+# otherwise wake every wait every 10 s.
+EVENT_LOG_IGNORED_EVENTS = {"local_control_request", "heartbeat"}
+EVENT_LOG_IGNORED_STATES = {("citrus_process", "rotated")}
+
+# The Citrus terminal-state wait covers the protocol: the longest arena's
+# scheduled duration plus a margin for Citrus's own finalize (2026-11-20: a
+# fixed 300 s default stopped a 1,352 s pilot session after six minutes).
+CITRUS_TERMINAL_MARGIN_SECONDS = 600.0
+CITRUS_TERMINAL_MIN_SECONDS = 300.0
+
+
+def citrus_protocol_seconds(status: dict[str, Any]) -> float | None:
+    """The longest protocol_scheduled_duration_s over Citrus's arenas, or None."""
+    durations = []
+    for arena in status.get("arenas") or []:
+        if isinstance(arena, dict):
+            value = arena.get("protocol_scheduled_duration_s")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                durations.append(float(value))
+    return max(durations) if durations else None
+
+
+def citrus_terminal_timeout_seconds(explicit: float | None, status: dict[str, Any]) -> float:
+    """An explicit --citrus-terminal-timeout-seconds wins; otherwise the protocol
+    length plus the margin, never below the minimum."""
+    if explicit is not None:
+        return float(explicit)
+    protocol = citrus_protocol_seconds(status)
+    if protocol is None:
+        return CITRUS_TERMINAL_MIN_SECONDS
+    return max(CITRUS_TERMINAL_MIN_SECONDS, protocol + CITRUS_TERMINAL_MARGIN_SECONDS)
 
 
 class EventLogFollower:
@@ -2729,7 +2761,7 @@ class EventLogFollower:
             self.event_counts[event] = self.event_counts.get(event, 0) + 1
             if event == "receipt_delivery" and isinstance(row.get("state"), str):
                 self.receipt_delivery_states.append(row["state"])
-            if event in EVENT_LOG_IGNORED_EVENTS:
+            if event in EVENT_LOG_IGNORED_EVENTS or (event, row.get("state")) in EVENT_LOG_IGNORED_STATES:
                 continue
             self.waking_rows += 1
             waking.append(row)
@@ -3120,6 +3152,17 @@ class Orchestrator:
             self.last_citrus_status = status
         return response, status
 
+    def citrus_terminal_timeout(self) -> float:
+        """The terminal-state wait for this run (see citrus_terminal_timeout_seconds);
+        recorded once in the bound-run record."""
+        seconds = citrus_terminal_timeout_seconds(self.args.citrus_terminal_timeout_seconds, self.last_citrus_status)
+        self.bound_record.setdefault("citrus_terminal_timeout", {
+            "seconds": seconds,
+            "source": "argument" if self.args.citrus_terminal_timeout_seconds is not None else "protocol_duration",
+            "protocol_seconds": citrus_protocol_seconds(self.last_citrus_status),
+        })
+        return seconds
+
     def preflight_launch_socket(
         self,
         label: str,
@@ -3296,12 +3339,12 @@ class Orchestrator:
                 CITRUS_REQUEST_SCHEMA_ID,
                 self.args.citrus_socket,
                 citrus_is_terminal,
-                self.args.citrus_terminal_timeout_seconds,
+                self.citrus_terminal_timeout(),
                 "terminal_state",
             )
 
         step = self.step("wait_citrus_terminal_or_run_duration")
-        deadline = time.monotonic() + self.args.citrus_terminal_timeout_seconds
+        deadline = time.monotonic() + self.citrus_terminal_timeout()
         active_since: float | None = None
         last_error = ""
         last_status: dict[str, Any] = {}
@@ -4108,7 +4151,7 @@ class Orchestrator:
                 CITRUS_REQUEST_SCHEMA_ID,
                 self.args.citrus_socket,
                 citrus_is_terminal,
-                self.args.citrus_terminal_timeout_seconds,
+                self.citrus_terminal_timeout(),
                 "terminal_state",
             )
         if self.args.require_citrus_perf_jsonl and not citrus_perf_jsonl_path_known(final_citrus_status):
@@ -4294,7 +4337,7 @@ class Orchestrator:
                 CITRUS_REQUEST_SCHEMA_ID,
                 self.args.citrus_socket,
                 citrus_is_terminal,
-                self.args.citrus_terminal_timeout_seconds,
+                self.citrus_terminal_timeout(),
                 "terminal_state",
             )
         self.citrus_control_complete = True
@@ -4898,7 +4941,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--socket-timeout-seconds", type=positive_float, default=2.0)
     parser.add_argument("--launch-socket-preflight-timeout-seconds", type=positive_float, default=0.2)
     parser.add_argument("--timeout-seconds", type=positive_float, default=120.0)
-    parser.add_argument("--citrus-terminal-timeout-seconds", type=positive_float, default=300.0)
+    parser.add_argument("--citrus-terminal-timeout-seconds", type=positive_float, default=None,
+                        help="How long to wait for Citrus's terminal state after START. Default: the longest "
+                             "arena protocol Citrus reports (protocol_scheduled_duration_s) plus "
+                             f"{CITRUS_TERMINAL_MARGIN_SECONDS:.0f} s, and never less than "
+                             f"{CITRUS_TERMINAL_MIN_SECONDS:.0f} s.")
     parser.add_argument(
         "--citrus-run-seconds",
         type=nonnegative_float,

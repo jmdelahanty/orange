@@ -4100,6 +4100,48 @@ def test_event_log_follower() -> None:
                 "an Orange socket row (no event key) wakes")
 
 
+def test_event_log_follower_ignores_citrus_liveness_rows() -> None:
+    """Citrus heartbeats and log-rotation rows never wake a long wait; a
+    process start or stop row still does."""
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "citrus.sock.events.jsonl"
+        path.write_text("")
+        follower = module.EventLogFollower("citrus", str(path))
+        with path.open("a") as handle:
+            for row in ({"event": "heartbeat", "seq": 1}, {"event": "citrus_process", "state": "rotated", "seq": 2},
+                        {"event": "citrus_process", "state": "stopping", "seq": 3},
+                        {"event": "arena_state_changed", "seq": 4}):
+                handle.write(json.dumps(row) + "\n")
+        rows = follower.poll()
+        require([(r["event"], r.get("state")) for r in rows] == [("citrus_process", "stopping"),
+                                                                   ("arena_state_changed", None)],
+                f"liveness rows are counted but never wake: {rows}")
+        require(follower.event_counts.get("heartbeat") == 1 and follower.waking_rows == 2, follower.record())
+
+
+def test_citrus_terminal_timeout_follows_the_protocol() -> None:
+    """The terminal wait covers the longest arena protocol plus the margin; an
+    explicit argument wins; with no duration the minimum applies."""
+    module = load_module()
+    status = {"arenas": [{"protocol_scheduled_duration_s": 1352.0}, {"protocol_scheduled_duration_s": 21.0},
+                         {"protocol_scheduled_duration_s": None}, {}]}
+    require(module.citrus_protocol_seconds(status) == 1352.0, "the longest arena protocol")
+    require(module.citrus_terminal_timeout_seconds(None, status) == 1352.0 + module.CITRUS_TERMINAL_MARGIN_SECONDS,
+            "protocol plus margin (the 2026-11-20 S1 abort: a fixed 300 s outlived by 1,352 s)")
+    require(module.citrus_terminal_timeout_seconds(None, {"arenas": [{"protocol_scheduled_duration_s": 21.0}]})
+            == max(module.CITRUS_TERMINAL_MIN_SECONDS, 21.0 + module.CITRUS_TERMINAL_MARGIN_SECONDS), "short protocol")
+    require(module.citrus_terminal_timeout_seconds(None, {}) == module.CITRUS_TERMINAL_MIN_SECONDS, "no duration known")
+    require(module.citrus_terminal_timeout_seconds(1800.0, status) == 1800.0, "an explicit argument wins")
+    args = module.parse_args(["--citrus-socket", "/tmp/none"])
+    require(args.citrus_terminal_timeout_seconds is None, "no fixed default")
+    orchestrator = module.Orchestrator(args)
+    orchestrator.last_citrus_status = status
+    require(orchestrator.citrus_terminal_timeout() == 1352.0 + module.CITRUS_TERMINAL_MARGIN_SECONDS, "used by the run")
+    recorded = orchestrator.bound_record["citrus_terminal_timeout"]
+    require(recorded["source"] == "protocol_duration" and recorded["protocol_seconds"] == 1352.0, recorded)
+
+
 def test_lifecycle_waker() -> None:
     """Wake on a lifecycle row, else at the heartbeat; plain polling without a log."""
     module = load_module()
@@ -5251,6 +5293,8 @@ def main() -> int:
         test_headless_mode_refuses_citrus_without_wait_for_control,
         test_headless_mode_needs_orange_command_and_notify_policy,
         test_headless_completion_flag_read_where_orange_client_reports_it,
+        test_event_log_follower_ignores_citrus_liveness_rows,
+        test_citrus_terminal_timeout_follows_the_protocol,
     ]
     for test in tests:
         test()

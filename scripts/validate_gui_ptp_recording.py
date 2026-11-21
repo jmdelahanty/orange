@@ -5230,6 +5230,22 @@ def check_videos(
     return video_sanity
 
 
+def cameras_declaring_detections_absent(recording_folder: Path) -> set[str]:
+    """Cameras whose recording_session.json realtime_products says detections
+    were not produced (status "absent"): Orange's analytics were off for them,
+    so the YOLO checks have nothing to check (Jeremy, 2026-11-19: validate only
+    what the recording declares)."""
+    manifest = read_json(recording_folder / "recording_session.json")
+    block = manifest.get("realtime_products") if isinstance(manifest, dict) else None
+    cameras_block = block.get("cameras") if isinstance(block, dict) else None
+    absent: set[str] = set()
+    for serial, products in (cameras_block or {}).items():
+        detections = products.get("detections") if isinstance(products, dict) else None
+        if isinstance(detections, dict) and detections.get("status") == "absent":
+            absent.add(str(serial))
+    return absent
+
+
 def check_yolo(
     reporter: Reporter,
     summary: dict[str, Any],
@@ -5241,9 +5257,17 @@ def check_yolo(
     max_same_camera_service_gap_p95_ms: float | None,
     max_steady_p95_ms: float | None,
     max_ptp_done_p95_ms: float | None,
+    detections_absent: set[str] | None = None,
 ) -> None:
+    detections_absent = detections_absent or set()
     for serial in cameras:
         yolo = nested_dict(summary, "yolo", serial)
+        if serial in detections_absent:
+            if yolo:
+                reporter.fail(f"Cam{serial} has a YOLO perf CSV but realtime_products declares detections absent")
+            else:
+                reporter.pass_(f"Cam{serial} detection not run (realtime_products: detections absent); YOLO checks skipped")
+            continue
         if not yolo:
             reporter.fail(f"Cam{serial} missing YOLO perf CSV")
             continue
@@ -7961,6 +7985,7 @@ def main() -> int:
             args.max_yolo_same_camera_service_gap_p95_ms,
             args.max_yolo_steady_p95_ms,
             args.max_ptp_done_p95_ms,
+            cameras_declaring_detections_absent(recording_folder),
         )
         check_yolo_affinity(
             reporter,

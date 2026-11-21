@@ -34,6 +34,7 @@ EMPTY_BACKGROUND=""
 DAILY_REGISTRATION_MODE=""
 FISH_FREE_TEST=0
 SCENE_CONFIRMATION_TIMEOUT=""
+CITRUS_TERMINAL_TIMEOUT=""
 
 usage() {
   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
@@ -89,6 +90,9 @@ Options:
                            the scene itself (recorded as fish_free_test_scene_unchanged).
   --scene-confirmation-timeout-seconds <n>
                            How long to wait for the operator after the capture (default 3600)
+  --citrus-terminal-timeout-seconds <n>
+                           How long to wait for Citrus to finish after START (default: the
+                           longest arena protocol Citrus reports + 600 s, at least 300 s)
   --execute                Run it (default: print the plan only)
 
 Subjects: without --declaration-dir, Citrus autorun declares every arena blank,
@@ -120,6 +124,7 @@ while [[ $# -gt 0 ]]; do
     --empty-background) EMPTY_BACKGROUND="${2:?--empty-background needs capture_at_setup or none}"; shift 2 ;;
     --fish-free-test) FISH_FREE_TEST=1; shift ;;
     --scene-confirmation-timeout-seconds) SCENE_CONFIRMATION_TIMEOUT="${2:?}"; shift 2 ;;
+    --citrus-terminal-timeout-seconds) CITRUS_TERMINAL_TIMEOUT="${2:?--citrus-terminal-timeout-seconds needs a value}"; shift 2 ;;
     --execute) EXECUTE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -178,6 +183,7 @@ BACKGROUND_ARGS=(--run-dir "$OUT_DIR")
 [[ -n "$DAILY_REGISTRATION_MODE" ]] && BACKGROUND_ARGS+=(--daily-registration-mode "$DAILY_REGISTRATION_MODE")
 (( FISH_FREE_TEST )) && BACKGROUND_ARGS+=(--fish-free-test)
 [[ -n "$SCENE_CONFIRMATION_TIMEOUT" ]] && BACKGROUND_ARGS+=(--scene-confirmation-timeout-seconds "$SCENE_CONFIRMATION_TIMEOUT")
+[[ -n "$CITRUS_TERMINAL_TIMEOUT" ]] && BACKGROUND_ARGS+=(--citrus-terminal-timeout-seconds "$CITRUS_TERMINAL_TIMEOUT")
 
 ORANGE_COMMAND="$REPO_ROOT/scripts/run_gui_fourcam_external_ipc_validation.sh --declared-start --citrus-display-safe"
 [[ -n "$CLIP_SECONDS" ]] && ORANGE_COMMAND+=" --clip-seconds $CLIP_SECONDS"
