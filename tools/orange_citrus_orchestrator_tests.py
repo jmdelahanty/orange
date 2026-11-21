@@ -4142,6 +4142,27 @@ def test_citrus_terminal_timeout_follows_the_protocol() -> None:
     require(recorded["source"] == "protocol_duration" and recorded["protocol_seconds"] == 1352.0, recorded)
 
 
+def test_attach_accepts_a_completed_previous_session() -> None:
+    """--attach (Orange and Citrus kept open by run_orange_citrus_day.sh): a
+    Citrus showing the previous session's completed run may start again; a
+    fresh-launch run still needs not_started; anything else blocks."""
+    module = load_module()
+    for state, fresh_ok, attached_ok in (("not_started", True, True), ("completed", False, True),
+                                         ("active", False, False), ("start_requested", False, False)):
+        status = {"experiment": {"terminal_state": state}}
+        fresh = [b for b in module.citrus_start_blockers(status, None) if "terminal_state" in b]
+        attached = [b for b in module.citrus_start_blockers(status, None, True) if "terminal_state" in b]
+        require((not fresh) == fresh_ok and (not attached) == attached_ok, f"{state}: {fresh} / {attached}")
+    args = module.parse_args(["--attach", "--citrus-socket", "/tmp/none"])
+    require(args.attach and not args.orange_command and not args.citrus_command, "attach without launch commands")
+    try:
+        module.parse_args(["--attach", "--orange-command", "x"])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("--attach with a launch command is refused")
+
+
 def test_lifecycle_waker() -> None:
     """Wake on a lifecycle row, else at the heartbeat; plain polling without a log."""
     module = load_module()
@@ -5295,6 +5316,7 @@ def main() -> int:
         test_headless_completion_flag_read_where_orange_client_reports_it,
         test_event_log_follower_ignores_citrus_liveness_rows,
         test_citrus_terminal_timeout_follows_the_protocol,
+        test_attach_accepts_a_completed_previous_session,
     ]
     for test in tests:
         test()

@@ -35,6 +35,7 @@ DAILY_REGISTRATION_MODE=""
 FISH_FREE_TEST=0
 SCENE_CONFIRMATION_TIMEOUT=""
 CITRUS_TERMINAL_TIMEOUT=""
+ATTACH=0
 
 usage() {
   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
@@ -90,6 +91,9 @@ Options:
                            the scene itself (recorded as fish_free_test_scene_unchanged).
   --scene-confirmation-timeout-seconds <n>
                            How long to wait for the operator after the capture (default 3600)
+  --attach                 Run this session against the Orange and Citrus that
+                           scripts/run_orange_citrus_day.sh keeps open (no launch, no
+                           shutdown; the preset and canvas are the day's)
   --citrus-terminal-timeout-seconds <n>
                            How long to wait for Citrus to finish after START (default: the
                            longest arena protocol Citrus reports + 600 s, at least 300 s)
@@ -125,6 +129,7 @@ while [[ $# -gt 0 ]]; do
     --fish-free-test) FISH_FREE_TEST=1; shift ;;
     --scene-confirmation-timeout-seconds) SCENE_CONFIRMATION_TIMEOUT="${2:?}"; shift 2 ;;
     --citrus-terminal-timeout-seconds) CITRUS_TERMINAL_TIMEOUT="${2:?--citrus-terminal-timeout-seconds needs a value}"; shift 2 ;;
+    --attach) ATTACH=1; shift ;;
     --execute) EXECUTE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -211,6 +216,17 @@ ARGS=(
   --summary-json "$OUT_DIR/summary.json"
 )
 for kv in "${X_ENV[@]}"; do ARGS+=(--orange-env "$kv" --citrus-env "$kv"); done
+if (( ATTACH )); then
+  # The day launcher owns both processes: drop the launch commands.
+  FILTERED=()
+  skip=0
+  for a in "${ARGS[@]}"; do
+    if (( skip )); then skip=0; continue; fi
+    case "$a" in --orange-command|--citrus-command) skip=1; continue ;; esac
+    FILTERED+=("$a")
+  done
+  ARGS=("${FILTERED[@]}" --attach)
+fi
 (( EXECUTE )) && ARGS=(--execute "${ARGS[@]}")
 
 echo "[bound-run] out_dir=$OUT_DIR protocol=$PROTOCOL canvas=$CANVAS_CONFIG camera_config=$CAMERA_CONFIG_DIR camera_config_sha256=$CAMERA_CONFIG_SHA256 clip_seconds=${CLIP_SECONDS:-app_config} declaration=${DECLARATION_DIR:-blank_subjects} empty_background=${EMPTY_BACKGROUND:-auto} fish_free_test=$FISH_FREE_TEST execute=$EXECUTE" >&2

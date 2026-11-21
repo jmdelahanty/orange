@@ -2588,7 +2588,16 @@ def citrus_ready_to_start(status: dict[str, Any]) -> bool:
     return json_bool(json_path(status, ["readiness", "ready_to_start"], False))
 
 
-def citrus_start_blockers(status: dict[str, Any], expected_arena_count: int | None) -> list[str]:
+# Citrus experiment states a new bound start may follow. A fresh Citrus is
+# not_started; an attached one (--attach: Orange and Citrus kept open across
+# sessions) may show the previous session's completed run, which is fine once
+# that run's receipts are delivered (checked separately).
+CITRUS_STARTABLE_TERMINAL_STATES = ("not_started",)
+CITRUS_STARTABLE_TERMINAL_STATES_ATTACHED = ("not_started", "completed")
+
+
+def citrus_start_blockers(status: dict[str, Any], expected_arena_count: int | None,
+                          attached: bool = False) -> list[str]:
     """What keeps a bound Orange+Citrus start from going ahead, from one Citrus
     status reply (citrus-agent, 2026-11-15, citrus main be2cd47). Empty = go."""
     blockers: list[str] = []
@@ -2615,7 +2624,10 @@ def citrus_start_blockers(status: dict[str, Any], expected_arena_count: int | No
     need(scale + ["selected_missing_pointer_count"], 0, "scale.selected_missing_pointer_count")
     need(["daily_registration", "runtime", "all_selected_runtime_safe"], True,
          "daily_registration.runtime.all_selected_runtime_safe")
-    need(["experiment", "terminal_state"], "not_started", "experiment.terminal_state")
+    allowed = CITRUS_STARTABLE_TERMINAL_STATES_ATTACHED if attached else CITRUS_STARTABLE_TERMINAL_STATES
+    terminal = json_path(status, ["experiment", "terminal_state"], None)
+    if terminal not in allowed:
+        blockers.append(f"experiment.terminal_state={terminal!r} (need {' or '.join(allowed)})")
     return blockers
 
 
@@ -3974,7 +3986,7 @@ class Orchestrator:
                              "ready_for_recording_after_scene_confirmation")
         _, citrus = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
         if self.bound_run():
-            blockers = citrus_start_blockers(citrus, self.args.expected_citrus_arenas)
+            blockers = citrus_start_blockers(citrus, self.args.expected_citrus_arenas, self.args.attach)
             self.bound_record["start_blockers_after_scene_confirmation"] = blockers
             if blockers:
                 raise OrchestratorError("Citrus is no longer ready after the scene confirmation: "
@@ -4077,7 +4089,7 @@ class Orchestrator:
             )
         if self.bound_run():
             step = self.step("citrus_start_checks")
-            blockers = citrus_start_blockers(final_citrus_status, self.args.expected_citrus_arenas)
+            blockers = citrus_start_blockers(final_citrus_status, self.args.expected_citrus_arenas, self.args.attach)
             self.bound_record["citrus_build"] = {
                 "git_commit_hash": json_path(final_citrus_status, ["citrus_build", "git_commit_hash"], None),
                 "git_dirty": json_path(final_citrus_status, ["citrus_build", "git_dirty"], None),
@@ -5012,6 +5024,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-wait-orange-finalized", action="store_true")
     parser.add_argument("--allow-preexisting-orange-socket", action="store_true")
     parser.add_argument("--allow-preexisting-citrus-socket", action="store_true")
+    parser.add_argument("--attach", action="store_true",
+                        help="Run one session against an Orange and Citrus that are already open (scripts/"
+                             "run_orange_citrus_day.sh): no launch, no shutdown; Citrus may show the previous "
+                             "session's completed run. Refused with --orange-command or --citrus-command.")
     parser.add_argument(
         "--require-orange-local-control-event-log",
         action="store_true",
@@ -5139,6 +5155,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error(f"--camera-config-json: {exc}")
     if args.declaration is not None and args.orange_mode == "headless":
         parser.error("headless runs declare in the experiment spec (fixed.declaration), not on this command line")
+    if args.attach and (args.orange_command or args.citrus_command):
+        parser.error("--attach runs against an Orange and Citrus already open; drop --orange-command/--citrus-command")
     path = args.citrus_subject_declaration_request
     if path is not None:
         try:

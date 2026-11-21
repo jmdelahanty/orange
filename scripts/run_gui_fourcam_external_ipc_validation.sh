@@ -7,6 +7,7 @@ DISPLAY_PROFILE="${ORANGE_GUI_FOURCAM_DISPLAY_PROFILE:-fast}"
 MANUAL_LOCAL_CONTROL_MODE="none"
 CROP_ONLY=0
 DECLARED_START=0
+KEEP_OPEN=0
 
 usage() {
   cat <<'EOF'
@@ -55,6 +56,9 @@ Options:
                               (or --subjects-json). Stop it with stop-recording; the
                               GUI exits after that recording finalizes. No Subject
                               panel Confirm is needed or used.
+  --keep-open                 With --declared-start: stay open after each recording
+                              finalizes, for the next declared start (one GUI for a
+                              day of sessions; see scripts/run_orange_citrus_day.sh).
   --manual-citrus-completion-control
                              Disable autorun, keep the GUI operator-owned,
                              and enable only Citrus completion-stop requests.
@@ -203,6 +207,10 @@ while [[ $# -gt 0 ]]; do
       DECLARED_START=1
       shift
       ;;
+    --keep-open)
+      KEEP_OPEN=1
+      shift
+      ;;
     --manual-citrus-completion-control)
       if [[ "${MANUAL_LOCAL_CONTROL_MODE}" != "none" ]]; then
         echo "--manual-citrus-completion-control conflicts with --manual-local-control" >&2
@@ -319,6 +327,14 @@ if (( DECLARED_START )); then
   export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1
   export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1
   export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=1
+  # --keep-open: stay up after each finalize for the next declared start
+  # (scripts/run_orange_citrus_day.sh). Close the GUI to end the day.
+  if (( KEEP_OPEN )); then
+    export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0
+  fi
+elif (( KEEP_OPEN )); then
+  echo "--keep-open needs --declared-start" >&2
+  exit 2
 fi
 
 export ORANGE_GUI_CONFIG_DIR="${ORANGE_GUI_CONFIG_DIR:-/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam}"
