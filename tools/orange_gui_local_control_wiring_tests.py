@@ -453,8 +453,117 @@ def test_diagnostic_finalize_stall_can_exercise_drain_timeout() -> None:
     )
 
 
+def block_after(source: str, needle: str) -> str:
+    start = source.find(needle)
+    require(start >= 0, f"missing {needle!r}")
+    brace = source.find("{", start)
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace : index + 1]
+    raise AssertionError(f"unterminated block after {needle!r}")
+
+
+def test_finalize_and_stop_requests_do_not_need_the_local_window() -> None:
+    # 2026-11-22 S8: the finalize poll, the forced-finalize stream stop and
+    # the signal-exit toggles lived inside `if (ImGui::Begin("Local"))`; with
+    # the window collapsed or behind another tab the stop drained forever.
+    orange = read("src/orange.cpp")
+    require(
+        'if (ImGui::Begin("Local"))' not in orange,
+        "the Local window body must not gate the main loop's lifecycle work",
+    )
+    require(
+        'const bool gui_local_window_drawn = ImGui::Begin("Local");' in orange,
+        "the Local window's visibility must be captured",
+    )
+    local_body = block_after(orange, "if (gui_local_window_drawn) {")
+    require(
+        "gui_poll_async_recording_finalize(" not in local_body,
+        "the finalize poll must run outside the Local window",
+    )
+    require(
+        "PollPostFinalizeValidation()" not in local_body,
+        "the validator poll must run outside the Local window",
+    )
+    after = orange[orange.find("if (gui_local_window_drawn) {"):]
+    end = after.find("        ImGui::End();")
+    tail = after[end:]
+    require(
+        "gui_apply_stop_requests_without_local_window(" in tail[:2000],
+        "stop requests must be applied when the Local window is not drawn",
+    )
+    require(
+        "gui_poll_async_recording_finalize(" in tail[:6000],
+        "the finalize poll must follow the Local window every frame",
+    )
+    fallback = block_after(orange, "auto gui_apply_stop_requests_without_local_window")
+    require(
+        "stop_streaming_and_teardown();" in fallback,
+        "the hidden-window fallback must apply a stream stop (forced finalize, signal exit)",
+    )
+    require(
+        "gui_request_recording_stop_through_operator_path(" in fallback,
+        "the hidden-window fallback must apply a recording stop",
+    )
+    require(
+        "gui_report_recording_finalize_wait(gui_local_window_drawn);" in orange,
+        "the stop-drain diagnostics must run every frame",
+    )
+
+
+def test_signal_exit_is_bounded_inside_the_wrapper_kill() -> None:
+    orange = read("src/orange.cpp")
+    signal_block = block_after(orange, "if (gui_signal_exit_pending) {")
+    require(
+        "gui_signal_exit_action(signal_inputs)" in signal_block,
+        "the signal exit must follow gui_signal_exit_action",
+    )
+    require("120.0" not in signal_block, "the old 120 s signal fallback must be gone")
+    status = read("src/gui/session_status.h")
+    require(
+        "kGuiSignalHardCloseSeconds = 45.0" in status,
+        "the signal hard close must stay well inside the wrapper's 60 s kill",
+    )
+
+
+def test_post_finalize_validation_waits_for_receipts() -> None:
+    orange = read("src/orange.cpp")
+    schedule = block_after(orange, "auto gui_schedule_post_finalize_validation")
+    for needle in (
+        "CitrusReceiptsExpected(folder)",
+        "CitrusReceiptWaitLimit(folder)",
+        "ReceiptsFinalized(folder)",
+        "SchedulePostFinalizeValidation(folder",
+    ):
+        require(needle in schedule, f"validator scheduling must use {needle}")
+    completion = block_after(orange, "auto gui_on_recording_finalized_on_gui_thread")
+    require(
+        "gui_schedule_post_finalize_validation(" in completion,
+        "every GUI-thread finalize must schedule the validator behind the receipts",
+    )
+    loop = orange[orange.find("while (!glfwWindowShouldClose(window->render_target)) {"):]
+    loop = loop[: loop.find("GUI closed, initiating cleanup")]
+    window_close = loop.find("Window closed while streaming")
+    require(
+        "StartPostFinalizeValidation(" not in loop[:window_close],
+        "the main loop must not start the validator before the receipts",
+    )
+    require(
+        'StartScheduledPostFinalizeValidationNow("GUI exiting")' in orange,
+        "a validation still waiting at exit must start (it outlives the GUI)",
+    )
+
+
 def main() -> int:
     tests = [
+        test_finalize_and_stop_requests_do_not_need_the_local_window,
+        test_signal_exit_is_bounded_inside_the_wrapper_kill,
+        test_post_finalize_validation_waits_for_receipts,
         test_drain_timeout_requests_forced_stream_shutdown,
         test_local_control_env_flags_override_app_config,
         test_stop_commands_keep_gui_thread_lifecycle_authority,

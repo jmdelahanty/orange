@@ -167,6 +167,38 @@ bool gui_detect_externally_requested_stop(
     const GuiRecordingRunState* run,
     bool recording_start_pending = false);
 
+// What the GUI main loop does, frame by frame, after SIGTERM/SIGINT/SIGHUP.
+// The validation wrapper KILLs the GUI 60 s after it forwards the signal
+// (2026-11-22 S8: a drain that never finished kept the GUI waiting for its
+// old 120 s fallback and the wrapper killed it, so no manifest was written).
+// A recording is stopped through the operator path; a stop that is still
+// draining or finalizing gets kGuiSignalDrainGraceSeconds to finish on its
+// own, then the window closes: the window-close shutdown stops the stream,
+// which ends every recorder handoff and finalizes the recording (manifest and
+// recording_session.json) on the way out. Past kGuiSignalHardCloseSeconds the
+// window closes whatever the state.
+enum class GuiSignalExitAction {
+    kNone,           // keep waiting this frame
+    kStopRecording,  // route a recording stop through the operator path
+    kStopStream,     // request the stream stop (teardown)
+    kCloseWindow,    // close the window; the shutdown path finalizes
+};
+
+inline constexpr double kGuiSignalDrainGraceSeconds = 15.0;
+inline constexpr double kGuiSignalHardCloseSeconds = 45.0;
+
+struct GuiSignalExitInputs {
+    double since_signal_s = 0.0;
+    bool window_closing = false;
+    bool recording_active = false;          // CameraControl::record_video
+    bool recording_stop_requested = false;  // this signal already asked for it
+    bool drain_or_finalize_pending = false; // drain latched, run finalizing, or async finalize
+    bool streaming = false;                 // CameraControl::subscribe
+    bool stream_stop_requested = false;     // this signal already asked for it
+};
+
+GuiSignalExitAction gui_signal_exit_action(const GuiSignalExitInputs& inputs);
+
 void gui_mark_stream_started(GuiSessionTimingState* timing);
 
 void gui_mark_stream_stopped(GuiSessionTimingState* timing);

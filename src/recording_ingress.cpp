@@ -286,6 +286,18 @@ public:
     double owner_push_done_after_capture_mean_ms() const { const uint64_t n = owner_pushes(); return n ? owner_push_done_after_capture_total_ns_.load(std::memory_order_relaxed) / 1e6 / n : 0.0; }
     double owner_push_done_after_capture_max_ms() const { return owner_push_done_after_capture_max_ns_.load(std::memory_order_relaxed) / 1e6; }
     uint64_t deferred_release_pending() const { return static_cast<uint64_t>(pending_release_count()); }
+    // The terms IsDrained() reads, for the GUI's stop-drain diagnostics (read
+    // on the GUI thread; never polls the socket).
+    std::string drain_state_summary() const
+    {
+        std::ostringstream out;
+        out << "in_flight=" << in_flight_.load(std::memory_order_relaxed)
+            << " queue_in=" << GetCountQueueIn()
+            << " pending_release=" << pending_release_count()
+            << " drain_requested=" << (drain_requested_.load() ? 1 : 0)
+            << " frames_acked=" << frames_acked();
+        return out.str();
+    }
     void RequestRecordingDrain(const char* reason)
     {
         {
@@ -2500,6 +2512,16 @@ RecordingIngressStats RecordingIngress::GetStats() const
     stats.last_route_mode =
         last_route_mode_.load(std::memory_order_relaxed) == kRouteModeHelper ? "helper" : "primary";
     return stats;
+}
+
+std::string RecordingIngress::DrainStateSummary() const
+{
+    if (recording_sink_mode_ == "external_ipc") {
+        return external_ipc_handoff_worker_
+            ? external_ipc_handoff_worker_->drain_state_summary()
+            : std::string("no_handoff_worker");
+    }
+    return std::string("sink=") + recording_sink_mode_ + (IsDrained() ? " drained" : " not_drained");
 }
 
 bool RecordingIngress::IsDrained() const

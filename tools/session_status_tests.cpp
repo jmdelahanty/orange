@@ -1010,6 +1010,66 @@ void test_status_line_storage_and_rolling()
     std::cout << "PASS test_status_line_storage_and_rolling" << std::endl;
 }
 
+void test_signal_exit_action()
+{
+    // 2026-11-22 S8: SIGTERM arrived while a citrus_completion stop was
+    // draining; the GUI waited for its 120 s fallback and the wrapper killed
+    // it at 60 s. A draining stop now gets the drain grace, then the window
+    // closes (the shutdown stops the stream and finalizes), well before 60 s.
+    using A = GuiSignalExitAction;
+    require(kGuiSignalDrainGraceSeconds < kGuiSignalHardCloseSeconds &&
+                kGuiSignalHardCloseSeconds + 10.0 < 60.0,
+            "signal exit must finish inside the wrapper's 60 s kill");
+
+    GuiSignalExitInputs recording;
+    recording.recording_active = true;
+    recording.streaming = true;
+    require(gui_signal_exit_action(recording) == A::kStopRecording,
+            "a recording is stopped first");
+    recording.recording_stop_requested = true;
+    require(gui_signal_exit_action(recording) == A::kNone,
+            "the stop is requested once");
+
+    GuiSignalExitInputs draining;
+    draining.drain_or_finalize_pending = true;
+    draining.streaming = true;
+    draining.recording_stop_requested = true;
+    draining.since_signal_s = 1.0;
+    require(gui_signal_exit_action(draining) == A::kNone,
+            "a draining stop first gets its grace");
+    draining.since_signal_s = kGuiSignalDrainGraceSeconds;
+    require(gui_signal_exit_action(draining) == A::kCloseWindow,
+            "a stop still draining after the grace closes the window (S8)");
+    draining.since_signal_s = 280.0;
+    require(gui_signal_exit_action(draining) == A::kCloseWindow,
+            "a drain stuck for minutes never keeps the GUI up");
+
+    GuiSignalExitInputs streaming;
+    streaming.streaming = true;
+    require(gui_signal_exit_action(streaming) == A::kStopStream,
+            "an idle stream is stopped");
+    streaming.stream_stop_requested = true;
+    require(gui_signal_exit_action(streaming) == A::kNone,
+            "the stream stop is requested once");
+    streaming.since_signal_s = kGuiSignalDrainGraceSeconds + 1.0;
+    require(gui_signal_exit_action(streaming) == A::kCloseWindow,
+            "an unconsumed stream stop falls back to the window close");
+
+    GuiSignalExitInputs idle;
+    require(gui_signal_exit_action(idle) == A::kCloseWindow,
+            "nothing running: close at once");
+    idle.window_closing = true;
+    require(gui_signal_exit_action(idle) == A::kNone,
+            "a closing window is left alone");
+
+    GuiSignalExitInputs late;
+    late.recording_active = true;
+    late.since_signal_s = kGuiSignalHardCloseSeconds;
+    require(gui_signal_exit_action(late) == A::kCloseWindow,
+            "the hard close wins over everything");
+    std::cout << "PASS test_signal_exit_action" << std::endl;
+}
+
 }  // namespace
 
 int main()
@@ -1039,6 +1099,7 @@ int main()
         test_status_line_running_and_degraded();
         test_status_line_error_states();
         test_status_line_storage_and_rolling();
+        test_signal_exit_action();
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << std::endl;
         return 1;

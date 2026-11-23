@@ -146,6 +146,38 @@ bool gui_detect_externally_requested_stop(
     return !camera_control->record_video;
 }
 
+GuiSignalExitAction gui_signal_exit_action(const GuiSignalExitInputs& inputs)
+{
+    if (inputs.window_closing) {
+        return GuiSignalExitAction::kNone;
+    }
+    if (inputs.since_signal_s >= kGuiSignalHardCloseSeconds) {
+        return GuiSignalExitAction::kCloseWindow;
+    }
+    if (inputs.recording_active && !inputs.recording_stop_requested) {
+        return GuiSignalExitAction::kStopRecording;
+    }
+    if (inputs.recording_active || inputs.drain_or_finalize_pending) {
+        // Draining (or a stop not yet visible as such): give the drain its
+        // grace, then let the window-close shutdown force the finalize.
+        return inputs.since_signal_s >= kGuiSignalDrainGraceSeconds
+            ? GuiSignalExitAction::kCloseWindow
+            : GuiSignalExitAction::kNone;
+    }
+    if (inputs.streaming) {
+        if (!inputs.stream_stop_requested) {
+            return GuiSignalExitAction::kStopStream;
+        }
+        // The stream stop request is consumed by the stream toggle; if
+        // nothing consumed it within the grace, close and let the shutdown
+        // path stop the stream.
+        return inputs.since_signal_s >= kGuiSignalDrainGraceSeconds
+            ? GuiSignalExitAction::kCloseWindow
+            : GuiSignalExitAction::kNone;
+    }
+    return GuiSignalExitAction::kCloseWindow;
+}
+
 void gui_mark_stream_started(GuiSessionTimingState* timing)
 {
     if (!timing) {

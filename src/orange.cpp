@@ -6310,6 +6310,80 @@ int main(int /*argc*/, char ** /*args*/) {
         }
         return snapshot;
     };
+    // Post-finalize validation waits for Citrus's receipts when they are due
+    // (2026-11-22: a keep-open GUI validated before they landed and reported
+    // the recording unbound), in every mode.
+    auto gui_schedule_post_finalize_validation = [&](const std::string& folder) {
+        orange::gui::PostFinalizeValidationReceiptWait wait;
+        wait.expected = orange::session::CitrusReceiptsExpected(folder);
+        if (wait.expected) {
+            wait.limit = orange::session::CitrusReceiptWaitLimit(folder);
+            wait.finalized = [&gui_control_host, folder]() {
+                return gui_control_host.ReceiptsFinalized(folder);
+            };
+        }
+        orange::gui::SchedulePostFinalizeValidation(folder, std::move(wait));
+    };
+    // Everything a finalize that completed on the GUI thread triggers, from
+    // the per-frame poll or from the stream teardown (a forced finalize after
+    // a drain timeout finalizes there): drain bookkeeping, the validator, and
+    // the exit-after-finalize sequence.
+    auto gui_on_recording_finalized_on_gui_thread = [&]() {
+        gui_display_frame_rate_stats.Finish();
+        gui_mark_recording_finished(&gui_session_timing);
+        gui_mark_local_control_drain_completed(
+            &gui_local_control_stop_scheduler,
+            gui_local_control_event_log_path,
+            gui_recording_run.recording_folder);
+        gui_schedule_post_finalize_validation(gui_recording_run.recording_folder);
+        if (gui_local_control_exit_after_finalize &&
+            gui_local_control_stop_scheduler.stop_triggered) {
+            gui_local_control_exit_pending_after_finalize = true;
+            gui_local_control_exit_stream_stop_requested = false;
+            gui_exit_receipt_wait = {};
+            if (orange::session::CitrusReceiptsExpected(gui_recording_run.recording_folder)) {
+                gui_exit_receipt_wait.active = true;
+                gui_exit_receipt_wait.folder = gui_recording_run.recording_folder;
+                gui_exit_receipt_wait.started = std::chrono::steady_clock::now();
+                gui_exit_receipt_wait.last_probe = gui_exit_receipt_wait.started;
+                gui_exit_receipt_wait.limit =
+                    orange::session::CitrusReceiptWaitLimit(gui_recording_run.recording_folder);
+                std::cout << "[GUI][local_control] GUI exit waits up to "
+                          << gui_exit_receipt_wait.limit.count()
+                          << " s for Citrus's receipts folder=" << gui_exit_receipt_wait.folder
+                          << std::endl;
+                gui_log_local_control_event(
+                    gui_local_control_event_log_path,
+                    {
+                        {"event", "exit_waiting_for_citrus_receipts"},
+                        {"recording_folder", gui_exit_receipt_wait.folder},
+                        {"limit_s", gui_exit_receipt_wait.limit.count()},
+                    });
+            }
+            gui_note_local_control_stop_event(
+                &gui_local_control_stop_scheduler,
+                camera_control->subscribe
+                    ? "finalized_exit_pending_stream_stop"
+                    : "finalized_exit_pending");
+            std::cout << "[GUI][local_control] recording finalized; GUI exit pending"
+                      << " request_id="
+                      << gui_local_control_stop_scheduler.request_id
+                      << " operation_id="
+                      << gui_local_control_stop_scheduler.operation_id
+                      << std::endl;
+            gui_log_local_control_event(
+                gui_local_control_event_log_path,
+                {
+                    {"event", camera_control->subscribe
+                                  ? "finalized_exit_pending_stream_stop"
+                                  : "finalized_exit_pending"},
+                    {"method", gui_local_control_stop_scheduler.method},
+                    {"request_id", gui_local_control_stop_scheduler.request_id},
+                    {"operation_id", gui_local_control_stop_scheduler.operation_id},
+                    {"command_source", gui_local_control_stop_scheduler.source},
+                });
+        }
+    };
     // Orderly stop-streaming teardown, shared by the "Stop streaming"
     // button and the window-close shutdown path. Must be defined after
     // every local it captures by reference and called synchronously from
@@ -6342,11 +6416,7 @@ int main(int /*argc*/, char ** /*args*/) {
                 &gui_recording_run,
                 &recording_session,
                 camera_control)) {
-            gui_display_frame_rate_stats.Finish();
-            gui_mark_local_control_drain_completed(
-                &gui_local_control_stop_scheduler,
-                gui_local_control_event_log_path,
-                gui_recording_run.recording_folder);
+            gui_on_recording_finalized_on_gui_thread();
             std::cout << "[GUI][recording] Finalized recording session before"
                          " stream teardown." << std::endl;
         }
@@ -6473,14 +6543,9 @@ int main(int /*argc*/, char ** /*args*/) {
                 num_cameras,
                 crop_size_px,
                 build_gui_display_frame_rate_snapshot())) {
-            gui_display_frame_rate_stats.Finish();
-            gui_mark_local_control_drain_completed(
-                &gui_local_control_stop_scheduler,
-                gui_local_control_event_log_path,
-                gui_recording_run.recording_folder);
+            gui_on_recording_finalized_on_gui_thread();
             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
                       << std::endl;
-            orange::gui::StartPostFinalizeValidation(gui_recording_run.recording_folder);
         }
         gui_mark_recording_finished(&gui_session_timing);
         gui_mark_stream_stopped(&gui_session_timing);
@@ -6501,6 +6566,117 @@ int main(int /*argc*/, char ** /*args*/) {
     orange::gui::arena_centering_autorun_start(
         &arena_centering_autorun_state,
         arena_centering_autorun_config);
+
+    // The Local window's stream and record buttons also consume the autorun
+    // / local-control requests (gui_autorun_requests.toggle_*): the drain
+    // timeout's forced stream stop, the signal exit, the exit-after-finalize
+    // stream stop. ImGui::Begin("Local") returns false while that window is
+    // collapsed or docked behind another tab, and until 2026-11-22 the
+    // finalize poll and those requests then never ran: a citrus_completion
+    // stop drained "forever" (S8), the forced finalize could not stop the
+    // stream and SIGTERM waited until the wrapper's KILL. Stops are applied
+    // here when the window is not drawn; starts wait for it (logged once).
+    bool gui_local_window_hidden_noted = false;
+    auto gui_apply_stop_requests_without_local_window =
+        [&](const GuiAutorunRequests& requests,
+            const bool calibration_tool_busy_now,
+            const bool calibration_stream_request_authorized) {
+            const bool stop_pending =
+                camera_control->recording_draining || gui_recording_run.finalizing ||
+                requests.toggle_streaming || requests.toggle_recording;
+            if (stop_pending && !gui_local_window_hidden_noted) {
+                gui_local_window_hidden_noted = true;
+                std::cerr << "[GUI][local_window] the Local window is not drawn (collapsed or behind"
+                             " another tab); stop requests and the recording finalize run without it,"
+                             " start requests wait for it"
+                          << " recording_draining=" << (camera_control->recording_draining ? 1 : 0)
+                          << " finalizing=" << (gui_recording_run.finalizing ? 1 : 0)
+                          << " toggle_streaming=" << (requests.toggle_streaming ? 1 : 0)
+                          << " toggle_recording=" << (requests.toggle_recording ? 1 : 0)
+                          << std::endl;
+            }
+            if (requests.toggle_recording) {
+                if (camera_control->open && camera_control->record_video &&
+                    !gui_async_recording_start.active && !gui_camera_startup.busy() &&
+                    !calibration_tool_busy_now) {
+                    gui_request_recording_stop_through_operator_path(
+                        &recording_session,
+                        camera_control,
+                        &gui_recording_run,
+                        &gui_session_timing,
+                        "autorun_stop");
+                    std::cout << "Recording toggled OFF (Local window not drawn). Encoders will"
+                                 " drain queued frames." << std::endl;
+                }
+            }
+            if (requests.toggle_streaming && camera_control->open &&
+                camera_control->subscribe && !camera_control->record_video) {
+                if (calibration_tool_busy_now && !calibration_stream_request_authorized) {
+                    const std::string error =
+                        orange::calibration::global_transaction_coordinator()
+                            .rejection_message("Stream stop");
+                    recording_preflight_errors = {error};
+                    std::cerr << "[GUI][stream] " << error << std::endl;
+                } else if (!gui_camera_startup.status().busy) {
+                    std::cout << "[GUI][local_window] applying the requested stream stop without"
+                                 " the Local window" << std::endl;
+                    stop_streaming_and_teardown();
+                }
+            }
+        };
+    // Stop-drain diagnostics (GUI thread, every 10 s while a stop drains, to
+    // the GUI log only - the local-control event log and its sealed copy in
+    // the recording are unchanged): which drain-gate term holds the finalize
+    // back, how often the gate ran, and what each recorder handoff still
+    // holds. Pins the next S8-like hang.
+    std::chrono::steady_clock::time_point gui_finalize_wait_next_report{};
+    uint64_t gui_local_window_hidden_frames = 0;
+    auto gui_report_recording_finalize_wait = [&](const bool local_window_drawn) {
+        if (!local_window_drawn) {
+            ++gui_local_window_hidden_frames;
+        }
+        const bool waiting = gui_recording_run.active && gui_recording_run.finalizing &&
+                             !gui_recording_run.finalized && !gui_async_recording_finalize.active;
+        const auto now = std::chrono::steady_clock::now();
+        if (!waiting || !has_gui_timepoint(gui_recording_run.recording_stop_requested_at)) {
+            gui_finalize_wait_next_report = {};
+            return;
+        }
+        if (gui_finalize_wait_next_report == std::chrono::steady_clock::time_point{}) {
+            gui_finalize_wait_next_report = now + std::chrono::seconds(10);
+            return;
+        }
+        if (now < gui_finalize_wait_next_report) {
+            return;
+        }
+        gui_finalize_wait_next_report = now + std::chrono::seconds(10);
+        const double waited = std::chrono::duration<double>(
+            now - gui_recording_run.recording_stop_requested_at).count();
+        std::ostringstream pipelines;
+        for (std::size_t i = 0; i < recording_session.recording_pipelines.size(); ++i) {
+            const auto& pipeline = recording_session.recording_pipelines[i];
+            pipelines << (i ? "; " : "") << "[" << i << "] ";
+            if (!pipeline) {
+                pipelines << "none";
+            } else if (pipeline->recording_ingress()) {
+                pipelines << pipeline->recording_ingress()->DrainStateSummary();
+            } else {
+                pipelines << (pipeline->is_drained() ? "drained" : "not_drained");
+            }
+        }
+        const std::string blocked_by = gui_async_recording_finalize.gate_blocked_by;
+        std::cerr << "[GUI][recording] finalize waiting " << static_cast<int>(waited) << " s"
+                  << " blocked_by=" << (blocked_by.empty() ? "-" : blocked_by)
+                  << " gate_polls=" << gui_async_recording_finalize.gate_polls
+                  << " record_video=" << (camera_control->record_video ? 1 : 0)
+                  << " recording_draining=" << (camera_control->recording_draining ? 1 : 0)
+                  << " active_recorders="
+                  << camera_control->active_recorders.load(std::memory_order_relaxed)
+                  << " ptp_evidence_open="
+                  << camera_control->ptp_evidence_open.load(std::memory_order_acquire)
+                  << " local_window_hidden_frames=" << gui_local_window_hidden_frames
+                  << " pipelines: " << pipelines.str() << std::endl;
+    };
 
     auto previous_gui_frame_start = std::chrono::steady_clock::now();
     const auto gui_frame_min_interval =
@@ -6953,30 +7129,55 @@ int main(int /*argc*/, char ** /*args*/) {
                       << "; stopping recording and stream before exit" << std::endl;
         }
         if (gui_signal_exit_pending) {
-            const bool run_active = gui_recording_run.active || gui_recording_run.finalizing;
-            const double since_signal_s = std::chrono::duration<double>(
+            // gui_signal_exit_action (gui/session_status.h): stop the
+            // recording, give a draining stop kGuiSignalDrainGraceSeconds, then
+            // close the window; the window-close shutdown stops the stream and
+            // finalizes. Everything ends well inside the wrapper's 60 s KILL.
+            GuiSignalExitInputs signal_inputs;
+            signal_inputs.since_signal_s = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - gui_signal_received_at).count();
-            if (camera_control->record_video) {
-                if (!gui_signal_recording_stop_requested) {
-                    gui_autorun_requests.toggle_recording = true;
+            signal_inputs.window_closing = glfwWindowShouldClose(window->render_target);
+            signal_inputs.recording_active = camera_control->record_video;
+            signal_inputs.recording_stop_requested = gui_signal_recording_stop_requested;
+            signal_inputs.drain_or_finalize_pending =
+                camera_control->recording_draining || gui_recording_run.active ||
+                gui_recording_run.finalizing || gui_async_recording_finalize.active ||
+                gui_async_recording_start.active;
+            signal_inputs.streaming = camera_control->subscribe;
+            signal_inputs.stream_stop_requested = gui_signal_stream_stop_requested;
+            switch (gui_signal_exit_action(signal_inputs)) {
+                case GuiSignalExitAction::kStopRecording:
                     gui_signal_recording_stop_requested = true;
                     std::cout << "[GUI][signal] requesting recording stop" << std::endl;
-                }
-            } else if (!camera_control->recording_draining && !run_active) {
-                if (camera_control->subscribe) {
-                    if (!gui_signal_stream_stop_requested) {
-                        gui_autorun_requests.toggle_streaming = true;
-                        gui_signal_stream_stop_requested = true;
-                        std::cout << "[GUI][signal] requesting stream stop" << std::endl;
+                    gui_request_recording_stop_through_operator_path(
+                        &recording_session,
+                        camera_control,
+                        &gui_recording_run,
+                        &gui_session_timing,
+                        "autorun_stop");
+                    break;
+                case GuiSignalExitAction::kStopStream:
+                    gui_autorun_requests.toggle_streaming = true;
+                    gui_signal_stream_stop_requested = true;
+                    std::cout << "[GUI][signal] requesting stream stop" << std::endl;
+                    break;
+                case GuiSignalExitAction::kCloseWindow:
+                    if (signal_inputs.recording_active || signal_inputs.drain_or_finalize_pending ||
+                        signal_inputs.streaming) {
+                        std::cout << "[GUI][signal] recording/stream still busy "
+                                  << static_cast<int>(signal_inputs.since_signal_s)
+                                  << " s after the signal (recording=" << (signal_inputs.recording_active ? 1 : 0)
+                                  << " draining_or_finalizing=" << (signal_inputs.drain_or_finalize_pending ? 1 : 0)
+                                  << " streaming=" << (signal_inputs.streaming ? 1 : 0)
+                                  << "); closing the window, the shutdown stops the stream and finalizes"
+                                  << std::endl;
+                    } else {
+                        std::cout << "[GUI][signal] stream stopped; closing the window" << std::endl;
                     }
-                } else if (!glfwWindowShouldClose(window->render_target)) {
-                    std::cout << "[GUI][signal] stream stopped; closing the window" << std::endl;
                     glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
-                }
-            }
-            if (since_signal_s > 120.0 && !glfwWindowShouldClose(window->render_target)) {
-                std::cout << "[GUI][signal] teardown did not complete within 120 s; closing the window anyway" << std::endl;
-                glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
+                    break;
+                case GuiSignalExitAction::kNone:
+                    break;
             }
         }
         if (gui_local_control_configured) {
@@ -7876,7 +8077,13 @@ int main(int /*argc*/, char ** /*args*/) {
         }
 
 
-        if (ImGui::Begin("Local")) {
+        // ImGui::Begin returns false while the Local window is collapsed or
+        // docked behind another tab. Its body also consumes the autorun /
+        // local-control stop requests (forced finalize, signal exit,
+        // exit-after-finalize stream stop), so those are handled below when it
+        // is not drawn, and the finalize poll runs after it unconditionally.
+        const bool gui_local_window_drawn = ImGui::Begin("Local");
+        if (gui_local_window_drawn) {
             if (camera_control->open) {
                 // ImGui::BeginDisabled();
             }
@@ -8438,89 +8645,8 @@ int main(int /*argc*/, char ** /*args*/) {
                 ImGui::TextWrapped("Recording path: %s", active_recording_folder.c_str());
             }
 
-            // The shadow-mode incremental clip splitter (if running) is
-            // signaled and JOINED the frame the run enters finalizing -
-            // directly before the poll below, the only place the finalize
-            // prepare phase (F1) can launch this frame - so the worker is
-            // gone before F1 moves the recorder lifecycle states and before
-            // the authoritative F2 split touches the same clip folders.
-            // Prompt no-op when idle or the flag is off.
-            if (gui_recording_run.finalizing) {
-                gui_join_incremental_clip_shadow(&gui_incremental_clip_shadow);
-            }
-            // Phased finalize: launches the background finalize the frame
-            // the drain gate opens and completes it (GUI-thread completion
-            // phase) the frame the worker finishes; true exactly when a
-            // finalize completed successfully this frame, matching the old
-            // synchronous gui_finalize_recording_session_if_ready contract.
-            orange::gui::PollPostFinalizeValidation();
-            if (gui_poll_async_recording_finalize(
-                    &gui_async_recording_finalize,
-                    &gui_recording_run,
-                    &recording_session,
-                    camera_control,
-                    cameras_params,
-                    cameras_select,
-                    num_cameras,
-                    crop_size_px,
-                    [&]() {
-                        return build_gui_display_frame_rate_snapshot();
-                    })) {
-                gui_display_frame_rate_stats.Finish();
-                gui_mark_recording_finished(&gui_session_timing);
-                gui_mark_local_control_drain_completed(
-                    &gui_local_control_stop_scheduler,
-                    gui_local_control_event_log_path,
-                    gui_recording_run.recording_folder);
-                orange::gui::StartPostFinalizeValidation(gui_recording_run.recording_folder);
-                if (gui_local_control_exit_after_finalize &&
-                    gui_local_control_stop_scheduler.stop_triggered) {
-                    gui_local_control_exit_pending_after_finalize = true;
-                    gui_local_control_exit_stream_stop_requested = false;
-                    gui_exit_receipt_wait = {};
-                    if (orange::session::CitrusReceiptsExpected(gui_recording_run.recording_folder)) {
-                        gui_exit_receipt_wait.active = true;
-                        gui_exit_receipt_wait.folder = gui_recording_run.recording_folder;
-                        gui_exit_receipt_wait.started = std::chrono::steady_clock::now();
-                        gui_exit_receipt_wait.last_probe = gui_exit_receipt_wait.started;
-                        gui_exit_receipt_wait.limit =
-                            orange::session::CitrusReceiptWaitLimit(gui_recording_run.recording_folder);
-                        std::cout << "[GUI][local_control] GUI exit waits up to "
-                                  << gui_exit_receipt_wait.limit.count()
-                                  << " s for Citrus's receipts folder=" << gui_exit_receipt_wait.folder
-                                  << std::endl;
-                        gui_log_local_control_event(
-                            gui_local_control_event_log_path,
-                            {
-                                {"event", "exit_waiting_for_citrus_receipts"},
-                                {"recording_folder", gui_exit_receipt_wait.folder},
-                                {"limit_s", gui_exit_receipt_wait.limit.count()},
-                            });
-                    }
-                    gui_note_local_control_stop_event(
-                        &gui_local_control_stop_scheduler,
-                        camera_control->subscribe
-                            ? "finalized_exit_pending_stream_stop"
-                            : "finalized_exit_pending");
-                    std::cout << "[GUI][local_control] recording finalized; GUI exit pending"
-                              << " request_id="
-                              << gui_local_control_stop_scheduler.request_id
-                              << " operation_id="
-                              << gui_local_control_stop_scheduler.operation_id
-                              << std::endl;
-                    gui_log_local_control_event(
-                        gui_local_control_event_log_path,
-                        {
-                            {"event", camera_control->subscribe
-                                          ? "finalized_exit_pending_stream_stop"
-                                          : "finalized_exit_pending"},
-                            {"method", gui_local_control_stop_scheduler.method},
-                            {"request_id", gui_local_control_stop_scheduler.request_id},
-                            {"operation_id", gui_local_control_stop_scheduler.operation_id},
-                            {"command_source", gui_local_control_stop_scheduler.source},
-                        });
-                }
-            }
+            // The finalize poll runs after the Local window, every frame,
+            // whether or not the window is drawn (see below).
 
             if (camera_control->open) {
                 const GuiSessionTimingSnapshot timing =
@@ -8579,6 +8705,48 @@ int main(int /*argc*/, char ** /*args*/) {
         gui_frame_timing.orange_window_draw_ms = gui_elapsed_ms(
             orange_window_draw_start,
             std::chrono::steady_clock::now());
+
+        if (!gui_local_window_drawn) {
+            gui_apply_stop_requests_without_local_window(
+                gui_autorun_requests,
+                calibration_tool_busy,
+                calibration_workflow_stream_request_authorized);
+        } else {
+            gui_local_window_hidden_noted = false;
+        }
+        // The shadow-mode incremental clip splitter (if running) is
+        // signaled and JOINED the frame the run enters finalizing -
+        // directly before the poll below, the only place the finalize
+        // prepare phase (F1) can launch this frame - so the worker is
+        // gone before F1 moves the recorder lifecycle states and before
+        // the authoritative F2 split touches the same clip folders.
+        // Prompt no-op when idle or the flag is off.
+        if (gui_recording_run.finalizing) {
+            gui_join_incremental_clip_shadow(&gui_incremental_clip_shadow);
+        }
+        // Phased finalize: launches the background finalize the frame
+        // the drain gate opens and completes it (GUI-thread completion
+        // phase) the frame the worker finishes; true exactly when a
+        // finalize completed successfully this frame, matching the old
+        // synchronous gui_finalize_recording_session_if_ready contract.
+        // Outside the Local window on purpose (see
+        // gui_apply_stop_requests_without_local_window).
+        orange::gui::PollPostFinalizeValidation();
+        if (gui_poll_async_recording_finalize(
+                &gui_async_recording_finalize,
+                &gui_recording_run,
+                &recording_session,
+                camera_control,
+                cameras_params,
+                cameras_select,
+                num_cameras,
+                crop_size_px,
+                [&]() {
+                    return build_gui_display_frame_rate_snapshot();
+                })) {
+            gui_on_recording_finalized_on_gui_thread();
+        }
+        gui_report_recording_finalize_wait(gui_local_window_drawn);
 
 
         if (camera_control->subscribe) {
@@ -9054,6 +9222,7 @@ int main(int /*argc*/, char ** /*args*/) {
             &gui_local_control_stop_scheduler,
             gui_local_control_event_log_path,
             gui_recording_run.recording_folder);
+        gui_schedule_post_finalize_validation(gui_recording_run.recording_folder);
         std::cout << "[GUI][recording] Finalized recording session during"
                      " window-close shutdown." << std::endl;
     }
@@ -9117,6 +9286,9 @@ int main(int /*argc*/, char ** /*args*/) {
             }
         }
     }
+    // The control server is down: no receipt can arrive any more, so a
+    // validation still waiting for them starts now (it outlives the GUI).
+    orange::gui::StartScheduledPostFinalizeValidationNow("GUI exiting");
     gui_camera_startup.ShutdownGuiThread();
     gui_startup_timing.FlushPending();
 

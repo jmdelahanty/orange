@@ -214,11 +214,14 @@ struct GuiRecordingFinalizeOutcome {
 
 // Per-frame drain gate (GUI thread). True when the drained run may finalize
 // this frame. Mutates the CameraControl drain flags exactly as the previous
-// monolithic implementation did.
+// monolithic implementation did. When blocked_by is given it receives the
+// first gate term that holds the run back ("" when the gate opens): the
+// stop-drain diagnostics print it while a stop drains (2026-11-22 S8 hang).
 bool gui_recording_finalize_gate_ready(
     GuiRecordingRunState* run,
     orange::session::RecordingSessionState* recording_session,
-    CameraControl* camera_control);
+    CameraControl* camera_control,
+    std::string* blocked_by = nullptr);
 
 // F1 (GUI thread; call only after the gate opened this frame).
 GuiRecordingFinalizeInputs gui_prepare_recording_finalize(
@@ -264,6 +267,12 @@ struct GuiAsyncRecordingFinalizeState {
     // printed as "[GUI][finalize_timing]". Empty directory = print only.
     orange::timing::PhaseTimer timing;
     std::filesystem::path timing_artifact_directory;
+    // What the drain gate reported the last time the poll ran it ("" once it
+    // opened); read by the GUI's stop-drain diagnostics.
+    std::string gate_blocked_by;
+    // Frames the poll has run the gate for the current finalizing run; a
+    // stop whose gate is never polled stays at 0 (the S8 failure mode).
+    uint64_t gate_polls = 0;
 };
 
 // Polled once per GUI frame. The display-rate builder remains lazy until the

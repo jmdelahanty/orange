@@ -1126,21 +1126,42 @@ const char* gui_recording_finalize_stage_label(const int stage)
 bool gui_recording_finalize_gate_ready(
     GuiRecordingRunState* run,
     orange::session::RecordingSessionState* recording_session,
-    CameraControl* camera_control)
+    CameraControl* camera_control,
+    std::string* blocked_by)
 {
-    if (!run || !run->active || !run->finalizing || run->recording_folder.empty()) {
+    auto blocked = [blocked_by](std::string reason) {
+        if (blocked_by) {
+            *blocked_by = std::move(reason);
+        }
         return false;
+    };
+    if (blocked_by) {
+        blocked_by->clear();
+    }
+    if (!run) {
+        return blocked("no_run");
+    }
+    if (!run->active) {
+        return blocked("run_inactive");
+    }
+    if (!run->finalizing) {
+        return blocked("run_not_finalizing");
+    }
+    if (run->recording_folder.empty()) {
+        return blocked("no_recording_folder");
     }
     const bool external_ipc = run->recording_sink_mode == "external_ipc";
     if (external_ipc) {
         if (camera_control && camera_control->record_video) {
-            return false;
+            return blocked("record_video");
         }
-        if (camera_control &&
-            camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
+        const int active_recorders = camera_control
+            ? camera_control->active_recorders.load(std::memory_order_relaxed)
+            : 0;
+        if (active_recorders > 0) {
             camera_control->recording_draining = true;
             camera_control->stop_record = true;
-            return false;
+            return blocked("active_recorders=" + std::to_string(active_recorders));
         }
         if (recording_session &&
             orange::session::should_reassert_recording_drain_flags(
@@ -1150,7 +1171,7 @@ bool gui_recording_finalize_gate_ready(
                 camera_control->recording_draining = true;
                 camera_control->stop_record = true;
             }
-            return false;
+            return blocked("pipelines_not_drained");
         }
         if (camera_control) {
             camera_control->recording_draining = false;
@@ -1160,7 +1181,11 @@ bool gui_recording_finalize_gate_ready(
                (camera_control->record_video ||
                 camera_control->recording_draining ||
                 camera_control->active_recorders.load(std::memory_order_relaxed) > 0)) {
-        return false;
+        return blocked(camera_control->record_video
+                           ? "record_video"
+                           : (camera_control->recording_draining
+                                  ? "recording_draining"
+                                  : "active_recorders"));
     }
 
     // The manifest's clock contract reads ptp_sync_summary.json, so every syncing
@@ -1180,7 +1205,7 @@ bool gui_recording_finalize_gate_ready(
             const double waited = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - run->ptp_evidence_close_requested_at).count();
             if (waited < kPtpEvidenceCloseTimeoutSeconds) {
-                return false;
+                return blocked("ptp_evidence_open=" + std::to_string(open));
             }
             if (!run->ptp_evidence_close_timeout_reported) {
                 run->ptp_evidence_close_timeout_reported = true;
@@ -1218,7 +1243,7 @@ bool gui_recording_finalize_gate_ready(
                     << run->stop_control.value("operation_id", std::string())
                     << std::endl;
             }
-            return false;
+            return blocked("diagnostic_finalize_stall");
         }
         if (run->diagnostic_finalize_stall_reported) {
             run->stop_control["diagnostic_finalize_stall_active"] = false;
@@ -2909,6 +2934,8 @@ void gui_launch_async_recording_finalize(
         return;
     }
     state->outcome = GuiRecordingFinalizeOutcome{};
+    state->gate_polls = 0;
+    state->gate_blocked_by.clear();
     state->progress.stage.store(
         static_cast<int>(GuiRecordingFinalizeStage::kStoppingRecorders),
         std::memory_order_relaxed);
@@ -2970,7 +2997,9 @@ bool gui_poll_async_recording_finalize(
         return gui_complete_async_recording_finalize(
             state, run, recording_session, camera_control);
     }
-    if (!gui_recording_finalize_gate_ready(run, recording_session, camera_control)) {
+    ++state->gate_polls;
+    if (!gui_recording_finalize_gate_ready(
+            run, recording_session, camera_control, &state->gate_blocked_by)) {
         return false;
     }
     const nlohmann::json gui_display_frame_rate =

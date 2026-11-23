@@ -1066,6 +1066,74 @@ void test_async_finalize_join_completes_in_flight_work()
               << std::endl;
 }
 
+// The drain gate names the term that holds a finalize back (stop-drain
+// diagnostics), and opens for the state the S8 log showed at the hang:
+// external IPC, record_video off, active_recorders 0, nothing queued.
+void test_finalize_gate_reports_blocker()
+{
+    ScopedEnv gui_stall("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+    ScopedEnv stall("ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+    ScopedTempDir tmp;
+    const std::string folder = (tmp.path() / "s8_like").string();
+    std::string blocked_by = "stale";
+
+    {
+        GuiRecordingRunState run = make_finalizing_run(folder);
+        run.finalizing = false;
+        require(!gui_recording_finalize_gate_ready(&run, nullptr, nullptr, &blocked_by) &&
+                    blocked_by == "run_not_finalizing",
+                "a run not finalizing is named: " + blocked_by);
+    }
+    {
+        GuiRecordingRunState run = make_finalizing_run(folder);
+        run.recording_sink_mode = "external_ipc";
+        CameraControl control;
+        control.record_video = true;
+        require(!gui_recording_finalize_gate_ready(&run, nullptr, &control, &blocked_by) &&
+                    blocked_by == "record_video",
+                "record_video is named: " + blocked_by);
+        control.record_video = false;
+        control.active_recorders.store(2);
+        require(!gui_recording_finalize_gate_ready(&run, nullptr, &control, &blocked_by) &&
+                    blocked_by == "active_recorders=2",
+                "active recorders are named with their count: " + blocked_by);
+        control.active_recorders.store(0);
+        control.ptp_evidence_open.store(1);
+        require(!gui_recording_finalize_gate_ready(&run, nullptr, &control, &blocked_by) &&
+                    blocked_by == "ptp_evidence_open=1",
+                "open PTP evidence is named: " + blocked_by);
+        require(control.close_ptp_evidence.load(), "the gate asks for the PTP evidence close");
+    }
+    {
+        // The S8 state: recording stopped, nothing active, drain latched.
+        GuiRecordingRunState run = make_finalizing_run(folder);
+        run.recording_sink_mode = "external_ipc";
+        orange::session::RecordingSessionState session;
+        session.recording_sink_mode = "external_ipc";
+        CameraControl control;
+        control.recording_draining = true;
+        control.stop_record = true;
+        require(gui_recording_finalize_gate_ready(&run, &session, &control, &blocked_by),
+                "the S8 drain state must open the gate when the gate is polled");
+        require(blocked_by.empty(), "an open gate reports no blocker");
+        require(!control.recording_draining && !control.stop_record,
+                "the open gate clears the drain latches");
+    }
+    {
+        // The async poll counts every gate run: a stop whose gate is never
+        // polled (the Local-window-hidden S8 failure) shows gate_polls 0.
+        GuiAsyncRecordingFinalizeState state;
+        GuiRecordingRunState run = make_finalizing_run(folder);
+        run.finalizing = false;
+        require(state.gate_polls == 0, "fresh state has no gate polls");
+        require(!gui_poll_async_recording_finalize(&state, &run, nullptr, nullptr, nullptr, nullptr, 0,
+                                                   320, nullptr),
+                "a run not finalizing does not finalize");
+        require(state.gate_polls == 1 && state.gate_blocked_by == "run_not_finalizing",
+                "the poll records the gate result: " + state.gate_blocked_by);
+    }
+}
+
 }  // namespace
 
 int main()
@@ -1096,6 +1164,7 @@ int main()
          &test_async_finalize_poll_launches_and_completes},
         {"async_finalize_join_completes_in_flight_work",
          &test_async_finalize_join_completes_in_flight_work},
+        {"finalize_gate_reports_blocker", &test_finalize_gate_reports_blocker},
     };
 
     for (const auto& test : tests) {

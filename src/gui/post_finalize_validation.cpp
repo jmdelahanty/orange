@@ -49,6 +49,51 @@ Run& run_state()
     return run;
 }
 
+// A validation scheduled behind Citrus's receipts (SchedulePostFinalizeValidation).
+struct Pending {
+    bool active = false;
+    std::string recording_folder;
+    std::chrono::steady_clock::time_point finalized_at{};
+    PostFinalizeValidationReceiptWait wait;
+};
+
+Pending& pending_state()
+{
+    static Pending pending;
+    return pending;
+}
+
+std::function<void(const std::string&)>& starter_override()
+{
+    static std::function<void(const std::string&)> starter;
+    return starter;
+}
+
+void start_now(const std::string& recording_folder)
+{
+    if (starter_override()) {
+        starter_override()(recording_folder);
+        return;
+    }
+    StartPostFinalizeValidation(recording_folder);
+}
+
+// Starts the scheduled validation; `why` says what released it.
+void start_pending(const std::string& why)
+{
+    Pending& pending = pending_state();
+    if (!pending.active) {
+        return;
+    }
+    const std::string folder = pending.recording_folder;
+    const double waited =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - pending.finalized_at).count();
+    pending = Pending{};
+    std::cout << "[GUI][validation] " << std::filesystem::path(folder).filename().string()
+              << ": starting after " << static_cast<int>(waited) << " s (" << why << ")" << std::endl;
+    start_now(folder);
+}
+
 // The folder holding scripts/<validator>: the tree or /opt release this binary
 // belongs to (src/runtime_paths.h), else the current folder.
 std::filesystem::path repo_root()
@@ -344,8 +389,73 @@ void StartPostFinalizeValidation(const std::string& recording_folder)
               << ", " << cpu_count << " housekeeping cores, nice 19); result " << run.view.json_path << std::endl;
 }
 
+bool PostFinalizeValidationMayStart(
+    const PostFinalizeValidationReceiptWait& wait,
+    const std::chrono::steady_clock::duration since_finalize)
+{
+    if (!wait.expected) {
+        return true;
+    }
+    if (wait.finalized && wait.finalized()) {
+        return true;
+    }
+    return since_finalize >= wait.limit;
+}
+
+void SchedulePostFinalizeValidation(
+    const std::string& recording_folder,
+    PostFinalizeValidationReceiptWait wait)
+{
+    Pending& pending = pending_state();
+    pending = Pending{};
+    if (!wait.expected) {
+        start_now(recording_folder);
+        return;
+    }
+    Run& run = run_state();
+    if (run.pid > 0) {
+        CancelPostFinalizeValidation("a newer recording finalized");
+    }
+    pending.active = true;
+    pending.recording_folder = recording_folder;
+    pending.finalized_at = std::chrono::steady_clock::now();
+    pending.wait = std::move(wait);
+    // The panel shows the wait instead of the previous recording's result.
+    run = Run{};
+    run.recording_folder = recording_folder;
+    run.started = pending.finalized_at;
+    run.view.recording_name = std::filesystem::path(recording_folder).filename().string();
+    run.view.status = "waiting_for_receipts";
+    run.view.detail = "waiting up to " + std::to_string(pending.wait.limit.count()) +
+                      " s for Citrus's receipts before validating";
+    std::cout << "[GUI][validation] " << run.view.recording_name << ": " << run.view.detail << std::endl;
+    if (PostFinalizeValidationMayStart(pending.wait, std::chrono::steady_clock::duration::zero())) {
+        start_pending("receipts already stored");
+    }
+}
+
+void StartScheduledPostFinalizeValidationNow(const char* reason)
+{
+    start_pending(reason && *reason ? reason : "started early");
+}
+
+void SetPostFinalizeValidationStarterForTesting(
+    std::function<void(const std::string& recording_folder)> starter)
+{
+    starter_override() = std::move(starter);
+}
+
 void PollPostFinalizeValidation()
 {
+    Pending& pending = pending_state();
+    if (pending.active) {
+        const auto since = std::chrono::steady_clock::now() - pending.finalized_at;
+        if (pending.wait.finalized && pending.wait.finalized()) {
+            start_pending("Citrus's receipts stored");
+        } else if (since >= pending.wait.limit) {
+            start_pending("receipt wait limit of " + std::to_string(pending.wait.limit.count()) + " s passed");
+        }
+    }
     Run& run = run_state();
     if (run.pid <= 0) {
         return;
@@ -371,6 +481,15 @@ void PollPostFinalizeValidation()
 
 void CancelPostFinalizeValidation(const char* reason)
 {
+    Pending& pending = pending_state();
+    if (pending.active) {
+        Run& waiting = run_state();
+        finish(waiting, "cancelled",
+               std::string(reason ? reason : "cancelled") + " while waiting for Citrus's receipts; rerun: python3 scripts/" +
+                   kValidatorScript + " " + pending.recording_folder + " --require-nic-port-counters");
+        print_result(waiting);
+        pending = Pending{};
+    }
     Run& run = run_state();
     if (run.pid <= 0) {
         return;
@@ -384,7 +503,7 @@ void CancelPostFinalizeValidation(const char* reason)
 PostFinalizeValidationView PostFinalizeValidationStatus()
 {
     PostFinalizeValidationView view = run_state().view;
-    if (view.status == "running") {
+    if (view.status == "running" || view.status == "waiting_for_receipts") {
         view.elapsed_seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - run_state().started).count();
     }

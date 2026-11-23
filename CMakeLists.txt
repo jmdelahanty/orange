@@ -1202,6 +1202,14 @@ if(BUILD_TESTING)
     target_compile_features(video_encode_profile_tests PRIVATE cxx_std_17)
     add_test(NAME video_encode_profile_tests COMMAND video_encode_profile_tests)
 
+    add_executable(post_finalize_validation_tests
+        "tools/post_finalize_validation_tests.cpp"
+        "${SRC_DIR}/gui/post_finalize_validation.cpp"
+    )
+    target_include_directories(post_finalize_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(post_finalize_validation_tests PRIVATE cxx_std_17)
+    add_test(NAME post_finalize_validation_tests COMMAND post_finalize_validation_tests)
+
     add_executable(crop_preview_cadence_tests
         "tools/crop_preview_cadence_tests.cpp"
     )
