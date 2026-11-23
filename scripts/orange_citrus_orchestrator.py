@@ -2853,6 +2853,15 @@ class LifecycleWaker:
         }
 
 
+IMAGE_LEVELS_BUSY_RETRY_SECONDS = 120.0
+IMAGE_LEVELS_BUSY_RETRY_INTERVAL_SECONDS = 3.0
+
+
+def image_levels_busy(error: str) -> bool:
+    """Orange's transient refusal while the image-levels check measures a camera."""
+    return "image-levels check is measuring" in error
+
+
 def citrus_finalization_state(status: dict[str, Any]) -> str:
     value = json_path(status, ["recording_observation_finalization", "state"], "")
     return value if isinstance(value, str) else ""
@@ -2884,6 +2893,24 @@ def citrus_receipt_build_error(status: dict[str, Any]) -> str:
     citrus PR #119). Non-empty means no receipts will come."""
     value = json_path(status, ["recording_observation_finalization", "receipt_build_error"], None)
     return value if isinstance(value, str) else ""
+
+
+CITRUS_MANIFEST_WAIT_DEFAULT_SECONDS = 330.0
+
+
+def citrus_manifest_wait_seconds(citrus_root: str | None = None) -> float:
+    """How long Citrus waits for Orange's recording_manifest after its terminal
+    notification before it fails closed (orange_recording_manifest_wait_timed_out)
+    and still closes its H5s: system_config.yml
+    recording_observation_finalization_timeout_seconds (600 on omnifin0),
+    else the code default 330 s (citrus-agent, 2026-11-22)."""
+    root = Path(citrus_root or os.environ.get("CITRUS_PROJECT_ROOT_OVERRIDE") or "/home/jeremy/citrus")
+    try:
+        text = (root / "system_config.yml").read_text()
+    except OSError:
+        return CITRUS_MANIFEST_WAIT_DEFAULT_SECONDS
+    match = re.search(r"^\s*recording_observation_finalization_timeout_seconds:\s*([0-9.]+)", text, re.M)
+    return float(match.group(1)) if match else CITRUS_MANIFEST_WAIT_DEFAULT_SECONDS
 
 
 def citrus_receipt_wait_limit_seconds(recording_folder: str) -> float:
@@ -3636,12 +3663,22 @@ class Orchestrator:
             citrus_receipt_wait_limit_seconds(folder) if folder else 900.0
         )
         grace_started = time.monotonic()
+        # Citrus is idle with 0 attempts while it waits for Orange's
+        # recording_manifest too (2026-11-22, S8: Orange's stop hung, the
+        # runner read idle as "no receipts" and stopped Citrus, which left its
+        # H5s unclosed). Idle counts as "never" only once Orange has
+        # finalized; before that, wait out Citrus's own manifest bound, after
+        # which it fails closed and closes its H5s by itself.
+        orange_finalized = orange_recording_finalized(final_orange_status)
+        if not orange_finalized:
+            limit = max(limit, citrus_manifest_wait_seconds() + 120.0)
 
         def receipts_settled_or_never(status: dict[str, Any]) -> bool:
             if citrus_finalization_settled(status) or citrus_receipt_build_error(status):
                 return True
             return (
-                citrus_finalization_never_started(status)
+                orange_finalized
+                and citrus_finalization_never_started(status)
                 and time.monotonic() - grace_started >= self.args.citrus_receipt_idle_grace_seconds
             )
 
@@ -3657,6 +3694,7 @@ class Orchestrator:
         self.bound_record["receipts"] = {
             "state": state,
             "limit_s": limit,
+            "orange_finalized_at_settle": orange_finalized,
             "waited_s": round(time.monotonic() - grace_started, 3),
             "receipt_build_error": citrus_receipt_build_error(final_citrus_status) or None,
             "orange_completion_sent": json_path(final_citrus_status,
@@ -3776,23 +3814,40 @@ class Orchestrator:
 
         # The display, from Citrus, immediately before the capture.
         before = self.read_citrus_display("before_capture")
-        step = self.step("orange_capture_empty_background")
-        request_id = f"{args.operation_id}:orange:capture_empty_background"
         params = empty_background_capture_params(args, before.get("citrus_build"))
-        response = self.send(args.orange_socket, build_orange_capture_empty_background_request(
-            args.operation_id, request_id, args.source, params))
-        record.update(state="requested", request_id=request_id, params=params)
-        if not response_accepted(response):
-            step.finish(ok=False, response=response)
-            record["state"] = "refused"
-            raise OrchestratorError(f"Orange capture_empty_background was not accepted: {response.get('error')}")
-        step.finish(ok=True, response=response)
-        status = self.wait_for_status(
-            "orange", ORANGE_REQUEST_SCHEMA_ID, args.orange_socket,
-            lambda s: empty_background_capture_finished(s, request_id),
-            args.background_capture_timeout_seconds, "empty_background_captured",
-        )
-        capture = empty_background_status(status)
+        # Orange refuses a capture while its image-levels check is measuring
+        # (stream start, or after a recording in a kept-open GUI); that is
+        # transient, so retry it (2026-11-22 stay-open test, first attempt).
+        retry_deadline = time.monotonic() + IMAGE_LEVELS_BUSY_RETRY_SECONDS
+        attempt = 0
+        while True:
+            attempt += 1
+            step = self.step("orange_capture_empty_background")
+            request_id = f"{args.operation_id}:orange:capture_empty_background" + (
+                f":retry{attempt - 1}" if attempt > 1 else "")
+            response = self.send(args.orange_socket, build_orange_capture_empty_background_request(
+                args.operation_id, request_id, args.source, params))
+            record.update(state="requested", request_id=request_id, params=params, attempts=attempt)
+            busy = image_levels_busy(str(response.get("error") or ""))
+            if not response_accepted(response):
+                step.finish(ok=False, response=response)
+                if busy and time.monotonic() < retry_deadline:
+                    time.sleep(IMAGE_LEVELS_BUSY_RETRY_INTERVAL_SECONDS)
+                    continue
+                record["state"] = "refused"
+                raise OrchestratorError(f"Orange capture_empty_background was not accepted: {response.get('error')}")
+            step.finish(ok=True, response=response)
+            status = self.wait_for_status(
+                "orange", ORANGE_REQUEST_SCHEMA_ID, args.orange_socket,
+                lambda s, rid=request_id: empty_background_capture_finished(s, rid),
+                args.background_capture_timeout_seconds, "empty_background_captured",
+            )
+            capture = empty_background_status(status)
+            if (capture.get("state") == "refused" and image_levels_busy(str(capture.get("error") or ""))
+                    and time.monotonic() < retry_deadline):
+                time.sleep(IMAGE_LEVELS_BUSY_RETRY_INTERVAL_SECONDS)
+                continue
+            break
         record["capture"] = {k: v for k, v in capture.items() if k != "staging"}
         after = self.read_citrus_display("after_capture")
         display_declaration = record["stimulus_display_declaration"]

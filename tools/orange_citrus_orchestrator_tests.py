@@ -4230,6 +4230,54 @@ def test_receipt_build_error_settles_and_is_reported() -> None:
             f"the summary records both fields: {receipts}")
 
 
+def test_idle_citrus_before_orange_finalize_is_waited_out() -> None:
+    """2026-11-22 S8: Orange's stop hung, Citrus sat idle with 0 attempts
+    waiting for the recording_manifest, and the runner read that as "no
+    receipts" and stopped Citrus, leaving its H5s unclosed. Idle counts as
+    "never" only after Orange finalized; before that the wait covers
+    Citrus's own manifest bound."""
+    import tempfile
+    module = load_module()
+    idle = {"recording_observation_finalization": {"state": "idle", "attempts": 0, "receipt_build_error": None}}
+    args = module.parse_args(["--declared-by", "delahantyj", "--intent", "stimulus_experiment",
+                              "--blank-subjects", "--citrus-receipt-timeout-seconds", "60",
+                              "--citrus-receipt-idle-grace-seconds", "0.001"])
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "system_config.yml").write_text("recording_observation_finalization_timeout_seconds: 600\n")
+        require(module.citrus_manifest_wait_seconds(tmp) == 600.0, "reads the rig's bound")
+        require(module.citrus_manifest_wait_seconds(tmp + "/missing") == 330.0, "falls back to the code default")
+    for orange_status, never_counts in (({}, False),
+                                        ({"readiness": {"recording_finalized": True}}, None)):
+        orchestrator = module.Orchestrator(args)
+        seen: dict[str, Any] = {}
+
+        def fake_wait(label, schema_id, socket_path, predicate, timeout_seconds, description, seen=seen):
+            time.sleep(0.01)
+            seen["idle_ends_wait"] = predicate(idle)
+            seen["limit"] = timeout_seconds
+            return idle
+
+        orchestrator.wait_for_status = fake_wait
+        try:
+            orchestrator.settle_bound_receipts(orange_status)
+        except module.OrchestratorError:
+            pass
+        finalized = module.orange_recording_finalized(orange_status)
+        if not finalized:
+            require(seen["idle_ends_wait"] is False, "idle before Orange's finalize does not end the wait")
+            require(seen["limit"] >= module.citrus_manifest_wait_seconds() + 120.0,
+                    f"the wait covers Citrus's manifest bound: {seen['limit']}")
+        else:
+            require(seen["idle_ends_wait"] is True, "idle after Orange's finalize ends the wait after the grace")
+
+
+def test_capture_retries_while_image_levels_measure() -> None:
+    module = load_module()
+    require(module.image_levels_busy("the image-levels check is measuring Cam2010093; retry in a few seconds"),
+            "Orange's busy refusal is recognised")
+    require(not module.image_levels_busy("dish not empty"), "other refusals are not retried")
+
+
 def test_status_wait_detail_names_citrus_reason() -> None:
     module = load_module()
     detail = module.status_wait_detail({"readiness": {"ready_to_start": False, "reasons": [
@@ -5317,6 +5365,8 @@ def main() -> int:
         test_event_log_follower_ignores_citrus_liveness_rows,
         test_citrus_terminal_timeout_follows_the_protocol,
         test_attach_accepts_a_completed_previous_session,
+        test_idle_citrus_before_orange_finalize_is_waited_out,
+        test_capture_retries_while_image_levels_measure,
     ]
     for test in tests:
         test()

@@ -126,10 +126,20 @@ end_day() {
   [[ -n "$citrus_pid" ]] && kill -INT "$citrus_pid" 2>/dev/null || true
   [[ -n "$orange_pid" ]] && kill -TERM "$orange_pid" 2>/dev/null || true
   wait 2>/dev/null || true
+  # Citrus leaves its control socket behind on SIGINT (known Citrus gap);
+  # remove it only when nothing listens on it.
+  if [[ -S "$CITRUS_SOCKET" ]] && ! ss -xl 2>/dev/null | grep -q "$CITRUS_SOCKET"; then
+    rm -f "$CITRUS_SOCKET"
+  fi
 }
 trap 'end_day; exit 130' INT TERM
 
-env "${ORANGE_ENV[@]}" "${ORANGE_CMD[@]}" > "$OUT_DIR/orange.log" 2>&1 &
+# Own session (setsid): sudo does not relay a signal sent from a process in
+# the command's process group, so without it end_day's SIGTERM never reached
+# Orange (2026-11-22 stay-open test). Without job control the background
+# child is not a group leader, so setsid execs in place and $! is still the
+# launcher's pid; the GUI wrapper's guard still sees this script as parent.
+setsid env "${ORANGE_ENV[@]}" "${ORANGE_CMD[@]}" > "$OUT_DIR/orange.log" 2>&1 &
 orange_pid=$!
 socket_up() {
   python3 "$REPO_ROOT/scripts/orange_local_control_client.py" --socket "$1" status >/dev/null 2>&1
